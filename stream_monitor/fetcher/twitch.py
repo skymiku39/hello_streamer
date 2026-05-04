@@ -1,8 +1,13 @@
-"""Twitch 開播狀態爬蟲 — 透過非公開 GQL endpoint 判斷直播狀態。"""
+"""Twitch 開播狀態爬蟲 — 透過非公開 GQL endpoint 判斷直播狀態。
+
+使用 Twitch 網頁版的公用 Client-ID 搭配完整的瀏覽器 Headers 偽裝，
+繞過 Cloudflare 基本防護。輪詢間隔應保持 ≥30 秒以避免觸發 Rate Limit。
+"""
 
 from __future__ import annotations
 
 import logging
+import time
 
 import requests
 
@@ -11,7 +16,6 @@ from stream_monitor.fetcher.base import StreamFetcher, StreamInfo
 logger = logging.getLogger(__name__)
 
 _CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
-
 _GQL_URL = "https://gql.twitch.tv/gql"
 
 _HEADERS = {
@@ -19,8 +23,18 @@ _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
+        "Chrome/126.0.0.0 Safari/537.36"
     ),
+    "Accept": "*/*",
+    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Origin": "https://www.twitch.tv",
+    "Referer": "https://www.twitch.tv/",
+    "Sec-Ch-Ua": '"Chromium";v="126", "Google Chrome";v="126", "Not-A.Brand";v="8"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
 }
 
 _GQL_QUERY = """
@@ -29,6 +43,7 @@ query StreamStatus($login: String!) {
     stream {
       title
       type
+      viewersCount
       game {
         name
       }
@@ -37,24 +52,51 @@ query StreamStatus($login: String!) {
 }
 """
 
+_MAX_RETRIES = 2
+_RETRY_DELAY = 3
+
 
 class TwitchFetcher(StreamFetcher):
     platform = "twitch"
+
+    def __init__(self) -> None:
+        self._session = requests.Session()
+        self._session.headers.update(_HEADERS)
 
     def _query(self, channel_name: str) -> dict | None:
         payload = {
             "query": _GQL_QUERY,
             "variables": {"login": channel_name.lower()},
         }
-        try:
-            resp = requests.post(
-                _GQL_URL, json=payload, headers=_HEADERS, timeout=10
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except (requests.RequestException, ValueError) as exc:
-            logger.warning("Twitch GQL request failed for %s: %s", channel_name, exc)
-            return None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                resp = self._session.post(_GQL_URL, json=payload, timeout=10)
+                if resp.status_code == 403:
+                    logger.warning(
+                        "Twitch returned 403 for %s (attempt %d/%d), "
+                        "possible Cloudflare block",
+                        channel_name, attempt + 1, _MAX_RETRIES + 1,
+                    )
+                    if attempt < _MAX_RETRIES:
+                        time.sleep(_RETRY_DELAY)
+                        continue
+                    return None
+                resp.raise_for_status()
+                data = resp.json()
+                if "errors" in data:
+                    logger.warning("Twitch GQL errors for %s: %s", channel_name, data["errors"])
+                return data
+            except requests.Timeout:
+                logger.warning("Twitch request timed out for %s (attempt %d)", channel_name, attempt + 1)
+                if attempt < _MAX_RETRIES:
+                    time.sleep(_RETRY_DELAY)
+            except requests.RequestException as exc:
+                logger.warning("Twitch request failed for %s: %s", channel_name, exc)
+                return None
+            except ValueError as exc:
+                logger.warning("Invalid JSON from Twitch for %s: %s", channel_name, exc)
+                return None
+        return None
 
     def is_live(self, channel_name: str) -> bool:
         data = self._query(channel_name)
