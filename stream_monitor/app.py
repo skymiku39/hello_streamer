@@ -94,7 +94,7 @@ class AddChannelDialog(ctk.CTkToplevel):
     def __init__(self, parent: ctk.CTk) -> None:
         super().__init__(parent)
         self.title("新增頻道")
-        self.geometry("680x400")
+        self.geometry("680x430")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -194,32 +194,33 @@ class AddChannelDialog(ctk.CTkToplevel):
             wraplength=620,
         ).pack(padx=24, pady=(6, 0), fill="x")
 
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(padx=24, pady=(14, 18), fill="x")
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent", height=48)
+        btn_frame.pack(padx=24, pady=(14, 22), fill="x")
+        btn_frame.pack_propagate(False)
 
         ctk.CTkButton(
             btn_frame,
             text="取消",
-            width=90,
-            height=36,
+            width=104,
+            height=40,
             fg_color="transparent",
             border_width=1,
             border_color="#555566",
             hover_color="#333344",
             font=_font(13),
             command=self.destroy,
-        ).pack(side="right", padx=(8, 0))
+        ).pack(side="right", padx=(8, 0), pady=4)
 
         ctk.CTkButton(
             btn_frame,
             text="新增",
-            width=90,
-            height=36,
+            width=104,
+            height=40,
             fg_color=_CLR_ADD,
             hover_color=_CLR_ADD_HOVER,
             font=_font(13, "bold"),
             command=self._on_add,
-        ).pack(side="right")
+        ).pack(side="right", pady=4)
 
         self.url_entry.bind("<Return>", lambda _: self._on_add())
         self.name_entry.bind("<Return>", lambda _: self._on_add())
