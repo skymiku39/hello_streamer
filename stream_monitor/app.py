@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import platform
 import queue
+import re
 import sys
 from typing import Any
 
@@ -64,6 +65,25 @@ _CLR_ADD = "#0f3460"
 _CLR_ADD_HOVER = "#1a4a7a"
 _CLR_DELETE_HOVER = "#c62828"
 
+_MIN_WINDOW_WIDTH = 860
+_MIN_WINDOW_HEIGHT = 560
+_DEFAULT_WINDOW_GEOMETRY = f"{_MIN_WINDOW_WIDTH}x580"
+
+
+def _clamped_window_geometry(saved_geometry: str | None) -> str:
+    """Keep older saved window sizes from squeezing fixed-width controls."""
+    if not saved_geometry:
+        return _DEFAULT_WINDOW_GEOMETRY
+
+    match = re.match(r"^(\d+)x(\d+)((?:[+-]\d+){2})?$", saved_geometry)
+    if not match:
+        return _DEFAULT_WINDOW_GEOMETRY
+
+    width = max(int(match.group(1)), _MIN_WINDOW_WIDTH)
+    height = max(int(match.group(2)), _MIN_WINDOW_HEIGHT)
+    position = match.group(3) or ""
+    return f"{width}x{height}{position}"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Add Channel Dialog
@@ -74,7 +94,7 @@ class AddChannelDialog(ctk.CTkToplevel):
     def __init__(self, parent: ctk.CTk) -> None:
         super().__init__(parent)
         self.title("新增頻道")
-        self.geometry("440x310")
+        self.geometry("680x400")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -83,7 +103,10 @@ class AddChannelDialog(ctk.CTkToplevel):
         self.result: dict[str, str] | None = None
 
         ctk.CTkLabel(
-            self, text="貼上頻道網址（自動偵測平台）", font=_font(13, "bold"), anchor="w"
+            self,
+            text="貼上頻道首頁網址（自動偵測平台）",
+            font=_font(13, "bold"),
+            anchor="w",
         ).pack(padx=24, pady=(20, 4), fill="x")
 
         url_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -91,23 +114,45 @@ class AddChannelDialog(ctk.CTkToplevel):
 
         self.url_entry = ctk.CTkEntry(
             url_frame,
-            placeholder_text="https://www.twitch.tv/xxxxx  或  https://www.youtube.com/@xxxxx",
+            placeholder_text="貼上頻道首頁網址",
             font=_font(13),
-            height=36,
+            height=38,
         )
-        self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.url_entry.pack(fill="x")
         self.url_entry.bind("<KeyRelease>", self._on_url_change)
 
-        self.detect_label = ctk.CTkLabel(
-            url_frame, text="", font=_font(12), width=100, anchor="e"
-        )
-        self.detect_label.pack(side="right")
-
-        sep = ctk.CTkFrame(self, height=1, fg_color="#333355")
-        sep.pack(padx=24, pady=14, fill="x")
+        ctk.CTkLabel(
+            self,
+            text="Twitch: twitch.tv/channel_name    YouTube: youtube.com/@channel_name",
+            font=_font(12),
+            text_color="#aaaabb",
+            anchor="w",
+            wraplength=620,
+        ).pack(padx=24, pady=(6, 0), fill="x")
 
         ctk.CTkLabel(
-            self, text="或手動輸入", font=_font(12), text_color="#888899", anchor="w"
+            self,
+            text="YouTube 請貼頻道首頁；不支援 /live、影片觀看頁或 Shorts 連結。",
+            font=_font(12, "bold"),
+            text_color="#ffb74d",
+            anchor="w",
+            wraplength=620,
+        ).pack(padx=24, pady=(4, 0), fill="x")
+
+        self.message_label = ctk.CTkLabel(
+            self, text="", font=_font(12), height=24, anchor="w", wraplength=620
+        )
+        self.message_label.pack(padx=24, pady=(4, 0), fill="x")
+
+        sep = ctk.CTkFrame(self, height=1, fg_color="#333355")
+        sep.pack(padx=24, pady=12, fill="x")
+
+        ctk.CTkLabel(
+            self,
+            text="或手動輸入頻道名稱",
+            font=_font(12),
+            text_color="#888899",
+            anchor="w",
         ).pack(padx=24, fill="x")
 
         manual_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -134,14 +179,23 @@ class AddChannelDialog(ctk.CTkToplevel):
         )
         self.name_entry = ctk.CTkEntry(
             manual_frame,
-            placeholder_text="例如 kaicenat",
+            placeholder_text="例如 kaicenat、channel_name 或 UC 開頭頻道 ID",
             font=_font(13),
             height=34,
         )
         self.name_entry.grid(row=1, column=1, pady=(8, 0), sticky="ew")
 
+        ctk.CTkLabel(
+            self,
+            text="手動輸入 YouTube 時，請填 @handle 後面的名稱，或 UC 開頭的頻道 ID。",
+            font=_font(12),
+            text_color="#888899",
+            anchor="w",
+            wraplength=620,
+        ).pack(padx=24, pady=(6, 0), fill="x")
+
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(padx=24, pady=18, fill="x")
+        btn_frame.pack(padx=24, pady=(14, 18), fill="x")
 
         ctk.CTkButton(
             btn_frame,
@@ -174,7 +228,7 @@ class AddChannelDialog(ctk.CTkToplevel):
         text = self.url_entry.get()
         parsed = parse_url(text)
         if parsed:
-            self.detect_label.configure(
+            self.message_label.configure(
                 text=f"{parsed.platform.upper()} : {parsed.name}",
                 text_color=_CLR_LIVE,
             )
@@ -182,18 +236,40 @@ class AddChannelDialog(ctk.CTkToplevel):
             self.name_entry.delete(0, "end")
             self.name_entry.insert(0, parsed.name)
         else:
-            self.detect_label.configure(text="", text_color="gray")
+            if text.strip():
+                self.message_label.configure(
+                    text="無法辨識。YouTube 請貼頻道首頁，不要貼 /live 或影片連結。",
+                    text_color="#ffb74d",
+                )
+            else:
+                self.message_label.configure(text="", text_color="gray")
 
     def _on_add(self) -> None:
         url_text = self.url_entry.get().strip()
         parsed = parse_url(url_text)
         if parsed:
             self.result = {"platform": parsed.platform, "name": parsed.name}
+            self.destroy()
+            return
+
+        if url_text:
+            self.message_label.configure(
+                text="網址格式不支援。YouTube 請貼頻道首頁，例如 https://www.youtube.com/@channel_name。",
+                text_color="#ffb74d",
+            )
+            self.url_entry.focus_set()
+            return
+
+        name = self.name_entry.get().strip()
+        if name:
+            self.result = {"platform": self.platform_var.get(), "name": name}
+            self.destroy()
         else:
-            name = self.name_entry.get().strip()
-            if name:
-                self.result = {"platform": self.platform_var.get(), "name": name}
-        self.destroy()
+            self.message_label.configure(
+                text="請貼上頻道首頁網址，或手動輸入頻道名稱。",
+                text_color="#ffb74d",
+            )
+            self.name_entry.focus_set()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -290,8 +366,8 @@ class App(ctk.CTk):
         self._truly_quitting = False
 
         self.title("哈嘍主播  Hello Streamer")
-        self.geometry(self.config.get("window_geometry") or "780x560")
-        self.minsize(660, 440)
+        self.minsize(_MIN_WINDOW_WIDTH, _MIN_WINDOW_HEIGHT)
+        self.geometry(_clamped_window_geometry(self.config.get("window_geometry")))
         self.configure(fg_color=_CLR_BG_DARK)
         self.protocol("WM_DELETE_WINDOW", self._on_close_button)
 
@@ -418,11 +494,15 @@ class App(ctk.CTk):
         )
 
         # ── Bottom control bar ──
-        ctrl = ctk.CTkFrame(outer, corner_radius=12, fg_color=_CLR_CARD, height=60)
+        ctrl = ctk.CTkFrame(outer, corner_radius=12, fg_color=_CLR_CARD)
         ctrl.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
-        left = ctk.CTkFrame(ctrl, fg_color="transparent")
-        left.pack(side="left", padx=14, pady=10)
+        toolbar = ctk.CTkFrame(ctrl, fg_color="transparent")
+        toolbar.pack(fill="x", padx=14, pady=10)
+        toolbar.grid_columnconfigure(2, weight=1)
+
+        left = ctk.CTkFrame(toolbar, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="w")
 
         self.start_btn = ctk.CTkButton(
             left,
@@ -452,55 +532,77 @@ class App(ctk.CTk):
         self.stop_btn.pack(side="left")
 
         self.status_text = ctk.CTkLabel(
-            left,
+            toolbar,
             text="尚未啟動",
             font=_font(13),
             text_color=_CLR_OFFLINE,
+            width=86,
+            anchor="w",
         )
-        self.status_text.pack(side="left", padx=14)
+        self.status_text.grid(row=0, column=1, sticky="w", padx=(14, 8))
 
-        right = ctk.CTkFrame(ctrl, fg_color="transparent")
-        right.pack(side="right", padx=14, pady=10)
+        interval_group = ctk.CTkFrame(toolbar, fg_color="transparent")
+        interval_group.grid(row=0, column=3, sticky="w", padx=(12, 0))
+        ctk.CTkLabel(
+            interval_group,
+            text="檢查間隔",
+            font=_font(11),
+            text_color="#9aa0b4",
+            anchor="w",
+        ).pack(anchor="w")
 
-        self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
-        self.startup_switch = ctk.CTkSwitch(
-            right,
-            text="開機啟動",
-            variable=self.startup_var,
-            command=self._on_startup_toggle,
-            font=_font(12),
+        self.interval_var = ctk.StringVar(
+            value=str(self.config.get("check_interval", 60))
         )
-        self.startup_switch.pack(side="right", padx=(12, 0))
+        interval_line = ctk.CTkFrame(interval_group, fg_color="transparent")
+        interval_line.pack(anchor="w", pady=(2, 0))
+        self.interval_entry = ctk.CTkEntry(
+            interval_line,
+            width=78,
+            height=32,
+            textvariable=self.interval_var,
+            font=_font(14, "bold"),
+            justify="center",
+        )
+        self.interval_entry.pack(side="left")
+
+        ctk.CTkLabel(
+            interval_line, text="秒", font=_font(12), text_color="#d8d8e5"
+        ).pack(side="left", padx=(6, 0))
+
+        action_group = ctk.CTkFrame(toolbar, fg_color="transparent")
+        action_group.grid(row=0, column=4, sticky="w", padx=(18, 0))
+        ctk.CTkLabel(
+            action_group,
+            text="觸發行為",
+            font=_font(11),
+            text_color="#9aa0b4",
+            anchor="w",
+        ).pack(anchor="w")
 
         current_action = self.config.get("action", "open_and_stop")
         display = ACTION_LABELS.get(current_action, ACTION_DISPLAY[0])
         self.action_var = ctk.StringVar(value=display)
         self.action_menu = ctk.CTkOptionMenu(
-            right,
+            action_group,
             variable=self.action_var,
             values=ACTION_DISPLAY,
-            width=190,
+            width=218,
             height=32,
             font=_font(12),
             dropdown_font=_font(12),
         )
-        self.action_menu.pack(side="right", padx=(12, 0))
+        self.action_menu.pack(anchor="w", pady=(2, 0))
 
-        ctk.CTkLabel(right, text="觸發行為", font=_font(12), text_color="#888899").pack(
-            side="right"
+        self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
+        self.startup_switch = ctk.CTkSwitch(
+            toolbar,
+            text="開機啟動",
+            variable=self.startup_var,
+            command=self._on_startup_toggle,
+            font=_font(12),
         )
-
-        self.interval_var = ctk.StringVar(
-            value=str(self.config.get("check_interval", 60))
-        )
-        self.interval_entry = ctk.CTkEntry(
-            right, width=50, height=32, textvariable=self.interval_var, font=_font(13)
-        )
-        self.interval_entry.pack(side="right", padx=(4, 12))
-
-        ctk.CTkLabel(right, text="間隔(秒)", font=_font(12), text_color="#888899").pack(
-            side="right"
-        )
+        self.startup_switch.grid(row=0, column=5, sticky="e", padx=(18, 0))
 
     # ------------------------------------------------------------------
     # Channel list operations

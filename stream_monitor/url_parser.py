@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 _TWITCH_PATTERNS = [
-    re.compile(r"(?:https?://)?(?:www\.)?twitch\.tv/([A-Za-z0-9_]+)"),
+    re.compile(r"^/([A-Za-z0-9_]+)/?$"),
 ]
 
 _YOUTUBE_PATTERNS = [
-    re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/@([A-Za-z0-9_.\-]+)"),
-    re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/channel/([A-Za-z0-9_\-]+)"),
-    re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/c/([A-Za-z0-9_.\-]+)"),
-    re.compile(r"(?:https?://)?(?:www\.)?youtube\.com/user/([A-Za-z0-9_.\-]+)"),
+    re.compile(r"^/@([A-Za-z0-9_.\-]+)/?$"),
+    re.compile(r"^/channel/([A-Za-z0-9_\-]+)/?$"),
+    re.compile(r"^/c/([A-Za-z0-9_.\-]+)/?$"),
+    re.compile(r"^/user/([A-Za-z0-9_.\-]+)/?$"),
 ]
 
 
@@ -29,17 +30,26 @@ def parse_url(text: str) -> ParsedChannel | None:
     Returns None if the text doesn't match any known pattern.
     """
     text = text.strip()
+    if not text:
+        return None
 
-    for pat in _TWITCH_PATTERNS:
-        m = pat.search(text)
-        if m:
-            name = m.group(1).lower()
-            if name not in {"directory", "downloads", "jobs", "p", "settings"}:
-                return ParsedChannel(platform="twitch", name=name)
+    parsed = urlparse(text if "://" in text else f"https://{text}")
+    host = parsed.netloc.lower()
+    path = parsed.path
 
-    for pat in _YOUTUBE_PATTERNS:
-        m = pat.search(text)
-        if m:
-            return ParsedChannel(platform="youtube", name=m.group(1))
+    if host in {"twitch.tv", "www.twitch.tv"}:
+        for pat in _TWITCH_PATTERNS:
+            m = pat.match(path)
+            if m:
+                name = m.group(1).lower()
+                if name not in {"directory", "downloads", "jobs", "p", "settings"}:
+                    return ParsedChannel(platform="twitch", name=name)
+        return None
+
+    if host in {"youtube.com", "www.youtube.com"}:
+        for pat in _YOUTUBE_PATTERNS:
+            m = pat.match(path)
+            if m:
+                return ParsedChannel(platform="youtube", name=m.group(1))
 
     return None
