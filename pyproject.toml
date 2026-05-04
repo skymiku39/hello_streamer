@@ -1,0 +1,24 @@
+[project]
+name = "stream-monitor"
+version = "0.1.0"
+description = "開播監聽器 — 監控 Twitch/YouTube 實況主開播狀態的桌面應用程式"
+requires-python = ">=3.11"
+dependencies = [
+    "customtkinter>=5.2",
+    "requests>=2.31",
+    "Pillow>=10.0",
+    "winotify>=1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.0",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+stream-monitor = "stream_monitor.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
