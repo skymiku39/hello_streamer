@@ -141,13 +141,7 @@ class YouTubeFetcher(StreamFetcher):
 
         html = self._fetch_page(channel_name)
         if html is None:
-            return StreamInfo(
-                channel=channel_name,
-                platform="youtube",
-                is_live=False,
-                title="",
-                url=url,
-            )
+            return None
 
         is_live, title, display_name = self._parse_live_status(html)
         return StreamInfo(

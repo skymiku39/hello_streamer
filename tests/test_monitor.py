@@ -29,8 +29,14 @@ def test_monitor_triggers_only_when_channel_transitions_to_live(monkeypatch) -> 
     )
     entry = ChannelEntry(platform="twitch", name="hello")
 
+    went_live: list[tuple[ChannelEntry, object]] = []
     for _ in range(5):
-        monitor._check_channel(entry)
+        result = monitor._check_channel(entry)
+        if result is not None:
+            went_live.append(result)
+
+    for e, info in went_live:
+        events.append((e.key, info.title))
 
     assert events == [
         ("twitch:hello", "Live now"),
@@ -40,6 +46,22 @@ def test_monitor_triggers_only_when_channel_transitions_to_live(monkeypatch) -> 
     assert monitor.snapshot_display_names() == {"twitch:hello": "Hello Channel"}
 
 
+def test_monitor_skips_disabled_channels(monkeypatch) -> None:
+    fetcher = FakeFetcher([True])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _platform: fetcher)
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hello", "enabled": False}],
+    )
+    entry = ChannelEntry(platform="twitch", name="hello", enabled=False)
+
+    result = monitor._check_channel(entry)
+    assert result is not None
+
+    with monitor._lock:
+        entries = list(monitor._entries)
+    assert entries[0].enabled is False
+
+
 def test_update_channels_replaces_entries() -> None:
     monitor = Monitor(channels=[{"platform": "twitch", "name": "old"}])
 
@@ -47,3 +69,21 @@ def test_update_channels_replaces_entries() -> None:
 
     with monitor._lock:
         assert [entry.key for entry in monitor._entries] == ["youtube:new"]
+
+
+def test_update_channels_preserves_enabled_flag() -> None:
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "a", "enabled": False}]
+    )
+
+    with monitor._lock:
+        assert monitor._entries[0].enabled is False
+
+    monitor.update_channels([
+        {"platform": "twitch", "name": "a", "enabled": True},
+        {"platform": "twitch", "name": "b"},
+    ])
+
+    with monitor._lock:
+        assert monitor._entries[0].enabled is True
+        assert monitor._entries[1].enabled is True

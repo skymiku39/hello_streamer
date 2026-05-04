@@ -43,10 +43,26 @@ def test_parse_youtube_url_variants() -> None:
     )
 
 
+def test_parse_twitch_url_with_subpaths() -> None:
+    assert parse_url("https://www.twitch.tv/kaicenat/videos") == ParsedChannel(
+        platform="twitch",
+        name="kaicenat",
+    )
+    assert parse_url("https://www.twitch.tv/kaicenat/clips") == ParsedChannel(
+        platform="twitch",
+        name="kaicenat",
+    )
+    assert parse_url("https://www.twitch.tv/kaicenat/about") == ParsedChannel(
+        platform="twitch",
+        name="kaicenat",
+    )
+
+
 def test_parse_rejects_invalid_urls_and_twitch_reserved_paths() -> None:
     assert parse_url("not a stream URL") is None
     assert parse_url("https://www.twitch.tv/directory") is None
     assert parse_url("https://www.twitch.tv/settings") is None
+    assert parse_url("https://www.twitch.tv/directory/game/Just%20Chatting") is None
 
 
 def test_parse_rejects_youtube_live_and_video_pages() -> None:

@@ -70,6 +70,28 @@ def test_load_non_numeric_interval_uses_default(tmp_path, monkeypatch) -> None:
     assert config_manager.load()["check_interval"] == 60
 
 
+def test_load_preserves_enabled_field(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "channels": [
+                    {"platform": "twitch", "name": "a", "enabled": False},
+                    {"platform": "twitch", "name": "b", "enabled": True},
+                    {"platform": "twitch", "name": "c"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    config = config_manager.load()
+    assert config["channels"][0]["enabled"] is False
+    assert config["channels"][1]["enabled"] is True
+    assert "enabled" not in config["channels"][2]
+
+
 def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
     path = tmp_path / "nested" / "config.json"
     _use_config_path(monkeypatch, path)

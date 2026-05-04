@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 class ChannelEntry:
     platform: str
     name: str
+    enabled: bool = True
 
     @property
     def key(self) -> str:
@@ -37,7 +38,11 @@ class Monitor:
         on_poll_complete: Callable[[], None] | None = None,
     ) -> None:
         self._entries = [
-            ChannelEntry(platform=ch["platform"], name=ch["name"])
+            ChannelEntry(
+                platform=ch["platform"],
+                name=ch["name"],
+                enabled=ch.get("enabled", True),
+            )
             for ch in channels
         ]
         self._interval = max(10, interval)
@@ -73,7 +78,11 @@ class Monitor:
     def update_channels(self, channels: list[dict[str, str]]) -> None:
         with self._lock:
             self._entries = [
-                ChannelEntry(platform=ch["platform"], name=ch["name"])
+                ChannelEntry(
+                    platform=ch["platform"],
+                    name=ch["name"],
+                    enabled=ch.get("enabled", True),
+                )
                 for ch in channels
             ]
             keys = {entry.key for entry in self._entries}
@@ -114,10 +123,24 @@ class Monitor:
             with self._lock:
                 entries = list(self._entries)
 
+            went_live_batch: list[tuple[ChannelEntry, StreamInfo]] = []
             for entry in entries:
                 if self._stop_event.is_set():
                     break
-                self._check_channel(entry)
+                if not entry.enabled:
+                    continue
+                result = self._check_channel(entry)
+                if result is not None:
+                    went_live_batch.append(result)
+
+            for entry, info in went_live_batch:
+                if self._on_status_change:
+                    try:
+                        self._on_status_change(entry, info)
+                    except Exception:
+                        logger.exception(
+                            "on_status_change callback error for %s", entry.key
+                        )
 
             if self._on_poll_complete:
                 try:
@@ -127,16 +150,18 @@ class Monitor:
 
             self._stop_event.wait(self._interval)
 
-    def _check_channel(self, entry: ChannelEntry) -> None:
+    def _check_channel(
+        self, entry: ChannelEntry
+    ) -> tuple[ChannelEntry, StreamInfo] | None:
         try:
             fetcher = get_fetcher(entry.platform)
             info = fetcher.get_stream_info(entry.name)
         except Exception:
             logger.exception("Error fetching %s", entry.key)
-            return
+            return None
 
         if info is None:
-            return
+            return None
 
         with self._lock:
             prev = self._last_status.get(entry.key)
@@ -145,9 +170,4 @@ class Monitor:
                 self._display_names[entry.key] = info.display_name
 
         went_live = info.is_live and prev is not True
-
-        if went_live and self._on_status_change:
-            try:
-                self._on_status_change(entry, info)
-            except Exception:
-                logger.exception("on_status_change callback error for %s", entry.key)
+        return (entry, info) if went_live else None

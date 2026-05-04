@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 _TWITCH_PATTERNS = [
-    re.compile(r"^/([A-Za-z0-9_]+)/?$"),
+    re.compile(r"^/([A-Za-z0-9_]+)(?:/.*)?$"),
 ]
 
 _YOUTUBE_PATTERNS = [

@@ -7,11 +7,14 @@ import platform
 import queue
 import re
 import sys
+import threading
+import webbrowser
 from typing import Any
 
 import customtkinter as ctk
 
 from stream_monitor import config_manager
+from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelEntry, Monitor
 from stream_monitor.notifier import execute_action
@@ -64,6 +67,10 @@ _CLR_STOP_HOVER = "#8e0000"
 _CLR_ADD = "#0f3460"
 _CLR_ADD_HOVER = "#1a4a7a"
 _CLR_DELETE_HOVER = "#c62828"
+_CLR_CARD_DISABLED = "#0e1528"
+_CLR_TEXT_DISABLED = "#3a3a4a"
+_CLR_LINK = "#2196F3"
+_CLR_LINK_HOVER = "#1769aa"
 
 _MIN_WINDOW_WIDTH = 860
 _MIN_WINDOW_HEIGHT = 560
@@ -248,29 +255,71 @@ class AddChannelDialog(ctk.CTkToplevel):
     def _on_add(self) -> None:
         url_text = self.url_entry.get().strip()
         parsed = parse_url(url_text)
-        if parsed:
-            self.result = {"platform": parsed.platform, "name": parsed.name}
-            self.destroy()
-            return
 
-        if url_text:
+        if parsed:
+            plat, name = parsed.platform, parsed.name
+        elif url_text:
             self.message_label.configure(
                 text="網址格式不支援。YouTube 請貼含 @handle 的連結，例如 https://www.youtube.com/@channel_name/live。",
                 text_color="#ffb74d",
             )
             self.url_entry.focus_set()
             return
-
-        name = self.name_entry.get().strip()
-        if name:
-            self.result = {"platform": self.platform_var.get(), "name": name}
-            self.destroy()
         else:
+            name = self.name_entry.get().strip()
+            plat = self.platform_var.get()
+            if not name:
+                self.message_label.configure(
+                    text="請貼上頻道連結，或手動輸入頻道名稱。",
+                    text_color="#ffb74d",
+                )
+                self.name_entry.focus_set()
+                return
+
+        self.message_label.configure(text="驗證中…", text_color="#64b5f6")
+        self._set_inputs_enabled(False)
+        self._pending_platform = plat
+        self._pending_name = name
+
+        threading.Thread(
+            target=self._validate_channel, args=(plat, name), daemon=True
+        ).start()
+
+    def _set_inputs_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        self.url_entry.configure(state=state)
+        self.name_entry.configure(state=state)
+        self.platform_menu.configure(state=state)
+        for w in self.winfo_children():
+            if isinstance(w, ctk.CTkFrame):
+                for child in w.winfo_children():
+                    if isinstance(child, ctk.CTkButton):
+                        child.configure(state=state)
+
+    def _validate_channel(self, plat: str, name: str) -> None:
+        try:
+            fetcher = get_fetcher(plat)
+            info = fetcher.get_stream_info(name)
+        except Exception:
+            info = None
+        self.after(0, self._on_validate_done, info)
+
+    def _on_validate_done(self, info: StreamInfo | None) -> None:
+        plat = self._pending_platform
+        name = self._pending_name
+
+        if info is None:
             self.message_label.configure(
-                text="請貼上頻道連結，或手動輸入頻道名稱。",
-                text_color="#ffb74d",
+                text=f"找不到此帳號：{plat.upper()} / {name}。請確認名稱是否正確。",
+                text_color="#ef5350",
             )
-            self.name_entry.focus_set()
+            self._set_inputs_enabled(True)
+            return
+
+        self.result = {"platform": plat, "name": name}
+        if info.display_name:
+            self.result["display_name"] = info.display_name
+        self.destroy()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -286,11 +335,14 @@ class ChannelRow(ctk.CTkFrame):
         on_delete: callable,
         on_move_up: callable,
         on_move_down: callable,
+        on_toggle_enabled: callable,
     ) -> None:
         super().__init__(parent, corner_radius=10, fg_color=_CLR_CARD, height=58)
         self.channel = channel
+        self._on_toggle_enabled = on_toggle_enabled
 
         color = _CLR_TWITCH if channel["platform"] == "twitch" else _CLR_YOUTUBE
+        self._platform_color = color
 
         self.platform_label = ctk.CTkLabel(
             self,
@@ -376,7 +428,82 @@ class ChannelRow(ctk.CTkFrame):
         )
         self.up_btn.pack(side="right", padx=(0, 4), pady=8)
 
+        self.toggle_btn = ctk.CTkButton(
+            self,
+            text="⏸",
+            width=30,
+            height=30,
+            corner_radius=6,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#3c4566",
+            hover_color="#243052",
+            font=_font(13, "bold"),
+            command=self._on_toggle_click,
+        )
+        self.toggle_btn.pack(side="right", padx=(0, 4), pady=8)
+
+        self.link_btn = ctk.CTkButton(
+            self,
+            text="🔗",
+            width=30,
+            height=30,
+            corner_radius=6,
+            fg_color="transparent",
+            hover_color=_CLR_LINK_HOVER,
+            font=_font(12),
+            command=self._open_channel_page,
+        )
+        self.link_btn.pack(side="right", padx=(0, 4), pady=8)
+
+        self._apply_enabled_visual()
+
+    def _channel_url(self) -> str:
+        plat = self.channel["platform"]
+        name = self.channel["name"]
+        if plat == "twitch":
+            return f"https://www.twitch.tv/{name}"
+        if name.startswith("UC"):
+            return f"https://www.youtube.com/channel/{name}"
+        return f"https://www.youtube.com/@{name}"
+
+    def _open_channel_page(self) -> None:
+        webbrowser.open(self._channel_url())
+
+    def _on_toggle_click(self) -> None:
+        enabled = not self.channel.get("enabled", True)
+        self.channel["enabled"] = enabled
+        self._apply_enabled_visual()
+        self._on_toggle_enabled()
+
+    def _apply_enabled_visual(self) -> None:
+        enabled = self.channel.get("enabled", True)
+        if enabled:
+            self.configure(fg_color=_CLR_CARD)
+            self.platform_label.configure(
+                fg_color=self._platform_color, text_color="white"
+            )
+            self.name_label.configure(text_color=("gray10", "gray90"))
+            self.id_label.configure(text_color="#9aa0b4")
+            self.status_label.configure(
+                text="  --  ", text_color="#666677", fg_color="transparent"
+            )
+            self.toggle_btn.configure(text="⏸")
+        else:
+            self.configure(fg_color=_CLR_CARD_DISABLED)
+            self.platform_label.configure(
+                fg_color="#2a2a3a", text_color=_CLR_TEXT_DISABLED
+            )
+            self.name_label.configure(text_color=_CLR_TEXT_DISABLED)
+            self.id_label.configure(text_color=_CLR_TEXT_DISABLED)
+            self.status_label.configure(
+                text=" 已暫停 ", text_color=_CLR_TEXT_DISABLED, fg_color="transparent"
+            )
+            self.toggle_btn.configure(text="▶")
+
     def set_status(self, is_live: bool | None) -> None:
+        if not self.channel.get("enabled", True):
+            return
         if is_live is None:
             self.status_label.configure(
                 text="  --  ", text_color="#666677", fg_color="transparent"
@@ -701,12 +828,16 @@ class App(ctk.CTk):
         def on_move_down(ch=channel):
             self._move_channel(ch, 1)
 
+        def on_toggle_enabled(ch=channel):
+            self._on_channel_toggle_enabled(ch)
+
         row = ChannelRow(
             self.scroll_frame,
             channel,
             on_delete=on_delete,
             on_move_up=on_move_up,
             on_move_down=on_move_down,
+            on_toggle_enabled=on_toggle_enabled,
         )
         row.pack(fill="x", pady=3)
         self._channel_rows.append(row)
@@ -758,6 +889,12 @@ class App(ctk.CTk):
         last_index = len(self._channel_rows) - 1
         for index, row in enumerate(self._channel_rows):
             row.set_move_state(can_move_up=index > 0, can_move_down=index < last_index)
+
+    def _on_channel_toggle_enabled(self, channel: dict[str, str]) -> None:
+        self._save_config()
+        channels = self.config.get("channels", [])
+        if self._monitor and self._monitor.is_running:
+            self._monitor.update_channels(channels)
 
     def _apply_display_names(self, display_names: dict[str, str]) -> None:
         changed = False
@@ -835,33 +972,51 @@ class App(ctk.CTk):
             self._event_queue.put(("status_update", (statuses, display_names)))
 
     def _poll_events(self) -> None:
+        live_events: list[tuple[ChannelEntry, StreamInfo]] = []
+        latest_status_update: tuple[dict, dict] | None = None
+
         try:
             while True:
                 kind, data = self._event_queue.get_nowait()
                 if kind == "live":
-                    entry, info = data
-                    if info.display_name:
-                        self._apply_display_names({entry.key: info.display_name})
-
-                    action = self.config.get("action", "open_and_stop")
-
-                    if action == "open_and_keep":
-                        if self._monitor and entry.key in self._monitor.triggered:
-                            continue
-                        if self._monitor:
-                            self._monitor.mark_triggered(entry.key)
-
-                    stop_fn = self._on_stop if action == "open_and_stop" else None
-                    execute_action(action, info, stop_fn=stop_fn, exit_fn=self._quit_app)
-
+                    live_events.append(data)
                 elif kind == "status_update":
-                    statuses, display_names = data
-                    self._apply_display_names(display_names)
-                    for row in self._channel_rows:
-                        row.set_status(statuses.get(row.key))
-
+                    latest_status_update = data
         except queue.Empty:
             pass
+
+        if latest_status_update is not None:
+            statuses, display_names = latest_status_update
+            self._apply_display_names(display_names)
+            for row in self._channel_rows:
+                row.set_status(statuses.get(row.key))
+
+        action = self.config.get("action", "open_and_stop")
+        should_stop = False
+        should_exit = False
+
+        for entry, info in live_events:
+            if info.display_name:
+                self._apply_display_names({entry.key: info.display_name})
+
+            if action == "open_and_keep":
+                if self._monitor and entry.key in self._monitor.triggered:
+                    continue
+                if self._monitor:
+                    self._monitor.mark_triggered(entry.key)
+
+            noop = lambda: None  # noqa: E731
+            execute_action(action, info, stop_fn=noop, exit_fn=noop)
+
+            if action == "open_and_stop":
+                should_stop = True
+            elif action == "open_and_exit":
+                should_exit = True
+
+        if should_stop:
+            self._on_stop()
+        elif should_exit:
+            self._quit_app()
 
         self.after(500, self._poll_events)
 

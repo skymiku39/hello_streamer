@@ -57,6 +57,9 @@ def _normalize_channels(value: Any) -> list[dict[str, str]]:
             display_name = item.get("display_name")
             if isinstance(display_name, str) and display_name.strip():
                 normalized["display_name"] = display_name.strip()
+            enabled = item.get("enabled")
+            if isinstance(enabled, bool):
+                normalized["enabled"] = enabled
             channels.append(normalized)
 
     return channels
