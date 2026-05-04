@@ -18,12 +18,13 @@ def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
     try:
         from winotify import Notification
 
-        body = info.title or f"{info.channel} is now live on {info.platform}"
+        channel_name = info.display_name or info.channel
+        body = info.title or f"{channel_name} is now live on {info.platform}"
         platform_display = info.platform.upper()
 
         toast = Notification(
             app_id="哈嘍主播 Hello Streamer",
-            title=f"🔴 {info.channel} 開播了！ [{platform_display}]",
+            title=f"🔴 {channel_name} 開播了！ [{platform_display}]",
             msg=body,
             duration="long",
             icon="",

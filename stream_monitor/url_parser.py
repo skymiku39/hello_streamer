@@ -11,11 +11,11 @@ _TWITCH_PATTERNS = [
 ]
 
 _YOUTUBE_PATTERNS = [
-    re.compile(r"^/@([A-Za-z0-9_.\-]+)/?$"),
     re.compile(r"^/channel/([A-Za-z0-9_\-]+)/?$"),
     re.compile(r"^/c/([A-Za-z0-9_.\-]+)/?$"),
     re.compile(r"^/user/([A-Za-z0-9_.\-]+)/?$"),
 ]
+_YOUTUBE_HANDLE_RE = re.compile(r"/@([A-Za-z0-9_.\-]+)(?:/|$)")
 
 
 @dataclass
@@ -47,6 +47,10 @@ def parse_url(text: str) -> ParsedChannel | None:
         return None
 
     if host in {"youtube.com", "www.youtube.com"}:
+        handle_match = _YOUTUBE_HANDLE_RE.search(path)
+        if handle_match:
+            return ParsedChannel(platform="youtube", name=handle_match.group(1))
+
         for pat in _YOUTUBE_PATTERNS:
             m = pat.match(path)
             if m:

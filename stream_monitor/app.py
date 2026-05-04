@@ -104,7 +104,7 @@ class AddChannelDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             self,
-            text="貼上頻道首頁網址（自動偵測平台）",
+            text="貼上頻道連結（自動偵測平台）",
             font=_font(13, "bold"),
             anchor="w",
         ).pack(padx=24, pady=(20, 4), fill="x")
@@ -114,7 +114,7 @@ class AddChannelDialog(ctk.CTkToplevel):
 
         self.url_entry = ctk.CTkEntry(
             url_frame,
-            placeholder_text="貼上頻道首頁網址",
+            placeholder_text="貼上頻道連結",
             font=_font(13),
             height=38,
         )
@@ -132,7 +132,7 @@ class AddChannelDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             self,
-            text="YouTube 請貼頻道首頁；不支援 /live、影片觀看頁或 Shorts 連結。",
+            text="YouTube 連結只要包含 @handle 就能辨識；不含 @handle 的觀看頁、Shorts 或 /live 不支援。",
             font=_font(12, "bold"),
             text_color="#ffb74d",
             anchor="w",
@@ -239,7 +239,7 @@ class AddChannelDialog(ctk.CTkToplevel):
         else:
             if text.strip():
                 self.message_label.configure(
-                    text="無法辨識。YouTube 請貼頻道首頁，不要貼 /live 或影片連結。",
+                    text="無法辨識。YouTube 連結需包含 @handle，或手動輸入 @ 後面的名稱。",
                     text_color="#ffb74d",
                 )
             else:
@@ -255,7 +255,7 @@ class AddChannelDialog(ctk.CTkToplevel):
 
         if url_text:
             self.message_label.configure(
-                text="網址格式不支援。YouTube 請貼頻道首頁，例如 https://www.youtube.com/@channel_name。",
+                text="網址格式不支援。YouTube 請貼含 @handle 的連結，例如 https://www.youtube.com/@channel_name/live。",
                 text_color="#ffb74d",
             )
             self.url_entry.focus_set()
@@ -267,7 +267,7 @@ class AddChannelDialog(ctk.CTkToplevel):
             self.destroy()
         else:
             self.message_label.configure(
-                text="請貼上頻道首頁網址，或手動輸入頻道名稱。",
+                text="請貼上頻道連結，或手動輸入頻道名稱。",
                 text_color="#ffb74d",
             )
             self.name_entry.focus_set()
@@ -284,8 +284,10 @@ class ChannelRow(ctk.CTkFrame):
         parent: ctk.CTkFrame,
         channel: dict[str, str],
         on_delete: callable,
+        on_move_up: callable,
+        on_move_down: callable,
     ) -> None:
-        super().__init__(parent, corner_radius=10, fg_color=_CLR_CARD, height=50)
+        super().__init__(parent, corner_radius=10, fg_color=_CLR_CARD, height=58)
         self.channel = channel
 
         color = _CLR_TWITCH if channel["platform"] == "twitch" else _CLR_YOUTUBE
@@ -301,13 +303,26 @@ class ChannelRow(ctk.CTkFrame):
         )
         self.platform_label.pack(side="left", padx=(10, 6), pady=8)
 
+        name_frame = ctk.CTkFrame(self, fg_color="transparent")
+        name_frame.pack(side="left", padx=6, pady=7, fill="x", expand=True)
+
         self.name_label = ctk.CTkLabel(
-            self,
-            text=channel["name"],
+            name_frame,
+            text="",
             anchor="w",
-            font=_font(15),
+            font=_font(15, "bold"),
         )
-        self.name_label.pack(side="left", padx=6, pady=8, fill="x", expand=True)
+        self.name_label.pack(anchor="w", fill="x")
+
+        self.id_label = ctk.CTkLabel(
+            name_frame,
+            text="",
+            anchor="w",
+            font=_font(11),
+            text_color="#9aa0b4",
+        )
+        self.id_label.pack(anchor="w", fill="x", pady=(1, 0))
+        self._refresh_name_labels()
 
         self.status_label = ctk.CTkLabel(
             self,
@@ -331,6 +346,36 @@ class ChannelRow(ctk.CTkFrame):
         )
         self.delete_btn.pack(side="right", padx=(0, 10), pady=8)
 
+        self.down_btn = ctk.CTkButton(
+            self,
+            text="↓",
+            width=30,
+            height=30,
+            corner_radius=6,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#3c4566",
+            hover_color="#243052",
+            font=_font(13, "bold"),
+            command=on_move_down,
+        )
+        self.down_btn.pack(side="right", padx=(0, 4), pady=8)
+
+        self.up_btn = ctk.CTkButton(
+            self,
+            text="↑",
+            width=30,
+            height=30,
+            corner_radius=6,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#3c4566",
+            hover_color="#243052",
+            font=_font(13, "bold"),
+            command=on_move_up,
+        )
+        self.up_btn.pack(side="right", padx=(0, 4), pady=8)
+
     def set_status(self, is_live: bool | None) -> None:
         if is_live is None:
             self.status_label.configure(
@@ -348,6 +393,28 @@ class ChannelRow(ctk.CTkFrame):
     @property
     def key(self) -> str:
         return f"{self.channel['platform']}:{self.channel['name']}"
+
+    def set_display_name(self, display_name: str | None) -> bool:
+        display_name = (display_name or "").strip()
+        if not display_name or display_name == self.channel.get("display_name"):
+            return False
+        self.channel["display_name"] = display_name
+        self._refresh_name_labels()
+        return True
+
+    def _refresh_name_labels(self) -> None:
+        channel_id = self.channel["name"]
+        display_name = self.channel.get("display_name", "").strip()
+        if display_name and display_name != channel_id:
+            self.name_label.configure(text=display_name)
+            self.id_label.configure(text=f"ID: {channel_id}")
+        else:
+            self.name_label.configure(text=channel_id)
+            self.id_label.configure(text="")
+
+    def set_move_state(self, can_move_up: bool, can_move_down: bool) -> None:
+        self.up_btn.configure(state="normal" if can_move_up else "disabled")
+        self.down_btn.configure(state="normal" if can_move_down else "disabled")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -614,6 +681,7 @@ class App(ctk.CTk):
             self.empty_label.pack(pady=40)
         for ch in channels:
             self._add_channel_row(ch)
+        self._refresh_move_buttons()
 
     def _refresh_empty_hint(self) -> None:
         if self._channel_rows:
@@ -627,9 +695,22 @@ class App(ctk.CTk):
         def on_delete(ch=channel):
             self._remove_channel(ch)
 
-        row = ChannelRow(self.scroll_frame, channel, on_delete=on_delete)
+        def on_move_up(ch=channel):
+            self._move_channel(ch, -1)
+
+        def on_move_down(ch=channel):
+            self._move_channel(ch, 1)
+
+        row = ChannelRow(
+            self.scroll_frame,
+            channel,
+            on_delete=on_delete,
+            on_move_up=on_move_up,
+            on_move_down=on_move_down,
+        )
         row.pack(fill="x", pady=3)
         self._channel_rows.append(row)
+        self._refresh_move_buttons()
 
     def _remove_channel(self, channel: dict[str, str]) -> None:
         for row in self._channel_rows:
@@ -642,6 +723,48 @@ class App(ctk.CTk):
             channels.remove(channel)
         self._save_config()
         self._refresh_empty_hint()
+        self._refresh_move_buttons()
+        if self._monitor and self._monitor.is_running:
+            self._monitor.update_channels(channels)
+
+    def _move_channel(self, channel: dict[str, str], offset: int) -> None:
+        channels = self.config.get("channels", [])
+        try:
+            index = channels.index(channel)
+        except ValueError:
+            return
+
+        new_index = index + offset
+        if new_index < 0 or new_index >= len(channels):
+            return
+
+        channels[index], channels[new_index] = channels[new_index], channels[index]
+        self._channel_rows[index], self._channel_rows[new_index] = (
+            self._channel_rows[new_index],
+            self._channel_rows[index],
+        )
+
+        for row in self._channel_rows:
+            row.pack_forget()
+        for row in self._channel_rows:
+            row.pack(fill="x", pady=3)
+
+        self._save_config()
+        self._refresh_move_buttons()
+        if self._monitor and self._monitor.is_running:
+            self._monitor.update_channels(channels)
+
+    def _refresh_move_buttons(self) -> None:
+        last_index = len(self._channel_rows) - 1
+        for index, row in enumerate(self._channel_rows):
+            row.set_move_state(can_move_up=index > 0, can_move_down=index < last_index)
+
+    def _apply_display_names(self, display_names: dict[str, str]) -> None:
+        changed = False
+        for row in self._channel_rows:
+            changed = row.set_display_name(display_names.get(row.key)) or changed
+        if changed:
+            self._save_config()
 
     def _on_add_channel(self) -> None:
         dialog = AddChannelDialog(self)
@@ -708,7 +831,8 @@ class App(ctk.CTk):
     def _on_poll_done(self) -> None:
         if self._monitor:
             statuses = self._monitor.snapshot_statuses()
-            self._event_queue.put(("status_update", statuses))
+            display_names = self._monitor.snapshot_display_names()
+            self._event_queue.put(("status_update", (statuses, display_names)))
 
     def _poll_events(self) -> None:
         try:
@@ -716,6 +840,9 @@ class App(ctk.CTk):
                 kind, data = self._event_queue.get_nowait()
                 if kind == "live":
                     entry, info = data
+                    if info.display_name:
+                        self._apply_display_names({entry.key: info.display_name})
+
                     action = self.config.get("action", "open_and_stop")
 
                     if action == "open_and_keep":
@@ -728,7 +855,8 @@ class App(ctk.CTk):
                     execute_action(action, info, stop_fn=stop_fn, exit_fn=self._quit_app)
 
                 elif kind == "status_update":
-                    statuses: dict[str, bool] = data
+                    statuses, display_names = data
+                    self._apply_display_names(display_names)
                     for row in self._channel_rows:
                         row.set_status(statuses.get(row.key))
 

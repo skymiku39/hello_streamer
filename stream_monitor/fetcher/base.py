@@ -15,6 +15,7 @@ class StreamInfo:
     is_live: bool
     title: str = ""
     url: str = ""
+    display_name: str = ""
 
 
 class StreamFetcher(ABC):

@@ -13,6 +13,18 @@ def test_parse_youtube_url_variants() -> None:
         platform="youtube",
         name="hello.streamer",
     )
+    assert parse_url("https://www.youtube.com/@hello.streamer/live") == ParsedChannel(
+        platform="youtube",
+        name="hello.streamer",
+    )
+    assert parse_url("https://www.youtube.com/@hello.streamer/streams") == ParsedChannel(
+        platform="youtube",
+        name="hello.streamer",
+    )
+    assert parse_url("https://www.youtube.com/@hello.streamer/shorts/abc") == ParsedChannel(
+        platform="youtube",
+        name="hello.streamer",
+    )
     assert parse_url("www.youtube.com/@hello.streamer") == ParsedChannel(
         platform="youtube",
         name="hello.streamer",
@@ -38,7 +50,6 @@ def test_parse_rejects_invalid_urls_and_twitch_reserved_paths() -> None:
 
 
 def test_parse_rejects_youtube_live_and_video_pages() -> None:
-    assert parse_url("https://www.youtube.com/@hello.streamer/live") is None
     assert parse_url("https://www.youtube.com/watch?v=abc123") is None
     assert parse_url("https://www.youtube.com/shorts/abc123") is None
     assert parse_url("https://www.youtube.com/live/abc123") is None

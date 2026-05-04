@@ -28,7 +28,11 @@ def test_load_validates_config_values(tmp_path, monkeypatch) -> None:
         json.dumps(
             {
                 "channels": [
-                    {"platform": "Twitch", "name": " Some_Channel "},
+                    {
+                        "platform": "Twitch",
+                        "name": " Some_Channel ",
+                        "display_name": " Some Channel ",
+                    },
                     {"platform": "youtube", "name": ""},
                     {"platform": "mixer", "name": "someone"},
                     "bad",
@@ -45,7 +49,13 @@ def test_load_validates_config_values(tmp_path, monkeypatch) -> None:
 
     config = config_manager.load()
 
-    assert config["channels"] == [{"platform": "twitch", "name": "Some_Channel"}]
+    assert config["channels"] == [
+        {
+            "platform": "twitch",
+            "name": "Some_Channel",
+            "display_name": "Some Channel",
+        }
+    ]
     assert config["check_interval"] == config_manager.MIN_CHECK_INTERVAL
     assert config["action"] == "open_and_stop"
     assert config["run_on_startup"] is False
@@ -66,7 +76,13 @@ def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
 
     config_manager.save(
         {
-            "channels": [{"platform": "youtube", "name": "hello"}],
+            "channels": [
+                {
+                    "platform": "youtube",
+                    "name": "hello",
+                    "display_name": "Hello Channel",
+                }
+            ],
             "check_interval": 30,
             "action": "notify_only",
             "run_on_startup": True,
@@ -77,7 +93,13 @@ def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
     assert path.exists()
     assert not path.with_name(".config.json.tmp").exists()
     assert config_manager.load() == {
-        "channels": [{"platform": "youtube", "name": "hello"}],
+        "channels": [
+            {
+                "platform": "youtube",
+                "name": "hello",
+                "display_name": "Hello Channel",
+            }
+        ],
         "check_interval": 30,
         "action": "notify_only",
         "run_on_startup": True,

@@ -15,6 +15,7 @@ class FakeFetcher:
             is_live=is_live,
             title="Live now" if is_live else "",
             url=f"https://www.twitch.tv/{channel_name}",
+            display_name="Hello Channel",
         )
 
 
@@ -36,6 +37,7 @@ def test_monitor_triggers_only_when_channel_transitions_to_live(monkeypatch) -> 
         ("twitch:hello", "Live now"),
     ]
     assert monitor.snapshot_statuses() == {"twitch:hello": True}
+    assert monitor.snapshot_display_names() == {"twitch:hello": "Hello Channel"}
 
 
 def test_update_channels_replaces_entries() -> None:

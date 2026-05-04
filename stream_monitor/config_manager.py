@@ -53,7 +53,11 @@ def _normalize_channels(value: Any) -> list[dict[str, str]]:
         platform = platform.lower().strip()
         name = name.strip()
         if platform in PLATFORM_KEYS and name:
-            channels.append({"platform": platform, "name": name})
+            normalized = {"platform": platform, "name": name}
+            display_name = item.get("display_name")
+            if isinstance(display_name, str) and display_name.strip():
+                normalized["display_name"] = display_name.strip()
+            channels.append(normalized)
 
     return channels
 

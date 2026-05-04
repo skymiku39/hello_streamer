@@ -40,6 +40,7 @@ _HEADERS = {
 _GQL_QUERY = """
 query StreamStatus($login: String!) {
   user(login: $login) {
+    displayName
     stream {
       title
       type
@@ -125,6 +126,7 @@ class TwitchFetcher(StreamFetcher):
                 is_live=is_live,
                 title=title,
                 url=f"https://www.twitch.tv/{channel_name}",
+                display_name=user.get("displayName", ""),
             )
         except (KeyError, TypeError) as exc:
             logger.warning("Failed to parse Twitch response for %s: %s", channel_name, exc)

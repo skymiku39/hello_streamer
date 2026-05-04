@@ -47,6 +47,7 @@ class Monitor:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_status: dict[str, bool] = {}
+        self._display_names: dict[str, str] = {}
         self._triggered: set[str] = set()
         self._lock = threading.Lock()
 
@@ -64,12 +65,25 @@ class Monitor:
         with self._lock:
             return dict(self._last_status)
 
+    def snapshot_display_names(self) -> dict[str, str]:
+        """Return a thread-safe snapshot of discovered channel display names."""
+        with self._lock:
+            return dict(self._display_names)
+
     def update_channels(self, channels: list[dict[str, str]]) -> None:
         with self._lock:
             self._entries = [
                 ChannelEntry(platform=ch["platform"], name=ch["name"])
                 for ch in channels
             ]
+            keys = {entry.key for entry in self._entries}
+            self._last_status = {
+                key: value for key, value in self._last_status.items() if key in keys
+            }
+            self._display_names = {
+                key: value for key, value in self._display_names.items() if key in keys
+            }
+            self._triggered = {key for key in self._triggered if key in keys}
 
     def update_interval(self, interval: int) -> None:
         self._interval = max(10, interval)
@@ -85,6 +99,7 @@ class Monitor:
         with self._lock:
             self._triggered.clear()
             self._last_status.clear()
+            self._display_names.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -126,6 +141,8 @@ class Monitor:
         with self._lock:
             prev = self._last_status.get(entry.key)
             self._last_status[entry.key] = info.is_live
+            if info.display_name:
+                self._display_names[entry.key] = info.display_name
 
         went_live = info.is_live and prev is not True
 

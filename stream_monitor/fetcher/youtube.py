@@ -36,12 +36,7 @@ _HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
-_PLAYER_RESPONSE_RE = re.compile(
-    r"var\s+ytInitialPlayerResponse\s*=\s*(\{.*?\})\s*;", re.DOTALL
-)
-_INITIAL_DATA_RE = re.compile(
-    r"var\s+ytInitialData\s*=\s*(\{.*?\})\s*;", re.DOTALL
-)
+_JSON_DECODER = json.JSONDecoder()
 
 _MAX_RETRIES = 2
 _RETRY_DELAY = 3
@@ -80,97 +75,62 @@ class YouTubeFetcher(StreamFetcher):
                 return None
         return None
 
-    def _parse_live_status(self, html: str) -> tuple[bool, str]:
-        """Return (is_live, title) from the raw HTML."""
-        # Strategy 1: ytInitialPlayerResponse
-        m = _PLAYER_RESPONSE_RE.search(html)
-        if m:
-            try:
-                player = json.loads(m.group(1))
-                video_details = player.get("videoDetails", {})
-                is_live = video_details.get("isLive", False) is True
-                title = video_details.get("title", "")
-                if is_live:
-                    return True, title
-            except (json.JSONDecodeError, KeyError):
-                pass
+    def _parse_live_status(self, html: str) -> tuple[bool, str, str]:
+        """Return (is_live, title, display_name) from the raw HTML."""
+        player = self._extract_json_assignment(html, "ytInitialPlayerResponse")
+        if not isinstance(player, dict):
+            return False, "", ""
 
-        # Strategy 2: simple text markers in ytInitialData
-        if '"isLive":true' in html or '"status":"LIVE"' in html:
-            title = self._extract_title_from_initial_data(html)
-            return True, title
+        video_details = player.get("videoDetails", {})
+        title = video_details.get("title", "") if isinstance(video_details, dict) else ""
+        display_name = (
+            video_details.get("author", "") if isinstance(video_details, dict) else ""
+        )
 
-        # Strategy 3: ytInitialData deep parse
-        m2 = _INITIAL_DATA_RE.search(html)
-        if m2:
-            try:
-                data = json.loads(m2.group(1))
-                title = self._walk_for_live(data)
-                if title is not None:
-                    return True, title
-            except (json.JSONDecodeError, KeyError):
-                pass
+        playability = player.get("playabilityStatus", {})
+        if isinstance(playability, dict):
+            status = playability.get("status")
+            if status in {"LIVE_STREAM_OFFLINE", "UNPLAYABLE"}:
+                return False, title, display_name
 
-        return False, ""
+        microformat = player.get("microformat", {})
+        renderer = {}
+        if isinstance(microformat, dict):
+            renderer = microformat.get("playerMicroformatRenderer", {}) or {}
+        if not display_name and isinstance(renderer, dict):
+            display_name = renderer.get("ownerChannelName", "")
+        live_details = {}
+        if isinstance(renderer, dict):
+            live_details = renderer.get("liveBroadcastDetails", {}) or {}
+        if isinstance(live_details, dict) and live_details.get("isLiveNow") is False:
+            return False, title, display_name
 
-    def _extract_title_from_initial_data(self, html: str) -> str:
-        m = _INITIAL_DATA_RE.search(html)
-        if not m:
-            return ""
-        try:
-            data = json.loads(m.group(1))
-            tabs = (
-                data.get("contents", {})
-                .get("twoColumnWatchNextResults", {})
-                .get("results", {})
-                .get("results", {})
-                .get("contents", [])
-            )
-            for item in tabs:
-                primary = item.get("videoPrimaryInfoRenderer", {})
-                title_runs = primary.get("title", {}).get("runs", [])
-                if title_runs:
-                    return title_runs[0].get("text", "")
-        except (json.JSONDecodeError, KeyError, TypeError):
-            pass
-        return ""
+        if isinstance(live_details, dict) and live_details.get("isLiveNow") is True:
+            return True, title, display_name
 
-    def _walk_for_live(self, obj: dict | list, depth: int = 0) -> str | None:
-        """Recursively look for live badges in ytInitialData."""
-        if depth > 12:
+        if isinstance(video_details, dict) and video_details.get("isLive") is True:
+            return True, title, display_name
+
+        return False, title, display_name
+
+    def _extract_json_assignment(self, html: str, var_name: str) -> object | None:
+        """Extract a JSON object assigned to a JavaScript variable."""
+        pattern = re.compile(rf"(?:var\s+)?{re.escape(var_name)}\s*=\s*", re.DOTALL)
+        match = pattern.search(html)
+        if not match:
             return None
-        if isinstance(obj, dict):
-            badges = obj.get("badges", [])
-            for badge in badges if isinstance(badges, list) else []:
-                lbl = (
-                    badge.get("metadataBadgeRenderer", {})
-                    .get("label", "")
-                    .upper()
-                )
-                if "LIVE" in lbl:
-                    title_data = obj.get("title", {})
-                    if isinstance(title_data, dict):
-                        runs = title_data.get("runs", [])
-                        if runs:
-                            return runs[0].get("text", "")
-                        return title_data.get("simpleText", "")
-                    return ""
-            for v in obj.values():
-                result = self._walk_for_live(v, depth + 1)
-                if result is not None:
-                    return result
-        elif isinstance(obj, list):
-            for item in obj:
-                result = self._walk_for_live(item, depth + 1)
-                if result is not None:
-                    return result
-        return None
+
+        try:
+            value, _end = _JSON_DECODER.raw_decode(html[match.end() :])
+        except json.JSONDecodeError:
+            return None
+        return value
 
     def is_live(self, channel_name: str) -> bool:
         html = self._fetch_page(channel_name)
         if html is None:
             return False
-        is_live, _ = self._parse_live_status(html)
+        is_live, _title, _display_name = self._parse_live_status(html)
         return is_live
 
     def get_stream_info(self, channel_name: str) -> StreamInfo | None:
@@ -189,11 +149,12 @@ class YouTubeFetcher(StreamFetcher):
                 url=url,
             )
 
-        is_live, title = self._parse_live_status(html)
+        is_live, title, display_name = self._parse_live_status(html)
         return StreamInfo(
             channel=channel_name,
             platform="youtube",
             is_live=is_live,
             title=title,
             url=url,
+            display_name=display_name,
         )
