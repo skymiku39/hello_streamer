@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
-import sys
 import webbrowser
+from typing import Callable
 
 from stream_monitor.fetcher.base import StreamInfo
 
 logger = logging.getLogger(__name__)
+
+ActionCallback = Callable[[], None]
 
 
 def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
@@ -36,7 +38,7 @@ def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
         logger.exception("Failed to show toast notification")
 
 
-def open_and_stop(info: StreamInfo, stop_fn: callable) -> None:
+def open_and_stop(info: StreamInfo, stop_fn: ActionCallback) -> None:
     """Open stream URL in browser and stop monitoring."""
     _toast(info, with_open_button=False)
     webbrowser.open(info.url)
@@ -54,17 +56,18 @@ def notify_only(info: StreamInfo) -> None:
     _toast(info, with_open_button=True)
 
 
-def open_and_exit(info: StreamInfo) -> None:
+def open_and_exit(info: StreamInfo, exit_fn: ActionCallback) -> None:
     """Open stream URL in browser, then exit the application."""
     _toast(info, with_open_button=False)
     webbrowser.open(info.url)
-    sys.exit(0)
+    exit_fn()
 
 
 def execute_action(
     action: str,
     info: StreamInfo,
-    stop_fn: callable | None = None,
+    stop_fn: ActionCallback | None = None,
+    exit_fn: ActionCallback | None = None,
 ) -> None:
     """Dispatch the configured action."""
     if action == "open_and_stop":
@@ -74,6 +77,6 @@ def execute_action(
     elif action == "notify_only":
         notify_only(info)
     elif action == "open_and_exit":
-        open_and_exit(info)
+        open_and_exit(info, exit_fn or (lambda: None))
     else:
         logger.warning("Unknown action: %s", action)

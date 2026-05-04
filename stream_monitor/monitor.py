@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Callable
 
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
@@ -59,6 +59,11 @@ class Monitor:
         with self._lock:
             return set(self._triggered)
 
+    def snapshot_statuses(self) -> dict[str, bool]:
+        """Return a thread-safe snapshot of the latest known channel statuses."""
+        with self._lock:
+            return dict(self._last_status)
+
     def update_channels(self, channels: list[dict[str, str]]) -> None:
         with self._lock:
             self._entries = [
@@ -77,8 +82,9 @@ class Monitor:
         if self.is_running:
             return
         self._stop_event.clear()
-        self._triggered.clear()
-        self._last_status.clear()
+        with self._lock:
+            self._triggered.clear()
+            self._last_status.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -117,8 +123,9 @@ class Monitor:
         if info is None:
             return
 
-        prev = self._last_status.get(entry.key)
-        self._last_status[entry.key] = info.is_live
+        with self._lock:
+            prev = self._last_status.get(entry.key)
+            self._last_status[entry.key] = info.is_live
 
         went_live = info.is_live and prev is not True
 

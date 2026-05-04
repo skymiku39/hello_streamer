@@ -4,22 +4,36 @@
 
 ## 功能
 
-- 多頻道監聽（Twitch / YouTube）
-- 四種觸發行為：開啟網頁並停止、開啟並保持、僅通知、開啟後關閉程式
-- Windows Toast 通知
-- 設定自動儲存 (`config.json`)
-- 開機自動啟動（Registry）
-- CustomTkinter 現代化深色介面
+- 多頻道監聽：支援 Twitch 與 YouTube。
+- 四種觸發行為：開啟網頁並停止、開啟並保持、僅通知、開啟後關閉程式。
+- Windows Toast 通知與系統匣操作。
+- 設定自動儲存到 `config.json`。
+- 封裝版可寫入 Registry Run key，在登入 Windows 後以靜默模式啟動。
+- CustomTkinter 深色介面。
 
 ## 快速開始
 
 ```bash
-# 安裝依賴（使用 uv）
 uv sync
-
-# 啟動應用程式
 uv run python -m stream_monitor.app
 ```
+
+也可以使用套件入口：
+
+```bash
+uv run stream-monitor
+```
+
+## 開發與測試
+
+```bash
+uv sync --extra dev
+uv run ruff check .
+uv run python -m compileall -f stream_monitor build.py
+uv run pytest -q
+```
+
+CI 會在 `main` push 與 pull request 上執行相同的檢查。Release workflow 則會在推送 `v*` tag 時建置並上傳 Windows exe。
 
 ## 打包為 .exe
 
@@ -28,27 +42,39 @@ uv sync --extra dev
 uv run python build.py
 ```
 
-產出的執行檔位於 `dist/StreamMonitor.exe`。
+產出的執行檔位於 `dist/HelloStreamer.exe`。
+
+## 設定與開機啟動
+
+- 開發模式會讀寫專案根目錄的 `config.json`。
+- 封裝成 exe 後會讀寫 exe 同層的 `config.json`。
+- `config.json` 是本機 runtime 設定，已由 `.gitignore` 排除。
+- 開機啟動只會在封裝版寫入完整 command，例如 `"HelloStreamer.exe" --silent`；開發模式不會寫入不完整的 `python.exe`。
+
+## 常見問題
+
+- 如果 YouTube 或 Twitch 狀態偶爾抓不到，通常是平台頁面或反爬策略變動造成；目前版本維持無 token 的網頁偵測方式。
+- 如果通知沒有出現，請先確認 Windows 通知設定允許應用程式顯示 Toast。
+- 如果開機啟動無效，請確認使用的是 `dist/HelloStreamer.exe`，不是開發模式的 Python 程式。
 
 ## 專案結構
 
-```
+```text
 stream_monitor/
-├── __init__.py          # 套件初始化
-├── app.py               # CustomTkinter 主視窗 & UI
-├── config_manager.py    # config.json 讀寫
+├── app.py               # CustomTkinter 主視窗與 UI
+├── config_manager.py    # config.json 驗證、讀寫與 atomic save
 ├── monitor.py           # 背景輪詢排程器
-├── notifier.py          # 觸發行為
-├── startup.py           # 開機自啟動 (winreg)
+├── notifier.py          # 開播後的觸發行為
+├── startup.py           # Windows Registry 開機自啟動
+├── tray.py              # 系統匣圖示與選單
 └── fetcher/
-    ├── __init__.py      # 工廠函式
     ├── base.py          # StreamFetcher 抽象介面
-    ├── twitch.py        # Twitch 爬蟲
-    └── youtube.py       # YouTube 爬蟲（預留）
+    ├── twitch.py        # Twitch 狀態偵測
+    └── youtube.py       # YouTube 狀態偵測
 ```
 
 ## 架構設計
 
-- **策略模式**：`StreamFetcher` 抽象介面，可擴充不同平台的實作
-- **解耦設計**：核心邏輯與 UI 分離，未來可轉為背景服務
-- **執行緒安全**：Monitor 在背景執行緒輪詢，透過 Queue 與 UI 執行緒通訊
+- `Monitor` 在背景執行緒輪詢，透過 callback 與 Queue 把事件送回 UI 執行緒。
+- UI 只透過 `Monitor.snapshot_statuses()` 取得狀態快照，避免直接讀取背景執行緒內部狀態。
+- `config_manager` 會驗證設定值並使用 atomic save，降低設定檔損壞風險。

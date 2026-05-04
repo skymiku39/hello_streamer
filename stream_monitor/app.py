@@ -46,8 +46,8 @@ ACTION_LABELS: dict[str, str] = {
     "notify_only": "僅跳出系統通知",
     "open_and_exit": "開啟網頁後關閉程式",
 }
-ACTION_KEYS = list(ACTION_LABELS.keys())
 ACTION_DISPLAY = list(ACTION_LABELS.values())
+ACTION_BY_DISPLAY = {label: key for key, label in ACTION_LABELS.items()}
 
 _CLR_BG_DARK = "#1a1a2e"
 _CLR_CARD = "#16213e"
@@ -563,12 +563,14 @@ class App(ctk.CTk):
 
         try:
             interval = int(self.interval_var.get())
-        except ValueError:
+        except (TypeError, ValueError):
             interval = 60
+        interval = max(10, interval)
+        self.interval_var.set(str(interval))
 
         self.config["check_interval"] = interval
         action_display = self.action_var.get()
-        action_key = ACTION_KEYS[ACTION_DISPLAY.index(action_display)]
+        action_key = ACTION_BY_DISPLAY.get(action_display, "open_and_stop")
         self.config["action"] = action_key
         self._save_config()
 
@@ -602,7 +604,7 @@ class App(ctk.CTk):
 
     def _on_poll_done(self) -> None:
         if self._monitor:
-            statuses = dict(self._monitor._last_status)
+            statuses = self._monitor.snapshot_statuses()
             self._event_queue.put(("status_update", statuses))
 
     def _poll_events(self) -> None:
@@ -620,7 +622,7 @@ class App(ctk.CTk):
                             self._monitor.mark_triggered(entry.key)
 
                     stop_fn = self._on_stop if action == "open_and_stop" else None
-                    execute_action(action, info, stop_fn=stop_fn)
+                    execute_action(action, info, stop_fn=stop_fn, exit_fn=self._quit_app)
 
                 elif kind == "status_update":
                     statuses: dict[str, bool] = data
@@ -636,10 +638,11 @@ class App(ctk.CTk):
     # Settings
     # ------------------------------------------------------------------
     def _on_startup_toggle(self) -> None:
-        if self.startup_var.get():
-            enable_startup()
-        else:
-            disable_startup()
+        requested = self.startup_var.get()
+        success = enable_startup() if requested else disable_startup()
+        if not success:
+            self.startup_var.set(not requested)
+            logger.warning("Failed to update startup setting")
         self.config["run_on_startup"] = self.startup_var.get()
         self._save_config()
 
