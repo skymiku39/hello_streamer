@@ -1,13 +1,14 @@
 [project]
 name = "stream-monitor"
-version = "0.1.0"
-description = "開播監聽器 — 監控 Twitch/YouTube 實況主開播狀態的桌面應用程式"
+version = "0.2.0"
+description = "哈嘍主播 — 監控 Twitch/YouTube 實況主開播狀態的桌面應用程式"
 requires-python = ">=3.11"
 dependencies = [
     "customtkinter>=5.2",
     "requests>=2.31",
     "Pillow>=10.0",
     "winotify>=1.1",
+    "pystray>=0.19",
 ]
 
 [project.optional-dependencies]

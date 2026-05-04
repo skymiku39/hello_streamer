@@ -1,10 +1,11 @@
-"""CustomTkinter 主視窗 — 開播監聽器 GUI 與 Monitor 整合。"""
+"""CustomTkinter 主視窗 — 開播監聽器 GUI + 系統匣常駐 + 單一執行個體。"""
 
 from __future__ import annotations
 
 import logging
 import platform
 import queue
+import sys
 from typing import Any
 
 import customtkinter as ctk
@@ -13,7 +14,9 @@ from stream_monitor import config_manager
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelEntry, Monitor
 from stream_monitor.notifier import execute_action
+from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
+from stream_monitor.tray import TrayIcon
 from stream_monitor.url_parser import parse_url
 
 logger = logging.getLogger(__name__)
@@ -22,7 +25,7 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # ---------------------------------------------------------------------------
-# Font helpers — 確保繁體中文清晰顯示
+# Font helpers
 # ---------------------------------------------------------------------------
 _FONT_FAMILY = "Microsoft JhengHei UI"
 if platform.system() != "Windows":
@@ -79,7 +82,6 @@ class AddChannelDialog(ctk.CTkToplevel):
 
         self.result: dict[str, str] | None = None
 
-        # --- URL input area ---
         ctk.CTkLabel(
             self, text="貼上頻道網址（自動偵測平台）", font=_font(13, "bold"), anchor="w"
         ).pack(padx=24, pady=(20, 4), fill="x")
@@ -101,7 +103,6 @@ class AddChannelDialog(ctk.CTkToplevel):
         )
         self.detect_label.pack(side="right")
 
-        # --- Separator ---
         sep = ctk.CTkFrame(self, height=1, fg_color="#333355")
         sep.pack(padx=24, pady=14, fill="x")
 
@@ -109,7 +110,6 @@ class AddChannelDialog(ctk.CTkToplevel):
             self, text="或手動輸入", font=_font(12), text_color="#888899", anchor="w"
         ).pack(padx=24, fill="x")
 
-        # --- Manual input area ---
         manual_frame = ctk.CTkFrame(self, fg_color="transparent")
         manual_frame.pack(padx=24, pady=(6, 0), fill="x")
         manual_frame.grid_columnconfigure(1, weight=1)
@@ -140,7 +140,6 @@ class AddChannelDialog(ctk.CTkToplevel):
         )
         self.name_entry.grid(row=1, column=1, pady=(8, 0), sticky="ew")
 
-        # --- Buttons ---
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(padx=24, pady=18, fill="x")
 
@@ -278,25 +277,78 @@ class ChannelRow(ctk.CTkFrame):
 # Main App Window
 # ═══════════════════════════════════════════════════════════════════════════
 class App(ctk.CTk):
-    """Main application window."""
+    """Main application window with system tray integration."""
 
-    def __init__(self) -> None:
+    def __init__(self, silent: bool = False) -> None:
         super().__init__()
 
         self.config = config_manager.load()
         self._event_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._monitor: Monitor | None = None
         self._channel_rows: list[ChannelRow] = []
+        self._silent = silent
+        self._truly_quitting = False
 
         self.title("哈嘍主播  Hello Streamer")
         self.geometry(self.config.get("window_geometry") or "780x560")
         self.minsize(660, 440)
         self.configure(fg_color=_CLR_BG_DARK)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.protocol("WM_DELETE_WINDOW", self._on_close_button)
 
         self._build_ui()
         self._populate_channels()
         self._poll_events()
+
+        self._tray = TrayIcon(
+            on_show=self._show_window,
+            on_toggle_monitor=self._tray_toggle_monitor,
+            on_quit=self._quit_app,
+            is_monitoring=lambda: self._monitor is not None and self._monitor.is_running,
+        )
+        self._tray.start()
+
+        if silent:
+            self.withdraw()
+            channels = self.config.get("channels", [])
+            if channels:
+                self.after(500, self._on_start)
+
+    # ------------------------------------------------------------------
+    # Window visibility
+    # ------------------------------------------------------------------
+    def _show_window(self) -> None:
+        self.after(0, self._do_show)
+
+    def _do_show(self) -> None:
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _hide_window(self) -> None:
+        self._save_config()
+        self.withdraw()
+
+    def _on_close_button(self) -> None:
+        """X button hides to tray instead of quitting."""
+        self._hide_window()
+
+    def _quit_app(self) -> None:
+        """Full exit — called from tray menu or explicit quit."""
+        self._truly_quitting = True
+        if self._monitor:
+            self._monitor.stop()
+        self._tray.stop()
+        self._save_config()
+        self.after(0, self.destroy)
+
+    # ------------------------------------------------------------------
+    # Tray callbacks
+    # ------------------------------------------------------------------
+    def _tray_toggle_monitor(self) -> None:
+        if self._monitor and self._monitor.is_running:
+            self.after(0, self._on_stop)
+        else:
+            self.after(0, self._on_start)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -410,7 +462,6 @@ class App(ctk.CTk):
         right = ctk.CTkFrame(ctrl, fg_color="transparent")
         right.pack(side="right", padx=14, pady=10)
 
-        # Startup switch
         self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
         self.startup_switch = ctk.CTkSwitch(
             right,
@@ -421,7 +472,6 @@ class App(ctk.CTk):
         )
         self.startup_switch.pack(side="right", padx=(12, 0))
 
-        # Action selector
         current_action = self.config.get("action", "open_and_stop")
         display = ACTION_LABELS.get(current_action, ACTION_DISPLAY[0])
         self.action_var = ctk.StringVar(value=display)
@@ -440,7 +490,6 @@ class App(ctk.CTk):
             side="right"
         )
 
-        # Interval entry
         self.interval_var = ctk.StringVar(
             value=str(self.config.get("check_interval", 60))
         )
@@ -534,6 +583,7 @@ class App(ctk.CTk):
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.status_text.configure(text="監聽中…", text_color=_CLR_LIVE)
+        self._tray.update_tooltip("哈嘍主播 — 監聽中")
 
     def _on_stop(self) -> None:
         if self._monitor:
@@ -542,6 +592,7 @@ class App(ctk.CTk):
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self.status_text.configure(text="已停止", text_color=_CLR_OFFLINE)
+        self._tray.update_tooltip("哈嘍主播 — 已停止")
 
     # ------------------------------------------------------------------
     # Event bridge (monitor thread -> UI thread)
@@ -602,6 +653,7 @@ class App(ctk.CTk):
     def _on_close(self) -> None:
         if self._monitor:
             self._monitor.stop()
+        self._tray.stop()
         self._save_config()
         self.destroy()
 
@@ -611,8 +663,27 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    app = App()
-    app.mainloop()
+
+    silent = "--silent" in sys.argv
+
+    lock = SingleInstance()
+
+    def on_show_request() -> None:
+        if app:
+            app._show_window()
+
+    lock._on_show = on_show_request
+
+    if not lock.try_lock():
+        logger.info("Another instance is already running — activating it")
+        sys.exit(0)
+
+    app = App(silent=silent)
+
+    try:
+        app.mainloop()
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":

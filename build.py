@@ -1,4 +1,4 @@
-"""PyInstaller build script for Stream Monitor."""
+"""PyInstaller build script for HelloStreamer."""
 
 import subprocess
 import sys
@@ -11,12 +11,10 @@ def main() -> None:
         "PyInstaller",
         "--onefile",
         "--windowed",
-        "--name",
-        "StreamMonitor",
-        "--collect-data",
-        "customtkinter",
-        "--add-data",
-        "stream_monitor;stream_monitor",
+        "--name", "HelloStreamer",
+        "--collect-data", "customtkinter",
+        "--hidden-import", "pystray._win32",
+        "--add-data", "stream_monitor;stream_monitor",
         "stream_monitor/app.py",
     ]
     print("Running:", " ".join(cmd))
