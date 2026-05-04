@@ -1,63 +1,106 @@
-# 開播監聽器 Stream Monitor
+# Hello Streamer
 
-監控 Twitch / YouTube 實況主開播狀態的 Windows 桌面應用程式。
+[![CI](https://github.com/skymiku39/hello_streamer/actions/workflows/ci.yml/badge.svg)](https://github.com/skymiku39/hello_streamer/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/skymiku39/hello_streamer?label=release)](https://github.com/skymiku39/hello_streamer/releases)
 
-## 功能
+Hello Streamer 是一款 Windows 桌面工具，用於監控 Twitch 與 YouTube 頻道的開播狀態。當指定頻道開始直播時，應用程式可以顯示 Windows 通知、開啟直播頁面、持續監控其他頻道，或在觸發後自動結束。
 
-- 多頻道監聽：支援 Twitch 與 YouTube。
-- 四種觸發行為：開啟網頁並停止、開啟並保持、僅通知、開啟後關閉程式。
-- Windows Toast 通知與系統匣操作。
-- 設定自動儲存到 `config.json`。
-- 封裝版可寫入 Registry Run key，在登入 Windows 後以靜默模式啟動。
-- CustomTkinter 深色介面。
+> 本專案目前以 Windows 使用情境為主，並以無 API token 的網頁狀態偵測方式運作。
 
-## 快速開始
+## Features
+
+- 監控多個 Twitch / YouTube 頻道。
+- 支援貼上頻道網址，自動判斷平台與頻道名稱。
+- 提供四種開播觸發行為：
+  - 開啟直播頁面並停止監控。
+  - 開啟直播頁面並保持監控。
+  - 僅顯示 Windows Toast 通知。
+  - 開啟直播頁面後關閉程式。
+- 支援 Windows 系統匣操作。
+- 支援封裝版開機自動啟動，並以靜默模式在背景執行。
+- 設定檔自動儲存，並具備基本驗證與安全寫入機制。
+
+## Download
+
+最新版本可從 GitHub Releases 下載：
+
+[Download latest release](https://github.com/skymiku39/hello_streamer/releases/latest)
+
+目前 release 會提供 Windows 可執行檔：
+
+```text
+HelloStreamer.exe
+```
+
+下載後可直接執行。首次執行時，Windows 可能會顯示安全提示；請確認來源為本專案的 GitHub Release。
+
+## Usage
+
+1. 啟動 `HelloStreamer.exe`。
+2. 點選新增頻道。
+3. 貼上 Twitch 或 YouTube 頻道網址，或手動選擇平台並輸入頻道名稱。
+4. 選擇檢查間隔與觸發行為。
+5. 開始監控。
+
+關閉主視窗時，應用程式會隱藏到系統匣，而不是直接結束。若要完全結束，請從系統匣選單退出。
+
+## Configuration
+
+應用程式會使用本機 `config.json` 儲存設定。
+
+- 開發模式：`config.json` 位於專案根目錄。
+- 封裝版：`config.json` 位於 `HelloStreamer.exe` 同一層目錄。
+- `config.json` 屬於本機 runtime 設定，不會提交到版本控制。
+
+開機自動啟動只支援封裝後的 exe。啟用後，程式會寫入 Windows Registry Run key，並使用類似下列的啟動命令：
+
+```text
+"HelloStreamer.exe" --silent
+```
+
+## Development
+
+本專案使用 Python 3.11 與 [uv](https://github.com/astral-sh/uv) 管理環境。
 
 ```bash
-uv sync
+uv sync --extra dev
 uv run python -m stream_monitor.app
 ```
 
-也可以使用套件入口：
+也可以透過 project script 啟動：
 
 ```bash
 uv run stream-monitor
 ```
 
-## 開發與測試
+### Quality checks
 
 ```bash
-uv sync --extra dev
 uv run ruff check .
 uv run python -m compileall -f stream_monitor build.py
 uv run pytest -q
 ```
 
-CI 會在 `main` push 與 pull request 上執行相同的檢查。Release workflow 則會在推送 `v*` tag 時建置並上傳 Windows exe。
+GitHub Actions 會在 `main` push 與 pull request 上執行相同檢查。
 
-## 打包為 .exe
+## Build
+
+使用 PyInstaller 打包 Windows exe：
 
 ```bash
 uv sync --extra dev
 uv run python build.py
 ```
 
-產出的執行檔位於 `dist/HelloStreamer.exe`。
+輸出檔案：
 
-## 設定與開機啟動
+```text
+dist/HelloStreamer.exe
+```
 
-- 開發模式會讀寫專案根目錄的 `config.json`。
-- 封裝成 exe 後會讀寫 exe 同層的 `config.json`。
-- `config.json` 是本機 runtime 設定，已由 `.gitignore` 排除。
-- 開機啟動只會在封裝版寫入完整 command，例如 `"HelloStreamer.exe" --silent`；開發模式不會寫入不完整的 `python.exe`。
+推送 `v*` tag 時，release workflow 會自動建置 exe、上傳 artifact，並建立 GitHub Release。
 
-## 常見問題
-
-- 如果 YouTube 或 Twitch 狀態偶爾抓不到，通常是平台頁面或反爬策略變動造成；目前版本維持無 token 的網頁偵測方式。
-- 如果通知沒有出現，請先確認 Windows 通知設定允許應用程式顯示 Toast。
-- 如果開機啟動無效，請確認使用的是 `dist/HelloStreamer.exe`，不是開發模式的 Python 程式。
-
-## 專案結構
+## Project Structure
 
 ```text
 stream_monitor/
@@ -73,8 +116,16 @@ stream_monitor/
     └── youtube.py       # YouTube 狀態偵測
 ```
 
-## 架構設計
+## Limitations
 
-- `Monitor` 在背景執行緒輪詢，透過 callback 與 Queue 把事件送回 UI 執行緒。
-- UI 只透過 `Monitor.snapshot_statuses()` 取得狀態快照，避免直接讀取背景執行緒內部狀態。
-- `config_manager` 會驗證設定值並使用 atomic save，降低設定檔損壞風險。
+- Twitch 與 YouTube 的狀態偵測目前依賴公開網頁資料與非官方端點，平台頁面或反爬策略改動時可能失效。
+- 目前主要支援 Windows；其他作業系統未列為正式支援目標。
+- 本專案目前未提供自動更新機制。
+
+## Privacy
+
+Hello Streamer 不會將設定同步到外部伺服器。頻道清單與使用者設定儲存在本機 `config.json`。應用程式會向 Twitch / YouTube 發送請求，以檢查指定頻道的開播狀態。
+
+## License
+
+本專案目前尚未附上授權條款。在正式加入 `LICENSE` 檔以前，請勿假設本專案已開放再散布、修改或商業使用授權。
