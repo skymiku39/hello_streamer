@@ -39,18 +39,43 @@ def open_url(url: str) -> bool:
     return False
 
 
+def _format_scheduled_start(iso_str: str) -> str:
+    """Convert ISO 8601 timestamp to a human-readable local time string."""
+    if not iso_str:
+        return ""
+    try:
+        from datetime import datetime, timezone
+
+        dt = datetime.fromisoformat(iso_str)
+        local = dt.astimezone()
+        return local.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return iso_str
+
+
 def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
     """Send a rich Windows Toast notification with optional action button."""
     try:
         from winotify import Notification
 
         channel_name = info.display_name or info.channel
-        body = info.title or f"{channel_name} is now live on {info.platform}"
         platform_display = info.platform.upper()
+        status = info.stream_status or "live"
+
+        if status == "upcoming":
+            title = f"📅 {channel_name} 已建立待機室 [{platform_display}]"
+            time_str = _format_scheduled_start(info.scheduled_start)
+            body = f"預計開播：{time_str}" if time_str else (info.title or "即將開播")
+        elif status == "video":
+            title = f"🎬 {channel_name} 上傳了新影片 [{platform_display}]"
+            body = info.title or "新影片"
+        else:
+            title = f"🔴 {channel_name} 開播了！ [{platform_display}]"
+            body = info.title or f"{channel_name} is now live on {info.platform}"
 
         toast = Notification(
             app_id="哈嘍主播 Hello Streamer",
-            title=f"🔴 {channel_name} 開播了！ [{platform_display}]",
+            title=title,
             msg=body,
             duration="long",
             icon="",

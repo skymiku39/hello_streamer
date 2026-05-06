@@ -13,6 +13,7 @@ from typing import Any
 import customtkinter as ctk
 
 from stream_monitor import config_manager
+from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelEntry, Monitor
@@ -590,14 +591,18 @@ class ChannelRow(ctk.CTkFrame):
             if hasattr(self, "_toggle_tip"):
                 self._toggle_tip.text = "恢復監聽此頻道"
 
-    def set_status(self, is_live: bool | None) -> None:
+    def set_status(self, status: bool | str | None) -> None:
         if not self.channel.get("enabled", True):
             return
-        if is_live is None:
+        if status is None:
             self.status_label.configure(
                 text="  --  ", text_color="#666677", fg_color="transparent"
             )
-        elif is_live:
+        elif status == "upcoming":
+            self.status_label.configure(
+                text=" UPCOMING ", text_color="white", fg_color="#e65100"
+            )
+        elif status is True or status == "live":
             self.status_label.configure(
                 text=" ● LIVE ", text_color="white", fg_color="#1b5e20"
             )
@@ -644,6 +649,7 @@ class App(ctk.CTk):
 
         self.config = config_manager.load()
         self._event_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._db = SeenVideoDB()
         self._monitor: Monitor | None = None
         self._channel_rows: list[ChannelRow] = []
         self._silent = silent
@@ -699,6 +705,7 @@ class App(ctk.CTk):
             self._monitor.stop()
         self._tray.stop()
         self._save_config()
+        self._db.close()
         self.after(0, self.destroy)
 
     # ------------------------------------------------------------------
@@ -1037,6 +1044,7 @@ class App(ctk.CTk):
             interval=interval,
             on_status_change=self._on_channel_live,
             on_poll_complete=self._on_poll_done,
+            db=self._db,
         )
         self._monitor.start()
 
@@ -1133,6 +1141,7 @@ class App(ctk.CTk):
             self._monitor.stop()
         self._tray.stop()
         self._save_config()
+        self._db.close()
         self.destroy()
 
 
