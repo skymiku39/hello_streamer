@@ -53,17 +53,11 @@ class Monitor:
         self._thread: threading.Thread | None = None
         self._last_status: dict[str, bool] = {}
         self._display_names: dict[str, str] = {}
-        self._triggered: set[str] = set()
         self._lock = threading.Lock()
 
     @property
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
-
-    @property
-    def triggered(self) -> set[str]:
-        with self._lock:
-            return set(self._triggered)
 
     def snapshot_statuses(self) -> dict[str, bool]:
         """Return a thread-safe snapshot of the latest known channel statuses."""
@@ -92,21 +86,15 @@ class Monitor:
             self._display_names = {
                 key: value for key, value in self._display_names.items() if key in keys
             }
-            self._triggered = {key for key in self._triggered if key in keys}
 
     def update_interval(self, interval: int) -> None:
         self._interval = max(10, interval)
-
-    def mark_triggered(self, key: str) -> None:
-        with self._lock:
-            self._triggered.add(key)
 
     def start(self) -> None:
         if self.is_running:
             return
         self._stop_event.clear()
         with self._lock:
-            self._triggered.clear()
             self._last_status.clear()
             self._display_names.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)

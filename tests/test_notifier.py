@@ -22,7 +22,7 @@ def test_execute_open_and_stop_opens_browser_and_stops(monkeypatch) -> None:
     monkeypatch.setattr(
         notifier.webbrowser,
         "open",
-        lambda url: events.append(("open", url)),
+        lambda url, new=0: events.append(("open", url)),
     )
 
     notifier.execute_action(
@@ -48,7 +48,7 @@ def test_execute_open_and_keep_opens_without_stopping(monkeypatch) -> None:
     monkeypatch.setattr(
         notifier.webbrowser,
         "open",
-        lambda url: events.append(("open", url)),
+        lambda url, new=0: events.append(("open", url)),
     )
 
     notifier.execute_action("open_and_keep", _info())
@@ -82,7 +82,7 @@ def test_execute_open_and_exit_uses_exit_callback(monkeypatch) -> None:
     monkeypatch.setattr(
         notifier.webbrowser,
         "open",
-        lambda url: events.append(("open", url)),
+        lambda url, new=0: events.append(("open", url)),
     )
 
     notifier.execute_action(
@@ -96,3 +96,18 @@ def test_execute_open_and_exit_uses_exit_callback(monkeypatch) -> None:
         ("open", "https://www.twitch.tv/hello"),
         ("exit", None),
     ]
+
+
+def test_open_url_falls_back_to_windows_shell(monkeypatch) -> None:
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(notifier.webbrowser, "open", lambda url, new=0: False)
+    monkeypatch.setattr(notifier.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        notifier.os,
+        "startfile",
+        lambda url: events.append(("startfile", url)),
+        raising=False,
+    )
+
+    assert notifier.open_url("https://www.twitch.tv/hello") is True
+    assert events == [("startfile", "https://www.twitch.tv/hello")]

@@ -8,7 +8,6 @@ import queue
 import re
 import sys
 import threading
-import webbrowser
 from typing import Any
 
 import customtkinter as ctk
@@ -17,7 +16,7 @@ from stream_monitor import config_manager
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelEntry, Monitor
-from stream_monitor.notifier import execute_action
+from stream_monitor.notifier import execute_action, open_url
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
 from stream_monitor.tray import TrayIcon
@@ -75,6 +74,85 @@ _CLR_LINK_HOVER = "#1769aa"
 _MIN_WINDOW_WIDTH = 860
 _MIN_WINDOW_HEIGHT = 560
 _DEFAULT_WINDOW_GEOMETRY = f"{_MIN_WINDOW_WIDTH}x580"
+
+
+# ---------------------------------------------------------------------------
+# Tooltip
+# ---------------------------------------------------------------------------
+class _Tooltip:
+    """Lightweight hover tooltip for any tkinter/CTk widget."""
+
+    _DELAY_MS = 400
+    _BG = "#2a2a3e"
+    _FG = "#e0e0ee"
+    _BORDER = "#555566"
+
+    def __init__(self, widget: Any, text: str) -> None:
+        self._widget = widget
+        self.text = text
+        self._tip_window: Any | None = None
+        self._after_id: str | None = None
+
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._cancel, add="+")
+        widget.bind("<ButtonPress>", self._cancel, add="+")
+
+    def _schedule(self, _event: Any = None) -> None:
+        self._cancel()
+        self._after_id = self._widget.after(self._DELAY_MS, self._show)
+
+    def _cancel(self, _event: Any = None) -> None:
+        if self._after_id:
+            self._widget.after_cancel(self._after_id)
+            self._after_id = None
+        self._hide()
+
+    def _show(self) -> None:
+        if self._tip_window or not self.text:
+            return
+        import tkinter as tk
+
+        x = self._widget.winfo_rootx() + self._widget.winfo_width() // 2
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+
+        tw = tk.Toplevel(self._widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_attributes("-topmost", True)
+
+        label = tk.Label(
+            tw,
+            text=self.text,
+            background=self._BG,
+            foreground=self._FG,
+            relief="solid",
+            borderwidth=1,
+            highlightbackground=self._BORDER,
+            font=(_FONT_FAMILY, 10),
+            padx=8,
+            pady=4,
+        )
+        label.pack()
+
+        tw.update_idletasks()
+        tip_w = tw.winfo_width()
+        screen_w = tw.winfo_screenwidth()
+        if x + tip_w > screen_w - 8:
+            x = screen_w - tip_w - 8
+        if x < 8:
+            x = 8
+        tw.wm_geometry(f"+{x}+{y}")
+
+        self._tip_window = tw
+
+    def _hide(self) -> None:
+        if self._tip_window:
+            self._tip_window.destroy()
+            self._tip_window = None
+
+
+def _tooltip(widget: Any, text: str) -> _Tooltip:
+    """Attach a hover tooltip to *widget* and return the ``_Tooltip`` handle."""
+    return _Tooltip(widget, text)
 
 
 def _clamped_window_geometry(saved_geometry: str | None) -> str:
@@ -456,6 +534,13 @@ class ChannelRow(ctk.CTkFrame):
         )
         self.link_btn.pack(side="right", padx=(0, 4), pady=8)
 
+        _tooltip(self.link_btn, "開啟頻道首頁")
+        self._toggle_tip = _tooltip(self.toggle_btn, "")
+        _tooltip(self.up_btn, "上移")
+        _tooltip(self.down_btn, "下移")
+        _tooltip(self.delete_btn, "刪除頻道")
+        self._platform_tip = _tooltip(self.platform_label, channel["platform"].upper())
+
         self._apply_enabled_visual()
 
     def _channel_url(self) -> str:
@@ -468,7 +553,7 @@ class ChannelRow(ctk.CTkFrame):
         return f"https://www.youtube.com/@{name}"
 
     def _open_channel_page(self) -> None:
-        webbrowser.open(self._channel_url())
+        open_url(self._channel_url())
 
     def _on_toggle_click(self) -> None:
         enabled = not self.channel.get("enabled", True)
@@ -489,6 +574,8 @@ class ChannelRow(ctk.CTkFrame):
                 text="  --  ", text_color="#666677", fg_color="transparent"
             )
             self.toggle_btn.configure(text="⏸")
+            if hasattr(self, "_toggle_tip"):
+                self._toggle_tip.text = "暫停監聽此頻道"
         else:
             self.configure(fg_color=_CLR_CARD_DISABLED)
             self.platform_label.configure(
@@ -500,6 +587,8 @@ class ChannelRow(ctk.CTkFrame):
                 text=" 已暫停 ", text_color=_CLR_TEXT_DISABLED, fg_color="transparent"
             )
             self.toggle_btn.configure(text="▶")
+            if hasattr(self, "_toggle_tip"):
+                self._toggle_tip.text = "恢復監聽此頻道"
 
     def set_status(self, is_live: bool | None) -> None:
         if not self.channel.get("enabled", True):
@@ -664,6 +753,7 @@ class App(ctk.CTk):
             command=self._on_add_channel,
         )
         self.add_btn.pack(side="right")
+        _tooltip(self.add_btn, "新增 Twitch 或 YouTube 頻道")
 
         # ── Channel list ──
         list_container = ctk.CTkFrame(outer, corner_radius=12, fg_color=_CLR_ACCENT)
@@ -711,6 +801,7 @@ class App(ctk.CTk):
             command=self._on_start,
         )
         self.start_btn.pack(side="left", padx=(0, 8))
+        _tooltip(self.start_btn, "開始監聽所有已啟用的頻道")
 
         self.stop_btn = ctk.CTkButton(
             left,
@@ -725,6 +816,7 @@ class App(ctk.CTk):
             command=self._on_stop,
         )
         self.stop_btn.pack(side="left")
+        _tooltip(self.stop_btn, "停止所有監聽")
 
         self.status_text = ctk.CTkLabel(
             toolbar,
@@ -760,6 +852,7 @@ class App(ctk.CTk):
             justify="center",
         )
         self.interval_entry.pack(side="left")
+        _tooltip(self.interval_entry, "每次檢查的間隔秒數（最低 10 秒）")
 
         ctk.CTkLabel(
             interval_line, text="秒", font=_font(12), text_color="#d8d8e5"
@@ -788,6 +881,7 @@ class App(ctk.CTk):
             dropdown_font=_font(12),
         )
         self.action_menu.pack(anchor="w", pady=(2, 0))
+        _tooltip(self.action_menu, "偵測到開播時要執行的動作")
 
         self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
         self.startup_switch = ctk.CTkSwitch(
@@ -798,6 +892,7 @@ class App(ctk.CTk):
             font=_font(12),
         )
         self.startup_switch.grid(row=0, column=5, sticky="e", padx=(18, 0))
+        _tooltip(self.startup_switch, "系統開機時自動啟動程式（僅限封裝 exe）")
 
     # ------------------------------------------------------------------
     # Channel list operations
@@ -998,12 +1093,6 @@ class App(ctk.CTk):
         for entry, info in live_events:
             if info.display_name:
                 self._apply_display_names({entry.key: info.display_name})
-
-            if action == "open_and_keep":
-                if self._monitor and entry.key in self._monitor.triggered:
-                    continue
-                if self._monitor:
-                    self._monitor.mark_triggered(entry.key)
 
             noop = lambda: None  # noqa: E731
             execute_action(action, info, stop_fn=noop, exit_fn=noop)
