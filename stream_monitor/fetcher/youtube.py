@@ -373,7 +373,4 @@ class YouTubeFetcher(StreamFetcher):
         if isinstance(live_details, dict) and live_details.get("isLiveNow") is True:
             return True, title, display_name
 
-        if isinstance(video_details, dict) and video_details.get("isLive") is True:
-            return True, title, display_name
-
         return False, title, display_name

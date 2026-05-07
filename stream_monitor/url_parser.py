@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 _TWITCH_PATTERNS = [
     re.compile(r"^/([A-Za-z0-9_]+)(?:/.*)?$"),
@@ -15,7 +15,7 @@ _YOUTUBE_PATTERNS = [
     re.compile(r"^/c/([A-Za-z0-9_.\-]+)/?$"),
     re.compile(r"^/user/([A-Za-z0-9_.\-]+)/?$"),
 ]
-_YOUTUBE_HANDLE_RE = re.compile(r"/@([A-Za-z0-9_.\-]+)(?:/|$)")
+_YOUTUBE_HANDLE_RE = re.compile(r"/@([^/]+)")
 
 
 @dataclass
@@ -47,7 +47,8 @@ def parse_url(text: str) -> ParsedChannel | None:
         return None
 
     if host in {"youtube.com", "www.youtube.com"}:
-        handle_match = _YOUTUBE_HANDLE_RE.search(path)
+        decoded_path = unquote(path)
+        handle_match = _YOUTUBE_HANDLE_RE.search(decoded_path)
         if handle_match:
             return ParsedChannel(platform="youtube", name=handle_match.group(1))
 

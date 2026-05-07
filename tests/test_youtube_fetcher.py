@@ -190,6 +190,11 @@ class TestGetStreamInfo:
                 "author": "Streamer",
                 "isLive": true,
                 "title": "Now Live"
+              },
+              "microformat": {
+                "playerMicroformatRenderer": {
+                  "liveBroadcastDetails": {"isLiveNow": true}
+                }
               }
             }
             """
@@ -232,6 +237,59 @@ class TestFallbackParseLiveStatus:
             """
         )
         assert fetcher._parse_live_status(html) == (True, "Now Live", "Streamer Name")
+
+    def test_rejects_standby_screen_with_video_details_is_live(self) -> None:
+        """Standby screen: videoDetails.isLive=true but no isLiveNow confirmation."""
+        fetcher = YouTubeFetcher()
+        html = _html_with_player(
+            """
+            {
+              "playabilityStatus": {"status": "OK"},
+              "videoDetails": {
+                "author": "VTuber Channel",
+                "isLive": true,
+                "isLiveContent": true,
+                "title": "待機畫面"
+              },
+              "microformat": {
+                "playerMicroformatRenderer": {
+                  "liveBroadcastDetails": {}
+                }
+              }
+            }
+            """
+        )
+
+        assert fetcher._parse_live_status(html) == (
+            False,
+            "待機畫面",
+            "VTuber Channel",
+        )
+
+    def test_rejects_past_stream_shown_on_live_page(self) -> None:
+        """Past broadcast shown on /live page: isLive=true but no liveBroadcastDetails."""
+        fetcher = YouTubeFetcher()
+        html = _html_with_player(
+            """
+            {
+              "playabilityStatus": {"status": "OK"},
+              "videoDetails": {
+                "author": "Streamer",
+                "isLive": true,
+                "title": "Past Stream Title"
+              },
+              "microformat": {
+                "playerMicroformatRenderer": {}
+              }
+            }
+            """
+        )
+
+        assert fetcher._parse_live_status(html) == (
+            False,
+            "Past Stream Title",
+            "Streamer",
+        )
 
     def test_rejects_waiting_room(self) -> None:
         fetcher = YouTubeFetcher()
