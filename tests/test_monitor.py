@@ -445,6 +445,80 @@ def test_youtube_fallback_suppression_only_consumes_one_live(
     db.close()
 
 
+def test_youtube_fallback_no_title_match_multiple_items_suppresses_none(
+    monkeypatch, tmp_path
+) -> None:
+    """When no title matches and multiple LIVE items exist, suppress nothing."""
+    live_a = VideoItem(
+        video_id="vid_a",
+        title="New Stream X",
+        style="LIVE",
+        url="https://youtube.com/watch?v=vid_a",
+        display_name="Chan",
+    )
+    live_b = VideoItem(
+        video_id="vid_b",
+        title="New Stream Y",
+        style="LIVE",
+        url="https://youtube.com/watch?v=vid_b",
+        display_name="Chan",
+    )
+    fallback_info = StreamInfo(
+        channel="ytchan",
+        platform="youtube",
+        is_live=True,
+        title="Old Stream Title",
+        url="https://www.youtube.com/@ytchan/live",
+        display_name="Chan",
+    )
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[[], [live_a, live_b]],
+        info_batches=[fallback_info],
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "ytchan"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+
+    monitor._check_channel(entry)
+
+    results = monitor._check_channel(entry)
+    assert len(results) == 2
+    db.close()
+
+
+def test_twitch_re_enable_clears_last_status(monkeypatch, tmp_path) -> None:
+    """Re-enabling a channel clears _last_status so new LIVE is detected."""
+    fetcher = FakeTwitchFetcher([True, True])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hello", "enabled": True}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    monitor._check_channel(entry)
+    assert monitor.snapshot_statuses() == {"twitch:hello": True}
+
+    monitor.update_channels(
+        [{"platform": "twitch", "name": "hello", "enabled": False}]
+    )
+    monitor.update_channels(
+        [{"platform": "twitch", "name": "hello", "enabled": True}]
+    )
+    assert monitor.snapshot_statuses().get("twitch:hello") is None
+
+    results = monitor._check_channel(entry)
+    assert len(results) == 1
+    db.close()
+
+
 # ─────────────────────────────────────────────
 # General
 # ─────────────────────────────────────────────

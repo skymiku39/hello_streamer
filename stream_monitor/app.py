@@ -1026,6 +1026,9 @@ class App(ctk.CTk):
         if not channels:
             return
 
+        if self._monitor and self._monitor.is_running:
+            return
+
         try:
             interval = int(self.interval_var.get())
         except (TypeError, ValueError):
@@ -1056,7 +1059,13 @@ class App(ctk.CTk):
     def _on_stop(self) -> None:
         if self._monitor:
             self._monitor.stop()
-            self._monitor = None
+            if not self._monitor.is_running:
+                self._monitor = None
+        try:
+            while True:
+                self._event_queue.get_nowait()
+        except queue.Empty:
+            pass
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self.status_text.configure(text="已停止", text_color=_CLR_OFFLINE)

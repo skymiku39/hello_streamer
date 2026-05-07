@@ -81,7 +81,7 @@ class Monitor:
         self._last_status: dict[str, Any] = {}
         self._display_names: dict[str, str] = {}
         self._youtube_baselined: set[str] = set()
-        self._fallback_triggered_live: set[str] = set()
+        self._fallback_triggered_live: dict[str, str] = {}
         self._lock = threading.Lock()
 
     @property
@@ -98,6 +98,7 @@ class Monitor:
 
     def update_channels(self, channels: list[dict[str, str]]) -> None:
         with self._lock:
+            old_enabled = {e.key: e.enabled for e in self._entries}
             self._entries = [
                 ChannelEntry(
                     platform=ch["platform"],
@@ -117,8 +118,13 @@ class Monitor:
                 key for key in self._youtube_baselined if key in keys
             }
             self._fallback_triggered_live = {
-                key for key in self._fallback_triggered_live if key in keys
+                key: val
+                for key, val in self._fallback_triggered_live.items()
+                if key in keys
             }
+            for entry in self._entries:
+                if entry.enabled and not old_enabled.get(entry.key, True):
+                    self._last_status.pop(entry.key, None)
 
     def update_interval(self, interval: int) -> None:
         self._interval = max(10, interval)
@@ -131,7 +137,7 @@ class Monitor:
             self._last_status.clear()
             self._display_names.clear()
             self._youtube_baselined.clear()
-            self._fallback_triggered_live.clear()
+            self._fallback_triggered_live = {}
         try:
             self._db.cleanup(days=30)
         except Exception:
@@ -160,6 +166,9 @@ class Monitor:
                 results = self._check_channel(entry)
                 went_live_batch.extend(results)
 
+            if self._stop_event.is_set():
+                break
+
             for entry, info in went_live_batch:
                 if self._on_status_change:
                     try:
@@ -168,6 +177,9 @@ class Monitor:
                         logger.exception(
                             "on_status_change callback error for %s", entry.key
                         )
+
+            if self._stop_event.is_set():
+                break
 
             if self._on_poll_complete:
                 try:
@@ -236,8 +248,9 @@ class Monitor:
         has_upcoming = False
         with self._lock:
             is_baselined = entry.key in self._youtube_baselined
-            suppress_one_live = entry.key in self._fallback_triggered_live
-            self._fallback_triggered_live.discard(entry.key)
+            fallback_title = self._fallback_triggered_live.pop(entry.key, None)
+
+        unseen_live_items: list[VideoItem] = []
 
         for item in items:
             if item.style == "LIVE":
@@ -263,12 +276,27 @@ class Monitor:
                 logger.exception("DB error for video %s", item.video_id)
                 continue
 
-            if item.style == "LIVE" and suppress_one_live:
-                suppress_one_live = False
-                continue
-            if item.style == "LIVE" or (item.style == "UPCOMING" and is_baselined):
+            if item.style == "LIVE":
+                unseen_live_items.append(item)
+            elif item.style == "UPCOMING" and is_baselined:
                 info = _video_item_to_stream_info(item, entry.name)
                 new_events.append((entry, info))
+
+        if fallback_title is not None and unseen_live_items:
+            suppressed_idx = 0
+            for i, li in enumerate(unseen_live_items):
+                if li.title == fallback_title:
+                    suppressed_idx = i
+                    break
+            else:
+                if len(unseen_live_items) > 1:
+                    suppressed_idx = -1
+            if suppressed_idx >= 0:
+                unseen_live_items.pop(suppressed_idx)
+
+        for item in unseen_live_items:
+            info = _video_item_to_stream_info(item, entry.name)
+            new_events.append((entry, info))
 
         with self._lock:
             if has_live:
@@ -302,7 +330,7 @@ class Monitor:
         went_live = info.is_live and prev is not True
         if went_live:
             with self._lock:
-                self._fallback_triggered_live.add(entry.key)
+                self._fallback_triggered_live[entry.key] = info.title
             info.stream_status = "live"
             return [(entry, info)]
         return []
