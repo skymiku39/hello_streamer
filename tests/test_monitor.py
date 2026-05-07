@@ -4,6 +4,13 @@ from stream_monitor.fetcher.base import StreamInfo, VideoItem
 from stream_monitor.monitor import ChannelEntry, Monitor
 
 
+def _check_and_commit(monitor: Monitor, entry: ChannelEntry):
+    """Call _check_channel, commit DB writes, return events."""
+    events, commit = monitor._check_channel(entry)
+    commit()
+    return events
+
+
 class FakeTwitchFetcher:
     platform = "twitch"
 
@@ -64,7 +71,7 @@ def test_twitch_triggers_only_on_live_transition(monkeypatch, tmp_path) -> None:
 
     went_live: list[tuple[ChannelEntry, object]] = []
     for _ in range(5):
-        results = monitor._check_channel(entry)
+        results = _check_and_commit(monitor, entry)
         went_live.extend(results)
 
     for e, info in went_live:
@@ -90,7 +97,7 @@ def test_check_channel_does_not_filter_by_enabled_flag(monkeypatch, tmp_path) ->
     )
     entry = ChannelEntry(platform="twitch", name="hello", enabled=False)
 
-    results = monitor._check_channel(entry)
+    results = _check_and_commit(monitor, entry)
     assert len(results) == 1
 
     with monitor._lock:
@@ -121,7 +128,7 @@ def test_youtube_new_video_triggers_event(monkeypatch, tmp_path) -> None:
         db=db,
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
-    results = monitor._check_channel(entry)
+    results = _check_and_commit(monitor, entry)
 
     assert len(results) == 1
     _, info = results[0]
@@ -149,10 +156,10 @@ def test_youtube_duplicate_video_skipped(monkeypatch, tmp_path) -> None:
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
 
-    results_first = monitor._check_channel(entry)
+    results_first = _check_and_commit(monitor, entry)
     assert len(results_first) == 1
 
-    results_second = monitor._check_channel(entry)
+    results_second = _check_and_commit(monitor, entry)
     assert len(results_second) == 0
     db.close()
 
@@ -177,7 +184,7 @@ def test_youtube_upcoming_sets_status(monkeypatch, tmp_path) -> None:
         db=db,
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
-    results = monitor._check_channel(entry)
+    results = _check_and_commit(monitor, entry)
 
     assert results == []
     assert monitor.snapshot_statuses() == {"youtube:ytchan": "upcoming"}
@@ -205,7 +212,7 @@ def test_youtube_mixed_styles_in_single_poll(monkeypatch, tmp_path) -> None:
         db=db,
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
-    results = monitor._check_channel(entry)
+    results = _check_and_commit(monitor, entry)
 
     assert len(results) == 1
     statuses = [info.stream_status for _, info in results]
@@ -242,8 +249,8 @@ def test_youtube_upcoming_then_live_same_video_triggers_live(
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
 
-    assert monitor._check_channel(entry) == []
-    results = monitor._check_channel(entry)
+    assert _check_and_commit(monitor, entry) == []
+    results = _check_and_commit(monitor, entry)
 
     assert len(results) == 1
     _, info = results[0]
@@ -281,8 +288,8 @@ def test_youtube_new_upcoming_after_baseline_triggers_notify_event(
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
 
-    assert monitor._check_channel(entry) == []
-    results = monitor._check_channel(entry)
+    assert _check_and_commit(monitor, entry) == []
+    results = _check_and_commit(monitor, entry)
 
     assert len(results) == 1
     _, info = results[0]
@@ -318,8 +325,8 @@ def test_youtube_default_items_are_marked_but_never_emit_events(
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
 
-    assert monitor._check_channel(entry) == []
-    assert monitor._check_channel(entry) == []
+    assert _check_and_commit(monitor, entry) == []
+    assert _check_and_commit(monitor, entry) == []
     assert db.is_seen("old_upload", "DEFAULT") is True
     assert db.is_seen("new_upload", "DEFAULT") is True
     assert monitor.snapshot_statuses() == {"youtube:ytchan": False}
@@ -344,7 +351,7 @@ def test_youtube_empty_items_uses_live_fallback(monkeypatch, tmp_path) -> None:
         db=db,
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
-    results = monitor._check_channel(entry)
+    results = _check_and_commit(monitor, entry)
 
     assert len(results) == 1
     _, info = results[0]
@@ -386,11 +393,11 @@ def test_youtube_fallback_then_tidus_recovery_no_duplicate(
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
 
-    results_fallback = monitor._check_channel(entry)
+    results_fallback = _check_and_commit(monitor, entry)
     assert len(results_fallback) == 1
     assert results_fallback[0][1].title == "Live Stream"
 
-    results_tidus = monitor._check_channel(entry)
+    results_tidus = _check_and_commit(monitor, entry)
     assert len(results_tidus) == 0
 
     assert monitor.snapshot_statuses() == {"youtube:ytchan": True}
@@ -436,10 +443,10 @@ def test_youtube_fallback_suppression_only_consumes_one_live(
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
 
-    results_fallback = monitor._check_channel(entry)
+    results_fallback = _check_and_commit(monitor, entry)
     assert len(results_fallback) == 1
 
-    results_tidus = monitor._check_channel(entry)
+    results_tidus = _check_and_commit(monitor, entry)
     assert len(results_tidus) == 1
     assert results_tidus[0][1].video_id == "vid_b"
     db.close()
@@ -484,9 +491,9 @@ def test_youtube_fallback_no_title_match_multiple_items_suppresses_none(
     )
     entry = ChannelEntry(platform="youtube", name="ytchan")
 
-    monitor._check_channel(entry)
+    _check_and_commit(monitor, entry)
 
-    results = monitor._check_channel(entry)
+    results = _check_and_commit(monitor, entry)
     assert len(results) == 2
     db.close()
 
@@ -503,7 +510,7 @@ def test_twitch_re_enable_clears_last_status(monkeypatch, tmp_path) -> None:
     )
     entry = ChannelEntry(platform="twitch", name="hello")
 
-    monitor._check_channel(entry)
+    _check_and_commit(monitor, entry)
     assert monitor.snapshot_statuses() == {"twitch:hello": True}
 
     monitor.update_channels(
@@ -514,8 +521,85 @@ def test_twitch_re_enable_clears_last_status(monkeypatch, tmp_path) -> None:
     )
     assert monitor.snapshot_statuses().get("twitch:hello") is None
 
-    results = monitor._check_channel(entry)
+    results = _check_and_commit(monitor, entry)
     assert len(results) == 1
+    db.close()
+
+
+def test_youtube_stop_discards_uncommitted_seen(monkeypatch, tmp_path) -> None:
+    """If stop occurs before commit, items are NOT marked as seen in DB."""
+    item = VideoItem(
+        video_id="vid_stop",
+        title="Going Live",
+        style="LIVE",
+        url="https://youtube.com/watch?v=vid_stop",
+        display_name="Chan",
+    )
+    fetcher = FakeYouTubeFetcher([[item]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "ytchan"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+
+    events, commit = monitor._check_channel(entry)
+    assert len(events) == 1
+
+    assert db.is_seen("vid_stop", "LIVE") is False
+    db.close()
+
+
+def test_youtube_fallback_marker_preserved_across_nonlive_tidus(
+    monkeypatch, tmp_path
+) -> None:
+    """Fallback marker is NOT consumed when TIDUS returns only non-LIVE items."""
+    default_item = VideoItem(
+        video_id="vid_def",
+        title="Some Upload",
+        style="DEFAULT",
+        url="https://youtube.com/watch?v=vid_def",
+        display_name="Chan",
+    )
+    live_item = VideoItem(
+        video_id="vid_live",
+        title="Live Stream",
+        style="LIVE",
+        url="https://youtube.com/watch?v=vid_live",
+        display_name="Chan",
+    )
+    fallback_info = StreamInfo(
+        channel="ytchan",
+        platform="youtube",
+        is_live=True,
+        title="Live Stream",
+        url="https://www.youtube.com/@ytchan/live",
+        display_name="Chan",
+    )
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[[], [default_item], [live_item]],
+        info_batches=[fallback_info],
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "ytchan"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+
+    results_fallback = _check_and_commit(monitor, entry)
+    assert len(results_fallback) == 1
+
+    results_default = _check_and_commit(monitor, entry)
+    assert len(results_default) == 0
+
+    results_live = _check_and_commit(monitor, entry)
+    assert len(results_live) == 0
+
     db.close()
 
 

@@ -158,16 +158,21 @@ class Monitor:
                 entries = list(self._entries)
 
             went_live_batch: list[tuple[ChannelEntry, StreamInfo]] = []
+            commits: list[Callable[[], None]] = []
             for entry in entries:
                 if self._stop_event.is_set():
                     break
                 if not entry.enabled:
                     continue
-                results = self._check_channel(entry)
+                results, commit = self._check_channel(entry)
                 went_live_batch.extend(results)
+                commits.append(commit)
 
             if self._stop_event.is_set():
                 break
+
+            for commit in commits:
+                commit()
 
             for entry, info in went_live_batch:
                 if self._on_status_change:
@@ -192,12 +197,14 @@ class Monitor:
     # ------------------------------------------------------------------
     # Dispatch
     # ------------------------------------------------------------------
+    _noop_commit: Callable[[], None] = staticmethod(lambda: None)  # type: ignore[assignment]
+
     def _check_channel(
         self, entry: ChannelEntry
-    ) -> list[tuple[ChannelEntry, StreamInfo]]:
+    ) -> tuple[list[tuple[ChannelEntry, StreamInfo]], Callable[[], None]]:
         if entry.platform == "youtube":
             return self._check_youtube(entry)
-        return self._check_twitch(entry)
+        return self._check_twitch(entry), self._noop_commit
 
     # ------------------------------------------------------------------
     # Twitch: boolean edge-trigger (unchanged)
@@ -232,25 +239,26 @@ class Monitor:
     # ------------------------------------------------------------------
     def _check_youtube(
         self, entry: ChannelEntry
-    ) -> list[tuple[ChannelEntry, StreamInfo]]:
+    ) -> tuple[list[tuple[ChannelEntry, StreamInfo]], Callable[[], None]]:
         try:
             fetcher = get_fetcher(entry.platform)
             items = fetcher.get_channel_items(entry.name)
         except Exception:
             logger.exception("Error fetching %s", entry.key)
-            return []
+            return [], self._noop_commit
 
         if not items:
-            return self._check_youtube_fallback(entry, fetcher)
+            return self._check_youtube_fallback(entry, fetcher), self._noop_commit
 
         new_events: list[tuple[ChannelEntry, StreamInfo]] = []
         has_live = False
         has_upcoming = False
         with self._lock:
             is_baselined = entry.key in self._youtube_baselined
-            fallback_title = self._fallback_triggered_live.pop(entry.key, None)
+            fallback_title = self._fallback_triggered_live.get(entry.key)
 
         unseen_live_items: list[VideoItem] = []
+        pending_seen: list[tuple[str, str, str, str, str]] = []
 
         for item in items:
             if item.style == "LIVE":
@@ -265,16 +273,13 @@ class Monitor:
             try:
                 if self._db.is_seen(item.video_id, item.style):
                     continue
-                self._db.mark_seen(
-                    video_id=item.video_id,
-                    platform="youtube",
-                    channel=entry.name,
-                    style=item.style,
-                    title=item.title,
-                )
             except Exception:
                 logger.exception("DB error for video %s", item.video_id)
                 continue
+
+            pending_seen.append(
+                (item.video_id, "youtube", entry.name, item.style, item.title)
+            )
 
             if item.style == "LIVE":
                 unseen_live_items.append(item)
@@ -283,16 +288,18 @@ class Monitor:
                 new_events.append((entry, info))
 
         if fallback_title is not None and unseen_live_items:
-            suppressed_idx = 0
+            suppressed_idx = -1
             for i, li in enumerate(unseen_live_items):
                 if li.title == fallback_title:
                     suppressed_idx = i
                     break
             else:
-                if len(unseen_live_items) > 1:
-                    suppressed_idx = -1
+                if not fallback_title and len(unseen_live_items) == 1:
+                    suppressed_idx = 0
             if suppressed_idx >= 0:
                 unseen_live_items.pop(suppressed_idx)
+            with self._lock:
+                self._fallback_triggered_live.pop(entry.key, None)
 
         for item in unseen_live_items:
             info = _video_item_to_stream_info(item, entry.name)
@@ -307,7 +314,14 @@ class Monitor:
                 self._last_status[entry.key] = False
             self._youtube_baselined.add(entry.key)
 
-        return new_events
+        def commit() -> None:
+            for args in pending_seen:
+                try:
+                    self._db.mark_seen(*args)
+                except Exception:
+                    logger.exception("DB error for video %s", args[0])
+
+        return new_events, commit
 
     def _check_youtube_fallback(
         self, entry: ChannelEntry, fetcher: Any
