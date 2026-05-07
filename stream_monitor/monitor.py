@@ -80,18 +80,13 @@ class Monitor:
         self._thread: threading.Thread | None = None
         self._last_status: dict[str, Any] = {}
         self._display_names: dict[str, str] = {}
-        self._triggered: set[str] = set()
         self._youtube_baselined: set[str] = set()
+        self._fallback_triggered_live: set[str] = set()
         self._lock = threading.Lock()
 
     @property
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
-
-    @property
-    def triggered(self) -> set[str]:
-        with self._lock:
-            return set(self._triggered)
 
     def snapshot_statuses(self) -> dict[str, Any]:
         with self._lock:
@@ -118,27 +113,25 @@ class Monitor:
             self._display_names = {
                 key: value for key, value in self._display_names.items() if key in keys
             }
-            self._triggered = {key for key in self._triggered if key in keys}
             self._youtube_baselined = {
                 key for key in self._youtube_baselined if key in keys
+            }
+            self._fallback_triggered_live = {
+                key for key in self._fallback_triggered_live if key in keys
             }
 
     def update_interval(self, interval: int) -> None:
         self._interval = max(10, interval)
-
-    def mark_triggered(self, key: str) -> None:
-        with self._lock:
-            self._triggered.add(key)
 
     def start(self) -> None:
         if self.is_running:
             return
         self._stop_event.clear()
         with self._lock:
-            self._triggered.clear()
             self._last_status.clear()
             self._display_names.clear()
             self._youtube_baselined.clear()
+            self._fallback_triggered_live.clear()
         try:
             self._db.cleanup(days=30)
         except Exception:
@@ -150,7 +143,8 @@ class Monitor:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
-            self._thread = None
+            if not self._thread.is_alive():
+                self._thread = None
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -242,6 +236,8 @@ class Monitor:
         has_upcoming = False
         with self._lock:
             is_baselined = entry.key in self._youtube_baselined
+            suppress_one_live = entry.key in self._fallback_triggered_live
+            self._fallback_triggered_live.discard(entry.key)
 
         for item in items:
             if item.style == "LIVE":
@@ -267,6 +263,9 @@ class Monitor:
                 logger.exception("DB error for video %s", item.video_id)
                 continue
 
+            if item.style == "LIVE" and suppress_one_live:
+                suppress_one_live = False
+                continue
             if item.style == "LIVE" or (item.style == "UPCOMING" and is_baselined):
                 info = _video_item_to_stream_info(item, entry.name)
                 new_events.append((entry, info))
@@ -302,6 +301,8 @@ class Monitor:
 
         went_live = info.is_live and prev is not True
         if went_live:
+            with self._lock:
+                self._fallback_triggered_live.add(entry.key)
             info.stream_status = "live"
             return [(entry, info)]
         return []

@@ -79,7 +79,8 @@ def test_twitch_triggers_only_on_live_transition(monkeypatch, tmp_path) -> None:
     db.close()
 
 
-def test_twitch_skips_disabled_channels(monkeypatch, tmp_path) -> None:
+def test_check_channel_does_not_filter_by_enabled_flag(monkeypatch, tmp_path) -> None:
+    """_check_channel processes the entry regardless of enabled; filtering is _run()'s job."""
     fetcher = FakeTwitchFetcher([True])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
@@ -350,6 +351,97 @@ def test_youtube_empty_items_uses_live_fallback(monkeypatch, tmp_path) -> None:
     assert info.stream_status == "live"
     assert info.title == "Fallback Live"
     assert monitor.snapshot_statuses() == {"youtube:ytchan": True}
+    db.close()
+
+
+def test_youtube_fallback_then_tidus_recovery_no_duplicate(
+    monkeypatch, tmp_path
+) -> None:
+    """When fallback triggers LIVE and then TIDUS recovers, no duplicate fires."""
+    live_item = VideoItem(
+        video_id="vid_fb",
+        title="Live Stream",
+        style="LIVE",
+        url="https://youtube.com/watch?v=vid_fb",
+        display_name="Chan",
+    )
+    fallback_info = StreamInfo(
+        channel="ytchan",
+        platform="youtube",
+        is_live=True,
+        title="Live Stream",
+        url="https://www.youtube.com/@ytchan/live",
+        display_name="Chan",
+    )
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[[], [live_item]],
+        info_batches=[fallback_info],
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "ytchan"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+
+    results_fallback = monitor._check_channel(entry)
+    assert len(results_fallback) == 1
+    assert results_fallback[0][1].title == "Live Stream"
+
+    results_tidus = monitor._check_channel(entry)
+    assert len(results_tidus) == 0
+
+    assert monitor.snapshot_statuses() == {"youtube:ytchan": True}
+    db.close()
+
+
+def test_youtube_fallback_suppression_only_consumes_one_live(
+    monkeypatch, tmp_path
+) -> None:
+    """Suppression is consumed once; a second LIVE item in the same batch triggers."""
+    live_a = VideoItem(
+        video_id="vid_a",
+        title="Stream A",
+        style="LIVE",
+        url="https://youtube.com/watch?v=vid_a",
+        display_name="Chan",
+    )
+    live_b = VideoItem(
+        video_id="vid_b",
+        title="Stream B",
+        style="LIVE",
+        url="https://youtube.com/watch?v=vid_b",
+        display_name="Chan",
+    )
+    fallback_info = StreamInfo(
+        channel="ytchan",
+        platform="youtube",
+        is_live=True,
+        title="Stream A",
+        url="https://www.youtube.com/@ytchan/live",
+        display_name="Chan",
+    )
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[[], [live_a, live_b]],
+        info_batches=[fallback_info],
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "ytchan"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+
+    results_fallback = monitor._check_channel(entry)
+    assert len(results_fallback) == 1
+
+    results_tidus = monitor._check_channel(entry)
+    assert len(results_tidus) == 1
+    assert results_tidus[0][1].video_id == "vid_b"
     db.close()
 
 
