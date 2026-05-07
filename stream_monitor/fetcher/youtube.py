@@ -300,9 +300,11 @@ class YouTubeFetcher(StreamFetcher):
         live_item = next((i for i in items if i.style == "LIVE"), None)
         title = live_item.title if live_item else ""
 
-        if not display_name and not items:
+        if not items:
             fb = self._fallback_live_check(channel_name)
             if fb is not None:
+                if display_name and not fb.display_name:
+                    fb.display_name = display_name
                 return fb
 
         return StreamInfo(

@@ -1,5 +1,6 @@
 # Stream Monitor runtime config
 config.json
+seen_videos.db*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

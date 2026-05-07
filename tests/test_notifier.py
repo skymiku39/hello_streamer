@@ -134,3 +134,33 @@ def test_format_scheduled_start_empty() -> None:
 def test_format_scheduled_start_invalid() -> None:
     result = notifier._format_scheduled_start("not-a-date")
     assert isinstance(result, str)
+
+
+# ─────────────────────────────────────────────
+# Status-aware action routing
+# ─────────────────────────────────────────────
+def test_action_for_live_uses_configured_action() -> None:
+    assert (
+        notifier.action_for_stream_status(
+            "open_and_stop", _info(stream_status="live")
+        )
+        == "open_and_stop"
+    )
+
+
+def test_action_for_upcoming_forces_notify_only() -> None:
+    assert (
+        notifier.action_for_stream_status(
+            "open_and_exit", _info(stream_status="upcoming", is_live=False)
+        )
+        == "notify_only"
+    )
+
+
+def test_action_for_video_returns_none() -> None:
+    assert (
+        notifier.action_for_stream_status(
+            "open_and_keep", _info(stream_status="video", is_live=False)
+        )
+        is None
+    )

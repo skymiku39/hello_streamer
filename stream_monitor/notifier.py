@@ -44,13 +44,23 @@ def _format_scheduled_start(iso_str: str) -> str:
     if not iso_str:
         return ""
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         dt = datetime.fromisoformat(iso_str)
         local = dt.astimezone()
         return local.strftime("%Y-%m-%d %H:%M")
     except (ValueError, TypeError):
         return iso_str
+
+
+def action_for_stream_status(configured_action: str, info: StreamInfo) -> str | None:
+    """Return the action that should run for a stream/video event."""
+    status = info.stream_status or "live"
+    if status == "upcoming":
+        return "notify_only"
+    if status == "video":
+        return None
+    return configured_action
 
 
 def _toast(info: StreamInfo, with_open_button: bool = True) -> None:

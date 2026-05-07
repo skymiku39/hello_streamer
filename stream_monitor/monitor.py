@@ -81,6 +81,7 @@ class Monitor:
         self._last_status: dict[str, Any] = {}
         self._display_names: dict[str, str] = {}
         self._triggered: set[str] = set()
+        self._youtube_baselined: set[str] = set()
         self._lock = threading.Lock()
 
     @property
@@ -118,6 +119,9 @@ class Monitor:
                 key: value for key, value in self._display_names.items() if key in keys
             }
             self._triggered = {key for key in self._triggered if key in keys}
+            self._youtube_baselined = {
+                key for key in self._youtube_baselined if key in keys
+            }
 
     def update_interval(self, interval: int) -> None:
         self._interval = max(10, interval)
@@ -134,6 +138,7 @@ class Monitor:
             self._triggered.clear()
             self._last_status.clear()
             self._display_names.clear()
+            self._youtube_baselined.clear()
         try:
             self._db.cleanup(days=30)
         except Exception:
@@ -229,9 +234,14 @@ class Monitor:
             logger.exception("Error fetching %s", entry.key)
             return []
 
+        if not items:
+            return self._check_youtube_fallback(entry, fetcher)
+
         new_events: list[tuple[ChannelEntry, StreamInfo]] = []
         has_live = False
         has_upcoming = False
+        with self._lock:
+            is_baselined = entry.key in self._youtube_baselined
 
         for item in items:
             if item.style == "LIVE":
@@ -244,7 +254,7 @@ class Monitor:
                     self._display_names[entry.key] = item.display_name
 
             try:
-                if self._db.is_seen(item.video_id):
+                if self._db.is_seen(item.video_id, item.style):
                     continue
                 self._db.mark_seen(
                     video_id=item.video_id,
@@ -257,8 +267,9 @@ class Monitor:
                 logger.exception("DB error for video %s", item.video_id)
                 continue
 
-            info = _video_item_to_stream_info(item, entry.name)
-            new_events.append((entry, info))
+            if item.style == "LIVE" or (item.style == "UPCOMING" and is_baselined):
+                info = _video_item_to_stream_info(item, entry.name)
+                new_events.append((entry, info))
 
         with self._lock:
             if has_live:
@@ -267,5 +278,30 @@ class Monitor:
                 self._last_status[entry.key] = "upcoming"
             elif items:
                 self._last_status[entry.key] = False
+            self._youtube_baselined.add(entry.key)
 
         return new_events
+
+    def _check_youtube_fallback(
+        self, entry: ChannelEntry, fetcher: Any
+    ) -> list[tuple[ChannelEntry, StreamInfo]]:
+        try:
+            info = fetcher.get_stream_info(entry.name)
+        except Exception:
+            logger.exception("Error fetching fallback status for %s", entry.key)
+            return []
+
+        if info is None:
+            return []
+
+        with self._lock:
+            prev = self._last_status.get(entry.key)
+            self._last_status[entry.key] = info.is_live
+            if info.display_name:
+                self._display_names[entry.key] = info.display_name
+
+        went_live = info.is_live and prev is not True
+        if went_live:
+            info.stream_status = "live"
+            return [(entry, info)]
+        return []

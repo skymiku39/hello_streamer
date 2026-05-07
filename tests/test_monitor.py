@@ -28,10 +28,17 @@ class FakeTwitchFetcher:
 class FakeYouTubeFetcher:
     platform = "youtube"
 
-    def __init__(self, items_batches: list[list[VideoItem]]) -> None:
+    def __init__(
+        self,
+        items_batches: list[list[VideoItem]],
+        info_batches: list[StreamInfo | None] | None = None,
+    ) -> None:
         self.items_batches = items_batches
+        self.info_batches = info_batches or []
 
     def get_stream_info(self, channel_name: str) -> StreamInfo | None:
+        if self.info_batches:
+            return self.info_batches.pop(0)
         return None
 
     def get_channel_items(self, channel_name: str) -> list[VideoItem]:
@@ -171,10 +178,9 @@ def test_youtube_upcoming_sets_status(monkeypatch, tmp_path) -> None:
     entry = ChannelEntry(platform="youtube", name="ytchan")
     results = monitor._check_channel(entry)
 
-    assert len(results) == 1
-    _, info = results[0]
-    assert info.stream_status == "upcoming"
+    assert results == []
     assert monitor.snapshot_statuses() == {"youtube:ytchan": "upcoming"}
+    assert db.is_seen("vid_upcoming", "UPCOMING") is True
     db.close()
 
 
@@ -200,10 +206,149 @@ def test_youtube_mixed_styles_in_single_poll(monkeypatch, tmp_path) -> None:
     entry = ChannelEntry(platform="youtube", name="ytchan")
     results = monitor._check_channel(entry)
 
-    assert len(results) == 2
+    assert len(results) == 1
     statuses = [info.stream_status for _, info in results]
     assert "live" in statuses
-    assert "video" in statuses
+    assert monitor.snapshot_statuses() == {"youtube:ytchan": True}
+    assert db.is_seen("v_default", "DEFAULT") is True
+    db.close()
+
+
+def test_youtube_upcoming_then_live_same_video_triggers_live(
+    monkeypatch, tmp_path
+) -> None:
+    upcoming = VideoItem(
+        video_id="same_vid",
+        title="Waiting Room",
+        style="UPCOMING",
+        url="https://youtube.com/watch?v=same_vid",
+        display_name="YT Chan",
+    )
+    live = VideoItem(
+        video_id="same_vid",
+        title="Now Live",
+        style="LIVE",
+        url="https://youtube.com/watch?v=same_vid",
+        display_name="YT Chan",
+    )
+    fetcher = FakeYouTubeFetcher([[upcoming], [live]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "ytchan"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+
+    assert monitor._check_channel(entry) == []
+    results = monitor._check_channel(entry)
+
+    assert len(results) == 1
+    _, info = results[0]
+    assert info.stream_status == "live"
+    assert info.video_id == "same_vid"
+    assert db.is_seen("same_vid", "UPCOMING") is True
+    assert db.is_seen("same_vid", "LIVE") is True
+    db.close()
+
+
+def test_youtube_new_upcoming_after_baseline_triggers_notify_event(
+    monkeypatch, tmp_path
+) -> None:
+    old = VideoItem(
+        video_id="old_waiting",
+        title="Old Waiting Room",
+        style="UPCOMING",
+        url="https://youtube.com/watch?v=old_waiting",
+        display_name="YT Chan",
+    )
+    new = VideoItem(
+        video_id="new_waiting",
+        title="New Waiting Room",
+        style="UPCOMING",
+        url="https://youtube.com/watch?v=new_waiting",
+        display_name="YT Chan",
+    )
+    fetcher = FakeYouTubeFetcher([[old], [old, new]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "ytchan"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+
+    assert monitor._check_channel(entry) == []
+    results = monitor._check_channel(entry)
+
+    assert len(results) == 1
+    _, info = results[0]
+    assert info.stream_status == "upcoming"
+    assert info.video_id == "new_waiting"
+    db.close()
+
+
+def test_youtube_default_items_are_marked_but_never_emit_events(
+    monkeypatch, tmp_path
+) -> None:
+    old = VideoItem(
+        video_id="old_upload",
+        title="Old Upload",
+        style="DEFAULT",
+        url="https://youtube.com/watch?v=old_upload",
+        display_name="YT Chan",
+    )
+    new = VideoItem(
+        video_id="new_upload",
+        title="New Upload",
+        style="DEFAULT",
+        url="https://youtube.com/watch?v=new_upload",
+        display_name="YT Chan",
+    )
+    fetcher = FakeYouTubeFetcher([[old], [old, new]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "ytchan"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+
+    assert monitor._check_channel(entry) == []
+    assert monitor._check_channel(entry) == []
+    assert db.is_seen("old_upload", "DEFAULT") is True
+    assert db.is_seen("new_upload", "DEFAULT") is True
+    assert monitor.snapshot_statuses() == {"youtube:ytchan": False}
+    db.close()
+
+
+def test_youtube_empty_items_uses_live_fallback(monkeypatch, tmp_path) -> None:
+    fallback = StreamInfo(
+        channel="ytchan",
+        platform="youtube",
+        is_live=True,
+        title="Fallback Live",
+        url="https://www.youtube.com/@ytchan/live",
+        display_name="YT Chan",
+    )
+    fetcher = FakeYouTubeFetcher([[]], [fallback])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "ytchan"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+    results = monitor._check_channel(entry)
+
+    assert len(results) == 1
+    _, info = results[0]
+    assert info.stream_status == "live"
+    assert info.title == "Fallback Live"
     assert monitor.snapshot_statuses() == {"youtube:ytchan": True}
     db.close()
 

@@ -17,7 +17,7 @@ from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelEntry, Monitor
-from stream_monitor.notifier import execute_action, open_url
+from stream_monitor.notifier import action_for_stream_status, execute_action, open_url
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
 from stream_monitor.tray import TrayIcon
@@ -1094,13 +1094,17 @@ class App(ctk.CTk):
             for row in self._channel_rows:
                 row.set_status(statuses.get(row.key))
 
-        action = self.config.get("action", "open_and_stop")
+        configured_action = self.config.get("action", "open_and_stop")
         should_stop = False
         should_exit = False
 
         for entry, info in live_events:
             if info.display_name:
                 self._apply_display_names({entry.key: info.display_name})
+
+            action = action_for_stream_status(configured_action, info)
+            if action is None:
+                continue
 
             noop = lambda: None  # noqa: E731
             execute_action(action, info, stop_fn=noop, exit_fn=noop)

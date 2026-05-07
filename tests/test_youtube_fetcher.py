@@ -178,6 +178,35 @@ class TestGetStreamInfo:
         info = fetcher.get_stream_info("nobody")
         assert info is None
 
+    def test_empty_streams_page_uses_live_fallback(self, monkeypatch) -> None:
+        fetcher = YouTubeFetcher()
+        data = _make_initial_data([], "Streamer")
+        streams_html = _html_with_initial_data(data)
+        live_html = _html_with_player(
+            """
+            {
+              "playabilityStatus": {"status": "OK"},
+              "videoDetails": {
+                "author": "Streamer",
+                "isLive": true,
+                "title": "Now Live"
+              }
+            }
+            """
+        )
+
+        def fake_fetch(url: str) -> str:
+            if url.endswith("/streams"):
+                return streams_html
+            return live_html
+
+        monkeypatch.setattr(fetcher, "_fetch_page", fake_fetch)
+        info = fetcher.get_stream_info("streamer")
+
+        assert info is not None
+        assert info.is_live is True
+        assert info.title == "Now Live"
+
 
 # ─────────────────────────────────────────────
 # Fallback: old ytInitialPlayerResponse parsing
