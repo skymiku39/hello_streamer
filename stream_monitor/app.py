@@ -455,9 +455,40 @@ class ChannelRow(ctk.CTkFrame):
         self.channel = channel
         self._on_toggle_enabled = on_toggle_enabled
         self._active_url = ""
+        self._status_title = ""
 
         color = _CLR_TWITCH if channel["platform"] == "twitch" else _CLR_YOUTUBE
         self._platform_color = color
+
+        move_frame = ctk.CTkFrame(self, fg_color="transparent", width=30, height=42)
+        move_frame.pack(side="left", padx=(6, 0), pady=8)
+        move_frame.pack_propagate(False)
+
+        self.up_btn = ctk.CTkButton(
+            move_frame,
+            text="▲",
+            width=30,
+            height=20,
+            corner_radius=4,
+            fg_color="transparent",
+            hover_color="#243052",
+            font=_font(10),
+            command=on_move_up,
+        )
+        self.up_btn.pack(anchor="n")
+
+        self.down_btn = ctk.CTkButton(
+            move_frame,
+            text="▼",
+            width=30,
+            height=20,
+            corner_radius=4,
+            fg_color="transparent",
+            hover_color="#243052",
+            font=_font(10),
+            command=on_move_down,
+        )
+        self.down_btn.pack(anchor="s", side="bottom")
 
         self.platform_label = ctk.CTkLabel(
             self,
@@ -467,8 +498,10 @@ class ChannelRow(ctk.CTkFrame):
             corner_radius=6,
             text_color="white",
             font=_font(11, "bold"),
+            cursor="hand2",
         )
-        self.platform_label.pack(side="left", padx=(10, 6), pady=8)
+        self.platform_label.pack(side="left", padx=(4, 6), pady=8)
+        self.platform_label.bind("<Button-1>", lambda _e: self._open_channel_page())
 
         name_frame = ctk.CTkFrame(self, fg_color="transparent")
         name_frame.pack(side="left", padx=6, pady=7, fill="x", expand=True)
@@ -524,36 +557,6 @@ class ChannelRow(ctk.CTkFrame):
         )
         self.delete_btn.pack(side="right", padx=(0, 10), pady=8)
 
-        self.down_btn = ctk.CTkButton(
-            self,
-            text="↓",
-            width=30,
-            height=30,
-            corner_radius=6,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#3c4566",
-            hover_color="#243052",
-            font=_font(13, "bold"),
-            command=on_move_down,
-        )
-        self.down_btn.pack(side="right", padx=(0, 4), pady=8)
-
-        self.up_btn = ctk.CTkButton(
-            self,
-            text="↑",
-            width=30,
-            height=30,
-            corner_radius=6,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#3c4566",
-            hover_color="#243052",
-            font=_font(13, "bold"),
-            command=on_move_up,
-        )
-        self.up_btn.pack(side="right", padx=(0, 4), pady=8)
-
         self.toggle_btn = ctk.CTkButton(
             self,
             text="⏸",
@@ -578,7 +581,7 @@ class ChannelRow(ctk.CTkFrame):
             fg_color="transparent",
             hover_color=_CLR_LINK_HOVER,
             font=_font(12),
-            command=self._open_current_page,
+            command=self._open_channel_page,
         )
         self.link_btn.pack(side="right", padx=(0, 4), pady=8)
 
@@ -587,7 +590,8 @@ class ChannelRow(ctk.CTkFrame):
         _tooltip(self.up_btn, "上移")
         _tooltip(self.down_btn, "下移")
         _tooltip(self.delete_btn, "刪除頻道")
-        self._platform_tip = _tooltip(self.platform_label, channel["platform"].upper())
+        self._platform_tip = _tooltip(self.platform_label, "開啟頻道首頁")
+        self._status_tip = _tooltip(self.status_label, "")
 
         self._apply_enabled_visual()
 
@@ -602,9 +606,6 @@ class ChannelRow(ctk.CTkFrame):
 
     def _open_channel_page(self) -> None:
         open_url(self._channel_url())
-
-    def _open_current_page(self) -> None:
-        open_url(self._active_url or self._channel_url())
 
     def _open_active_page(self) -> None:
         if self._active_url:
@@ -654,30 +655,46 @@ class ChannelRow(ctk.CTkFrame):
         detail = status if isinstance(status, ChannelStatus) else None
         state = detail.status if detail else status
         self._active_url = detail.url if detail else ""
+        self._status_title = detail.title if detail else ""
 
         if state is None:
             self.time_label.configure(text="")
             self.status_label.configure(
                 text="  --  ", text_color="#666677", fg_color="transparent"
             )
+            self.status_label.configure(cursor="")
+            self._status_tip.text = ""
         elif state == "upcoming":
             countdown = _format_countdown(detail.scheduled_start if detail else "")
             self.time_label.configure(text=countdown)
             self.status_label.configure(
                 text=" UPCOMING ", text_color="white", fg_color="#e65100"
             )
+            self.status_label.configure(cursor="hand2")
+            tip = f"📺 {detail.title}" if detail and detail.title else ""
+            if countdown:
+                tip += f"\n⏱ {countdown} 後開始" if tip else f"⏱ {countdown} 後開始"
+            self._status_tip.text = tip or "待機中"
         elif state is True or state == "live":
             elapsed = _format_elapsed(detail.started_at if detail else "")
             self.time_label.configure(text=elapsed)
             self.status_label.configure(
                 text=" ● LIVE ", text_color="white", fg_color="#1b5e20"
             )
+            self.status_label.configure(cursor="hand2")
+            tip = f"📺 {detail.title}" if detail and detail.title else ""
+            if elapsed:
+                tip += f"\n⏱ 已開播 {elapsed}" if tip else f"⏱ 已開播 {elapsed}"
+            self._status_tip.text = tip or "直播中"
         else:
             self._active_url = ""
+            self._status_title = ""
             self.time_label.configure(text="")
             self.status_label.configure(
                 text=" OFFLINE ", text_color="#999999", fg_color="transparent"
             )
+            self.status_label.configure(cursor="")
+            self._status_tip.text = ""
 
     @property
     def key(self) -> str:
