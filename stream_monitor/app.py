@@ -34,7 +34,7 @@ ctk.set_default_color_theme("blue")
 # ---------------------------------------------------------------------------
 _FONT_FAMILY = "Microsoft JhengHei UI"
 if platform.system() != "Windows":
-    _FONT_FAMILY = "Noto Sans TC"
+    _FONT_FAMILY = "sans-serif"
 
 
 def _font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
@@ -218,8 +218,11 @@ class AddChannelDialog(ctk.CTkToplevel):
         self.geometry("680x430")
         self.resizable(False, False)
         self.transient(parent)
-        self.grab_set()
         self.configure(fg_color=_CLR_BG_DARK)
+
+        if sys.platform != "win32":
+            self.update()
+        self.grab_set()
 
         self.result: dict[str, str] | None = None
 
