@@ -63,6 +63,7 @@
 
 - **Windows**：下載 `HelloStreamer-vX.Y.Z-windows-x64.exe` 後可直接執行，無需安裝。
 - **Linux x64**：下載 `HelloStreamer-vX.Y.Z-linux-x64.tar.gz`，解壓縮後執行 `HelloStreamer`。
+- **Linux ARM64**：下載 `HelloStreamer-vX.Y.Z-linux-arm64.tar.gz`，適用於 Raspberry Pi 64-bit 與其他 ARM64 Linux 桌面環境。
 
 首次執行時，Windows 可能會顯示安全提示，請確認來源為本專案的 GitHub Release。
 Linux 版本需要桌面環境與系統匣 / 通知相關套件，請參考下方 Linux 安裝說明。
@@ -149,6 +150,7 @@ uv run python build.py
 
 - **Windows x64**：`HelloStreamer-vX.Y.Z-windows-x64.exe`
 - **Linux x64**：`HelloStreamer-vX.Y.Z-linux-x64.tar.gz`
+- **Linux ARM64**：`HelloStreamer-vX.Y.Z-linux-arm64.tar.gz`
 
 ## 專案結構
 
@@ -211,9 +213,12 @@ tar -xzf HelloStreamer-vX.Y.Z-linux-x64.tar.gz
 ./HelloStreamer
 ```
 
+若是 Raspberry Pi 64-bit 或其他 ARM64 Linux，請改下載並解壓縮 `HelloStreamer-vX.Y.Z-linux-arm64.tar.gz`。
+
 ### Raspberry Pi 注意事項
 
 - 必須在桌面環境中執行（接螢幕、或透過 VNC），SSH 純終端機無法顯示 GUI
+- 64-bit Raspberry Pi OS 請使用 `linux-arm64` 發布檔；32-bit Raspberry Pi OS 目前請從原始碼執行
 - Raspberry Pi OS (Bookworm) 已內建所需的大多數套件，僅需補裝上述 apt 套件
 - 如果使用 Wayland（Raspberry Pi 5 預設），pystray 可能需要 `gir1.2-ayatanaappindicator3-0.1` 才能正確顯示系統匣圖示
 - 若 `notify-send` 指令不存在，桌面通知功能會靜默略過（不影響其他功能）

@@ -13,13 +13,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            artifact: windows-x64
+            executable: HelloStreamer.exe
+          - os: ubuntu-latest
+            artifact: linux-x64
+            executable: HelloStreamer
+          - os: ubuntu-24.04-arm
+            artifact: linux-arm64
+            executable: HelloStreamer
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Linux system deps
         if: runner.os == 'Linux'
@@ -28,7 +37,7 @@ jobs:
           sudo apt-get install -y python3-tk libgirepository1.0-dev gir1.2-ayatanaappindicator3-0.1 libnotify-bin
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -56,20 +65,20 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release
-          Copy-Item -LiteralPath dist/HelloStreamer.exe -Destination "release/HelloStreamer-${{ github.ref_name }}-windows-x64.exe"
+          Copy-Item -LiteralPath "dist/${{ matrix.executable }}" -Destination "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.exe"
 
       - name: Package Linux executable
         if: runner.os == 'Linux'
         run: |
           mkdir -p release package
-          cp dist/HelloStreamer package/HelloStreamer
+          cp "dist/${{ matrix.executable }}" package/HelloStreamer
           chmod +x package/HelloStreamer
-          tar -czf "release/HelloStreamer-${{ github.ref_name }}-linux-x64.tar.gz" -C package HelloStreamer
+          tar -czf "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C package HelloStreamer
 
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ runner.os }}
+          name: release-${{ matrix.artifact }}
           path: release/*
 
   release:
@@ -78,7 +87,7 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download Release Artifacts
         uses: actions/download-artifact@v4

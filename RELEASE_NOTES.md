@@ -1,12 +1,12 @@
-# Hello Streamer v0.3.0
+# Hello Streamer v0.3.1
 
 ## 發布重點
 
-- 新增 Linux / Raspberry Pi 桌面環境支援，包含 `notify-send` 桌面通知與 XDG Autostart 開機自啟。
-- 發布流程改為同時建置 Windows 與 Linux 版本，GitHub Release 會提供 Windows exe 與 Linux tar.gz 下載。
-- 打包腳本支援依平台帶入不同的 PyInstaller hidden import，讓 Windows 與 Linux 都能正確載入系統匣後端。
+- 新增 Linux ARM64 發布產物，提供 Raspberry Pi 64-bit 與其他 ARM64 Linux 桌面環境使用。
+- Release workflow 改用 GitHub-hosted `ubuntu-24.04-arm` 原生 ARM runner 建置，不再透過 QEMU 模擬。
+- GitHub Release 現在會同時提供 Windows x64、Linux x64、Linux ARM64 三種下載檔。
 
 ## 改善
 
-- README 更新為跨平台使用說明，補充 Linux 系統套件、Raspberry Pi 注意事項與打包輸出。
-- CI 已涵蓋 Windows 與 Ubuntu，並在 Linux 環境安裝 Tk、AppIndicator 等桌面整合依賴。
+- CI 新增 Ubuntu ARM64 檢查，讓 ARM 架構問題能在 pull request / push 階段提早發現。
+- README 補上 ARM64 下載檔名稱與 Raspberry Pi 使用提示。

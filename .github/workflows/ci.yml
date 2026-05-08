@@ -10,12 +10,12 @@ jobs:
   checks:
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Linux system deps
         if: runner.os == 'Linux'
@@ -24,7 +24,7 @@ jobs:
           sudo apt-get install -y python3-tk libgirepository1.0-dev gir1.2-ayatanaappindicator3-0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
