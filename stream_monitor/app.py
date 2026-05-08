@@ -1309,7 +1309,7 @@ def main() -> None:
     if getattr(sys, "frozen", False) and sys.platform != "win32":
         _fix_linux_frozen_env()
 
-    logging.basicConfig(
+    logging.basicConfig(    
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )

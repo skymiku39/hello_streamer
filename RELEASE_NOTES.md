@@ -1,14 +1,18 @@
-# Hello Streamer v0.3.7
+# Hello Streamer v0.3.8
 
 ## 修復重點
 
-- **修復 Linux/Raspberry Pi 上「新增頻道」對話框空白的問題**
-  - CustomTkinter 的 `CTkToplevel` 在 Linux window manager（LXDE、Wayfire 等）上如果過早呼叫 `grab_set()`，視窗內容不會渲染
-  - 在呼叫 `grab_set()` 前先 `update()` 確保視窗已完成映射
-  - Linux 字型改用 `sans-serif` 通用名稱，避免因找不到特定中文字型而影響渲染
+- **修復 YouTube 偵測在 Linux/Raspberry Pi 上失敗的問題**
+  - YouTube 在沒有 cookie 的全新 session 中會回傳隱私同意頁面而非頻道實際內容
+  - 預設設置 `CONSENT` 和 `SOCS` cookie 繞過同意頁，讓 fetcher 能正確解析 `ytInitialData`
+  - 此修正同時適用於 Windows 和 Linux，提升穩定性
+
+- **修復「新增頻道」對話框空白**（延續 v0.3.7）
+  - `CTkToplevel` 在 Linux 上呼叫 `update()` 後再 `grab_set()`
+  - 字型改用通用 `sans-serif`
 
 ## 下載建議
 
-- Windows 請下載 `HelloStreamer-v0.3.7-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.3.7-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.3.7-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v0.3.8-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.3.8-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.3.8-linux-arm64.tar.gz`

@@ -77,6 +77,11 @@ class YouTubeFetcher(StreamFetcher):
     def __init__(self) -> None:
         self._session = requests.Session()
         self._session.headers.update(_HEADERS)
+        self._session.cookies.set("CONSENT", "PENDING+987", domain=".youtube.com")
+        self._session.cookies.set(
+            "SOCS", "CAESEwgDEgk2NDcwMTcxMjQaAmVuIAEaBgiA_LyaBg",
+            domain=".youtube.com",
+        )
 
     # ------------------------------------------------------------------
     # HTTP helpers
