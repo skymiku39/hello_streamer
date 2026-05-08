@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
-from pathlib import Path as _Path
 
 logger = logging.getLogger(__name__)
 
@@ -14,18 +13,14 @@ _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 def _get_startup_command(exe_path: str | None = None) -> str | None:
-    """Build the registry Run command for both packaged and dev modes."""
+    """Build the registry Run command for the packaged executable."""
     if exe_path is not None:
         return subprocess.list2cmdline([exe_path, "--silent"])
 
     if getattr(sys, "frozen", False):
         return subprocess.list2cmdline([sys.executable, "--silent"])
 
-    python = sys.executable
-    pythonw = python.replace("python.exe", "pythonw.exe")
-    if not _Path(pythonw).exists():
-        pythonw = python
-    return subprocess.list2cmdline([pythonw, "-m", "stream_monitor", "--silent"])
+    return None
 
 
 def is_startup_enabled() -> bool:

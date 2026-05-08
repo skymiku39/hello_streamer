@@ -581,11 +581,11 @@ class ChannelRow(ctk.CTkFrame):
             fg_color="transparent",
             hover_color=_CLR_LINK_HOVER,
             font=_font(12),
-            command=self._open_channel_page,
+            command=self._open_current_page,
         )
         self.link_btn.pack(side="right", padx=(0, 4), pady=8)
 
-        _tooltip(self.link_btn, "開啟頻道首頁")
+        self._link_tip = _tooltip(self.link_btn, "開啟頻道首頁")
         self._toggle_tip = _tooltip(self.toggle_btn, "")
         _tooltip(self.up_btn, "上移")
         _tooltip(self.down_btn, "下移")
@@ -607,9 +607,16 @@ class ChannelRow(ctk.CTkFrame):
     def _open_channel_page(self) -> None:
         open_url(self._channel_url())
 
+    def _open_current_page(self) -> None:
+        open_url(self._active_url or self._channel_url())
+
     def _open_active_page(self) -> None:
         if self._active_url:
             open_url(self._active_url)
+
+    def _set_link_tip(self, text: str) -> None:
+        if hasattr(self, "_link_tip"):
+            self._link_tip.text = text
 
     def _on_toggle_click(self) -> None:
         enabled = not self.channel.get("enabled", True)
@@ -620,7 +627,9 @@ class ChannelRow(ctk.CTkFrame):
     def _apply_enabled_visual(self) -> None:
         enabled = self.channel.get("enabled", True)
         self._active_url = ""
+        self._status_title = ""
         self.time_label.configure(text="")
+        self._set_link_tip("開啟頻道首頁")
         if enabled:
             self.configure(fg_color=_CLR_CARD)
             self.platform_label.configure(
@@ -645,6 +654,7 @@ class ChannelRow(ctk.CTkFrame):
                 text=" 已暫停 ", text_color=_CLR_TEXT_DISABLED, fg_color="transparent"
             )
             self.toggle_btn.configure(text="▶")
+            self._set_link_tip("頻道已暫停；開啟頻道首頁")
             if hasattr(self, "_toggle_tip"):
                 self._toggle_tip.text = "恢復監聽此頻道"
 
@@ -664,6 +674,7 @@ class ChannelRow(ctk.CTkFrame):
             )
             self.status_label.configure(cursor="")
             self._status_tip.text = ""
+            self._set_link_tip("尚未更新；開啟頻道首頁")
         elif state == "upcoming":
             countdown = _format_countdown(detail.scheduled_start if detail else "")
             self.time_label.configure(text=countdown)
@@ -675,6 +686,10 @@ class ChannelRow(ctk.CTkFrame):
             if countdown:
                 tip += f"\n⏱ {countdown} 後開始" if tip else f"⏱ {countdown} 後開始"
             self._status_tip.text = tip or "待機中"
+            link_tip = "開啟待機間"
+            if detail and detail.title:
+                link_tip += f"：{detail.title}"
+            self._set_link_tip(link_tip)
         elif state is True or state == "live":
             elapsed = _format_elapsed(detail.started_at if detail else "")
             self.time_label.configure(text=elapsed)
@@ -686,6 +701,10 @@ class ChannelRow(ctk.CTkFrame):
             if elapsed:
                 tip += f"\n⏱ 已開播 {elapsed}" if tip else f"⏱ 已開播 {elapsed}"
             self._status_tip.text = tip or "直播中"
+            link_tip = "開啟直播間"
+            if detail and detail.title:
+                link_tip += f"：{detail.title}"
+            self._set_link_tip(link_tip)
         else:
             self._active_url = ""
             self._status_title = ""
@@ -695,6 +714,7 @@ class ChannelRow(ctk.CTkFrame):
             )
             self.status_label.configure(cursor="")
             self._status_tip.text = ""
+            self._set_link_tip("目前離線；開啟頻道首頁")
 
     @property
     def key(self) -> str:
