@@ -1,4 +1,4 @@
-name: Build and Release Windows App
+name: Build and Release Desktop Apps
 
 on:
   push:
@@ -10,11 +10,22 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk libgirepository1.0-dev gir1.2-ayatanaappindicator3-0.1 libnotify-bin
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -28,19 +39,57 @@ jobs:
       - name: Install Dependencies
         run: uv sync --extra dev
 
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Compile Python
+        run: uv run python -m compileall -f stream_monitor build.py
+
+      - name: Pytest
+        run: uv run pytest -q
+
       - name: Build Executable
         run: uv run python build.py
 
-      - name: Upload Build Artifact
+      - name: Package Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+          Copy-Item -LiteralPath dist/HelloStreamer.exe -Destination "release/HelloStreamer-${{ github.ref_name }}-windows-x64.exe"
+
+      - name: Package Linux executable
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p release package
+          cp dist/HelloStreamer package/HelloStreamer
+          chmod +x package/HelloStreamer
+          tar -czf "release/HelloStreamer-${{ github.ref_name }}-linux-x64.tar.gz" -C package HelloStreamer
+
+      - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: HelloStreamer-exe
-          path: dist/HelloStreamer.exe
+          name: release-${{ runner.os }}
+          path: release/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Release Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/HelloStreamer.exe
+          files: release/*
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
         env:

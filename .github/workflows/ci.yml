@@ -21,7 +21,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk libgirepository1.0-dev gir1.2-ayatanappindicator3-0.1
+          sudo apt-get install -y python3-tk libgirepository1.0-dev gir1.2-ayatanaappindicator3-0.1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3

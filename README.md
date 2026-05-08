@@ -61,12 +61,15 @@
 
 **[Download latest release](https://github.com/skymiku39/hello_streamer/releases/latest)**
 
-下載 `HelloStreamer.exe` 後可直接執行，無需安裝。
+- **Windows**：下載 `HelloStreamer-vX.Y.Z-windows-x64.exe` 後可直接執行，無需安裝。
+- **Linux x64**：下載 `HelloStreamer-vX.Y.Z-linux-x64.tar.gz`，解壓縮後執行 `HelloStreamer`。
+
 首次執行時，Windows 可能會顯示安全提示，請確認來源為本專案的 GitHub Release。
+Linux 版本需要桌面環境與系統匣 / 通知相關套件，請參考下方 Linux 安裝說明。
 
 ## 使用方式
 
-1. 啟動 `HelloStreamer.exe`
+1. 啟動 `HelloStreamer`
 2. 點擊「＋ 新增頻道」
 3. 貼上 Twitch 或 YouTube 頻道網址（或手動選擇平台並輸入頻道名稱）
 4. 設定檢查間隔（最低 10 秒）與觸發行為
@@ -87,7 +90,7 @@
 應用程式使用本機 `config.json` 儲存所有設定，包含頻道清單、檢查間隔、觸發行為、視窗位置等。
 
 - 開發模式：`config.json` 位於專案根目錄
-- 封裝版：`config.json` 位於 `HelloStreamer.exe` 同一層目錄
+- 封裝版：`config.json` 位於 `HelloStreamer` 執行檔同一層目錄
 - `config.json` 屬於本機 runtime 設定，不會提交到版本控制
 
 ### 開機自動啟動
@@ -142,8 +145,10 @@ uv run python build.py
 - **Windows**：輸出 `dist/HelloStreamer.exe`
 - **Linux**：輸出 `dist/HelloStreamer`（ELF 執行檔）
 
-推送 `v*` tag 時，release workflow 會自動建置 Windows exe 並發佈 GitHub Release。
-Linux 使用者建議直接以 `uv run` 方式執行（見下方 Linux 安裝說明）。
+推送 `v*` tag 時，release workflow 會自動建置並發佈：
+
+- **Windows x64**：`HelloStreamer-vX.Y.Z-windows-x64.exe`
+- **Linux x64**：`HelloStreamer-vX.Y.Z-linux-x64.tar.gz`
 
 ## 專案結構
 
@@ -177,12 +182,12 @@ sudo apt update
 sudo apt install -y \
     python3-tk \
     libgirepository1.0-dev \
-    gir1.2-ayatanappindicator3-0.1 \
+    gir1.2-ayatanaappindicator3-0.1 \
     libnotify-bin \
     fonts-dejavu-core
 ```
 
-> `libnotify-bin` 提供 `notify-send` 指令（桌面通知）；`gir1.2-ayatanappindicator3-0.1` 為 pystray 系統匣所需。
+> `libnotify-bin` 提供 `notify-send` 指令（桌面通知）；`gir1.2-ayatanaappindicator3-0.1` 為 pystray 系統匣所需。
 
 ### 安裝與執行
 
@@ -194,16 +199,23 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/skymiku39/hello_streamer.git
 cd hello_streamer
 
-# 安裝依賴並執行
+# 安裝依賴並從原始碼執行
 uv sync
 uv run python -m stream_monitor
+```
+
+也可以直接下載 GitHub Release 的 Linux 版本：
+
+```bash
+tar -xzf HelloStreamer-vX.Y.Z-linux-x64.tar.gz
+./HelloStreamer
 ```
 
 ### Raspberry Pi 注意事項
 
 - 必須在桌面環境中執行（接螢幕、或透過 VNC），SSH 純終端機無法顯示 GUI
 - Raspberry Pi OS (Bookworm) 已內建所需的大多數套件，僅需補裝上述 apt 套件
-- 如果使用 Wayland（Raspberry Pi 5 預設），pystray 可能需要 `gir1.2-ayatanappindicator3-0.1` 才能正確顯示系統匣圖示
+- 如果使用 Wayland（Raspberry Pi 5 預設），pystray 可能需要 `gir1.2-ayatanaappindicator3-0.1` 才能正確顯示系統匣圖示
 - 若 `notify-send` 指令不存在，桌面通知功能會靜默略過（不影響其他功能）
 
 ## 已知限制
