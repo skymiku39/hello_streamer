@@ -114,7 +114,8 @@ jobs:
               python -m pytest -q
               python build.py
               file dist/HelloStreamer
-              ldd --version | head -1
+              ldd --version > /tmp/ldd-version.txt
+              head -n 1 /tmp/ldd-version.txt
             '
 
       - name: Package Linux executable

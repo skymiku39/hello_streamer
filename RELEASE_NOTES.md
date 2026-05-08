@@ -1,12 +1,12 @@
-# Hello Streamer v0.3.2
+# Hello Streamer v0.3.3
 
 ## 修復重點
 
-- 修正 Raspberry Pi 64-bit 發布檔相容性：Linux x64 / ARM64 現在改在 Debian Bookworm 容器中建置，避免 Ubuntu 24.04 glibc 過新導致 Raspberry Pi OS Bookworm 無法執行。
-- Linux ARM64 發布檔仍維持 `HelloStreamer-vX.Y.Z-linux-arm64.tar.gz`，適用於 64-bit Raspberry Pi OS。
-- Linux 建置環境補齊 `libpython3.11` 與 PyGObject / GTK bindings，避免 PyInstaller 與系統匣後端缺少必要 runtime。
+- 修正 Linux release workflow 在最後輸出 glibc 版本時因 pipefail / SIGPIPE 導致 job 失敗的問題。
+- 延續 v0.3.2 的 Raspberry Pi 修正：Linux x64 / ARM64 仍以 Debian Bookworm 為基準建置，降低 Raspberry Pi OS Bookworm 相容性問題。
+- Linux 建置環境補齊 `libpython3.11`、PyGObject 與 GTK bindings，讓 PyInstaller 與系統匣後端能取得必要 runtime。
 
-## 改善
+## 下載建議
 
-- Linux release workflow 會輸出 `file` 與 `ldd --version` 資訊，方便確認實際產物架構與 glibc 基準。
-- README 補上 Raspberry Pi 常見失敗原因：32-bit OS 不能執行 ARM64 binary，請改用 64-bit OS 或從原始碼執行。
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.3.3-linux-arm64.tar.gz`。
+- 32-bit Raspberry Pi OS 不能執行 ARM64 發布檔，請改用 64-bit Raspberry Pi OS，或從原始碼執行。
