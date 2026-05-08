@@ -8,7 +8,7 @@ dependencies = [
     "customtkinter>=5.2",
     "requests>=2.31",
     "Pillow>=10.0",
-    "winotify>=1.1",
+    "winotify>=1.1; sys_platform == 'win32'",
     "pystray>=0.19",
 ]
 

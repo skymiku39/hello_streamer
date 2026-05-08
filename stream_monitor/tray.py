@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from typing import Callable
 
@@ -12,6 +13,17 @@ logger = logging.getLogger(__name__)
 
 _ICON_SIZE = 64
 
+_FONT_CANDIDATES = (
+    ["arial.ttf"]
+    if sys.platform == "win32"
+    else [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ]
+)
+
 
 def _create_icon_image() -> Image.Image:
     """Generate a simple tray icon programmatically."""
@@ -20,9 +32,14 @@ def _create_icon_image() -> Image.Image:
     draw.rounded_rectangle(
         [4, 4, 60, 60], radius=14, fill="#0f3460", outline="#00e676", width=3
     )
-    try:
-        font = ImageFont.truetype("arial.ttf", 28)
-    except OSError:
+    font = None
+    for candidate in _FONT_CANDIDATES:
+        try:
+            font = ImageFont.truetype(candidate, 28)
+            break
+        except OSError:
+            continue
+    if font is None:
         font = ImageFont.load_default()
     draw.text((16, 14), "H", fill="white", font=font)
     return img
