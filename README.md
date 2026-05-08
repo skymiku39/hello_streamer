@@ -163,7 +163,7 @@ stream_monitor/
 
 ## 隱私
 
-Hello Streamer 不會將任何設定同步到外部伺服器。頻道清單與使用者設定僅儲存在本機 `config.json`，影片紀錄存於本機 `seen_videos.db`。程式僅向 Twitch / YouTube 發送請求以檢查頻道狀態。
+Hello Streamer 不會將任何設定同步到外部伺服器。頻道清單與使用者設定僅儲存在本機 config.json。程式也會自動建立本機 seen_videos.db，只用來記錄已看過的 YouTube 影片/直播 ID，以避免重複通知；這不是需要手動調整的設定檔。
 
 ## 致謝
 
