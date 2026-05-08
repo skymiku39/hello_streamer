@@ -9,32 +9,12 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            artifact: windows-x64
-            executable: HelloStreamer.exe
-          - os: ubuntu-latest
-            artifact: linux-x64
-            executable: HelloStreamer
-          - os: ubuntu-24.04-arm
-            artifact: linux-arm64
-            executable: HelloStreamer
-
-    runs-on: ${{ matrix.os }}
+  build-windows:
+    runs-on: windows-latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
-
-      - name: Install Linux system deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-tk libgirepository1.0-dev gir1.2-ayatanaappindicator3-0.1 libnotify-bin
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -61,17 +41,86 @@ jobs:
         run: uv run python build.py
 
       - name: Package Windows executable
-        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release
-          Copy-Item -LiteralPath "dist/${{ matrix.executable }}" -Destination "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.exe"
+          Copy-Item -LiteralPath dist/HelloStreamer.exe -Destination "release/HelloStreamer-${{ github.ref_name }}-windows-x64.exe"
+
+      - name: Upload Release Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: release/*
+
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: linux-x64
+            platform: linux/amd64
+          - artifact: linux-arm64
+            platform: linux/arm64
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        if: matrix.platform != 'linux/amd64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build Linux executable in Debian Bookworm
+        run: |
+          HOST_UID="$(id -u)"
+          HOST_GID="$(id -g)"
+          docker run --rm --platform "${{ matrix.platform }}" \
+            -e HOST_UID="$HOST_UID" \
+            -e HOST_GID="$HOST_GID" \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            debian:bookworm \
+            bash -c '
+              set -euo pipefail
+              trap '\''chown -R "$HOST_UID:$HOST_GID" /src || true'\'' EXIT
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                python3 \
+                python3-venv \
+                python3-pip \
+                python3-tk \
+                python3-gi \
+                python3-gi-cairo \
+                libpython3.11 \
+                libgirepository1.0-dev \
+                gir1.2-gtk-3.0 \
+                gir1.2-ayatanaappindicator3-0.1 \
+                libnotify-bin \
+                fonts-dejavu-core \
+                binutils \
+                gcc \
+                libc-dev \
+                file
+              rm -rf .venv build dist
+              python3 -m venv --system-site-packages .venv
+              . .venv/bin/activate
+              python -m pip install --upgrade pip
+              python -m pip install -e ".[dev]"
+              python -m ruff check .
+              python -m compileall -f stream_monitor build.py
+              python -m pytest -q
+              python build.py
+              file dist/HelloStreamer
+              ldd --version | head -1
+            '
 
       - name: Package Linux executable
-        if: runner.os == 'Linux'
         run: |
           mkdir -p release package
-          cp "dist/${{ matrix.executable }}" package/HelloStreamer
+          cp dist/HelloStreamer package/HelloStreamer
           chmod +x package/HelloStreamer
           tar -czf "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C package HelloStreamer
 
@@ -82,7 +131,7 @@ jobs:
           path: release/*
 
   release:
-    needs: build
+    needs: [build-windows, build-linux]
     runs-on: ubuntu-latest
 
     steps:

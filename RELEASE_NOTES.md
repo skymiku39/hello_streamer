@@ -1,12 +1,12 @@
-# Hello Streamer v0.3.1
+# Hello Streamer v0.3.2
 
-## 發布重點
+## 修復重點
 
-- 新增 Linux ARM64 發布產物，提供 Raspberry Pi 64-bit 與其他 ARM64 Linux 桌面環境使用。
-- Release workflow 改用 GitHub-hosted `ubuntu-24.04-arm` 原生 ARM runner 建置，不再透過 QEMU 模擬。
-- GitHub Release 現在會同時提供 Windows x64、Linux x64、Linux ARM64 三種下載檔。
+- 修正 Raspberry Pi 64-bit 發布檔相容性：Linux x64 / ARM64 現在改在 Debian Bookworm 容器中建置，避免 Ubuntu 24.04 glibc 過新導致 Raspberry Pi OS Bookworm 無法執行。
+- Linux ARM64 發布檔仍維持 `HelloStreamer-vX.Y.Z-linux-arm64.tar.gz`，適用於 64-bit Raspberry Pi OS。
+- Linux 建置環境補齊 `libpython3.11` 與 PyGObject / GTK bindings，避免 PyInstaller 與系統匣後端缺少必要 runtime。
 
 ## 改善
 
-- CI 新增 Ubuntu ARM64 檢查，讓 ARM 架構問題能在 pull request / push 階段提早發現。
-- README 補上 ARM64 下載檔名稱與 Raspberry Pi 使用提示。
+- Linux release workflow 會輸出 `file` 與 `ldd --version` 資訊，方便確認實際產物架構與 glibc 基準。
+- README 補上 Raspberry Pi 常見失敗原因：32-bit OS 不能執行 ARM64 binary，請改用 64-bit OS 或從原始碼執行。

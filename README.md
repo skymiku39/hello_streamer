@@ -183,13 +183,16 @@ stream_monitor/
 sudo apt update
 sudo apt install -y \
     python3-tk \
+    python3-gi \
+    python3-gi-cairo \
     libgirepository1.0-dev \
+    gir1.2-gtk-3.0 \
     gir1.2-ayatanaappindicator3-0.1 \
     libnotify-bin \
     fonts-dejavu-core
 ```
 
-> `libnotify-bin` 提供 `notify-send` 指令（桌面通知）；`gir1.2-ayatanaappindicator3-0.1` 為 pystray 系統匣所需。
+> `libnotify-bin` 提供 `notify-send` 指令（桌面通知）；`python3-gi` 與 `gir1.2-ayatanaappindicator3-0.1` 為 pystray 系統匣所需。
 
 ### 安裝與執行
 
@@ -222,6 +225,24 @@ tar -xzf HelloStreamer-vX.Y.Z-linux-x64.tar.gz
 - Raspberry Pi OS (Bookworm) 已內建所需的大多數套件，僅需補裝上述 apt 套件
 - 如果使用 Wayland（Raspberry Pi 5 預設），pystray 可能需要 `gir1.2-ayatanaappindicator3-0.1` 才能正確顯示系統匣圖示
 - 若 `notify-send` 指令不存在，桌面通知功能會靜默略過（不影響其他功能）
+
+### Raspberry Pi 排錯
+
+先確認系統架構：
+
+```bash
+uname -m
+getconf LONG_BIT
+```
+
+- `aarch64` / `64`：可使用 `linux-arm64` 發布檔。
+- `armv7l` / `32`：不能執行 `linux-arm64` 發布檔，請改用 64-bit Raspberry Pi OS，或從原始碼執行。
+
+常見錯誤：
+
+- `Exec format error`：下載到錯誤架構，通常是 32-bit OS 跑了 ARM64 binary。
+- `GLIBC_x.xx not found`：系統版本太舊或 binary 建置環境太新；請使用 v0.3.2 之後的版本，Linux binary 會以 Debian Bookworm 為基準建置。
+- 沒有畫面：請確認是在桌面環境或 VNC 裡執行，SSH 純終端機無法顯示 GUI。
 
 ## 已知限制
 
