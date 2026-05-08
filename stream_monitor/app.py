@@ -1284,7 +1284,28 @@ class App(ctk.CTk):
         self.destroy()
 
 
+def _fix_linux_frozen_env() -> None:
+    """Restore LD_LIBRARY_PATH for PyInstaller --onefile on Linux.
+
+    PyInstaller overrides LD_LIBRARY_PATH to its temp extraction dir, which
+    breaks DNS resolution (glibc NSS dlopen) and subprocess calls (browser,
+    xdg-open).  Restoring the original value after Python is fully loaded is
+    safe because all bundled .so files are already mapped into memory.
+    """
+    import os
+
+    lp_key = "LD_LIBRARY_PATH"
+    lp_orig = os.environ.get(lp_key + "_ORIG")
+    if lp_orig is not None:
+        os.environ[lp_key] = lp_orig
+    elif lp_key in os.environ:
+        del os.environ[lp_key]
+
+
 def main() -> None:
+    if getattr(sys, "frozen", False) and sys.platform != "win32":
+        _fix_linux_frozen_env()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

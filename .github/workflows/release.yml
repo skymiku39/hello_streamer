@@ -52,114 +52,82 @@ jobs:
           name: release-windows-x64
           path: release/*
 
-  build-linux-x64:
+  build-linux:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: linux-x64
+            platform: linux/amd64
+          - artifact: linux-arm64
+            platform: linux/arm64
 
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Install Linux system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-tk libgirepository1.0-dev gir1.2-ayatanaappindicator3-0.1 libnotify-bin
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Set up Python
-        run: uv python install 3.11
-
-      - name: Install Dependencies
-        run: uv sync --extra dev
-
-      - name: Ruff
-        run: uv run ruff check .
-
-      - name: Compile Python
-        run: uv run python -m compileall -f stream_monitor build.py
-
-      - name: Pytest
-        run: uv run pytest -q
-
-      - name: Build Executable
-        run: uv run python build.py
-
-      - name: Package Linux executable
-        run: |
-          mkdir -p release package
-          cp dist/HelloStreamer package/HelloStreamer
-          chmod +x package/HelloStreamer
-          tar -czf "release/HelloStreamer-${{ github.ref_name }}-linux-x64.tar.gz" -C package HelloStreamer
-
-      - name: Upload Release Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-linux-x64
-          path: release/*
-
-  build-linux-arm64:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Set up QEMU
+        if: matrix.platform != 'linux/amd64'
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
 
-      - name: Build ARM64 executable
+      - name: Build Linux executable in Debian Bookworm
         run: |
-          docker run --rm --platform linux/arm64 \
+          docker run --rm --platform "${{ matrix.platform }}" \
             -v "${{ github.workspace }}:/src" \
             -w /src \
-            python:3.11-bookworm \
+            debian:bookworm \
             bash -c '
               set -euo pipefail
               apt-get update
               apt-get install -y --no-install-recommends \
-                binutils \
-                gcc \
-                libc-dev \
-                libgirepository1.0-dev \
-                gir1.2-ayatanaappindicator3-0.1 \
+                python3 \
+                python3-venv \
+                python3-pip \
+                python3-tk \
+                python3-gi \
+                python3-gi-cairo \
                 gir1.2-gtk-3.0 \
+                gir1.2-ayatanaappindicator3-0.1 \
+                libgirepository1.0-dev \
                 libnotify-bin \
                 fonts-dejavu-core \
+                binutils \
                 file
-              pip install --no-cache-dir --break-system-packages uv
               rm -rf .venv build dist
-              uv venv --python python3.11
-              uv sync --extra dev
-              uv run python build.py
-              echo "--- Build output ---"
+              python3 -m venv --system-site-packages .venv
+              . .venv/bin/activate
+              python -m pip install --upgrade pip
+              python -m pip install -e ".[dev]"
+              python -m ruff check .
+              python -m pytest -q
+              python build.py
+              echo "=== Build output ==="
               file dist/HelloStreamer
             '
 
       - name: Fix file ownership
         run: sudo chown -R "$(id -u):$(id -g)" .
 
-      - name: Package ARM64 executable
+      - name: Package Linux executable
         run: |
           mkdir -p release package
           cp dist/HelloStreamer package/HelloStreamer
           chmod +x package/HelloStreamer
-          tar -czf "release/HelloStreamer-${{ github.ref_name }}-linux-arm64.tar.gz" -C package HelloStreamer
+          tar -czf "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C package HelloStreamer
 
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-linux-arm64
+          name: release-${{ matrix.artifact }}
           path: release/*
 
   release:
-    needs: [build-windows, build-linux-x64, build-linux-arm64]
+    needs: [build-windows, build-linux]
     if: always() && needs.build-windows.result == 'success'
     runs-on: ubuntu-latest
 
