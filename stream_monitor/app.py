@@ -780,8 +780,11 @@ class App(ctk.CTk):
         self.withdraw()
 
     def _on_close_button(self) -> None:
-        """X button hides to tray instead of quitting."""
-        self._hide_window()
+        """X button: hide to tray or quit based on user preference."""
+        if self.minimize_to_tray_var.get():
+            self._hide_window()
+        else:
+            self._quit_app()
 
     def _quit_app(self) -> None:
         """Full exit — called from tray menu or explicit quit."""
@@ -846,6 +849,30 @@ class App(ctk.CTk):
         )
         self.add_btn.pack(side="right")
         _tooltip(self.add_btn, "新增 Twitch 或 YouTube 頻道")
+
+        self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
+        self.startup_switch = ctk.CTkSwitch(
+            title_bar,
+            text="開機啟動",
+            variable=self.startup_var,
+            command=self._on_startup_toggle,
+            font=_font(12),
+        )
+        self.startup_switch.pack(side="right", padx=(0, 14))
+        _tooltip(self.startup_switch, "系統開機時自動啟動程式")
+
+        self.minimize_to_tray_var = ctk.BooleanVar(
+            value=self.config.get("minimize_to_tray", True)
+        )
+        self.tray_switch = ctk.CTkSwitch(
+            title_bar,
+            text="縮小至系統匣",
+            variable=self.minimize_to_tray_var,
+            command=self._on_tray_switch_toggle,
+            font=_font(12),
+        )
+        self.tray_switch.pack(side="right", padx=(0, 14))
+        _tooltip(self.tray_switch, "開啟：關閉時縮小到系統匣\n關閉：關閉時直接結束程式")
 
         # ── Channel list ──
         list_container = ctk.CTkFrame(outer, corner_radius=12, fg_color=_CLR_ACCENT)
@@ -975,16 +1002,6 @@ class App(ctk.CTk):
         self.action_menu.pack(anchor="w", pady=(2, 0))
         _tooltip(self.action_menu, "偵測到開播時要執行的動作")
 
-        self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
-        self.startup_switch = ctk.CTkSwitch(
-            toolbar,
-            text="開機啟動",
-            variable=self.startup_var,
-            command=self._on_startup_toggle,
-            font=_font(12),
-        )
-        self.startup_switch.grid(row=0, column=5, sticky="e", padx=(18, 0))
-        _tooltip(self.startup_switch, "系統開機時自動啟動程式（僅限封裝 exe）")
 
     # ------------------------------------------------------------------
     # Channel list operations
@@ -1218,6 +1235,10 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
     # Settings
     # ------------------------------------------------------------------
+    def _on_tray_switch_toggle(self) -> None:
+        self.config["minimize_to_tray"] = self.minimize_to_tray_var.get()
+        self._save_config()
+
     def _on_startup_toggle(self) -> None:
         requested = self.startup_var.get()
         success = enable_startup() if requested else disable_startup()
