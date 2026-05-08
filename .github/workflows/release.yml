@@ -91,12 +91,15 @@ jobs:
                 python3-tk \
                 python3-gi \
                 python3-gi-cairo \
+                libpython3.11 \
+                libgirepository1.0-dev \
                 gir1.2-gtk-3.0 \
                 gir1.2-ayatanaappindicator3-0.1 \
-                libgirepository1.0-dev \
                 libnotify-bin \
                 fonts-dejavu-core \
                 binutils \
+                gcc \
+                libc-dev \
                 file
               rm -rf .venv build dist
               python3 -m venv --system-site-packages .venv
@@ -104,6 +107,7 @@ jobs:
               python -m pip install --upgrade pip
               python -m pip install -e ".[dev]"
               python -m ruff check .
+              python -m compileall -f stream_monitor build.py
               python -m pytest -q
               python build.py
               echo "=== Build output ==="
