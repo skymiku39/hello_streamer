@@ -13,6 +13,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "check_interval": 60,
     "action": "open_and_stop",
     "run_on_startup": False,
+    "minimize_to_tray": True,
     "window_geometry": None,
 }
 
@@ -85,6 +86,10 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     run_on_startup = config.get("run_on_startup")
     if isinstance(run_on_startup, bool):
         normalized["run_on_startup"] = run_on_startup
+
+    minimize_to_tray = config.get("minimize_to_tray")
+    if isinstance(minimize_to_tray, bool):
+        normalized["minimize_to_tray"] = minimize_to_tray
 
     window_geometry = config.get("window_geometry")
     if isinstance(window_geometry, str) and window_geometry.strip():

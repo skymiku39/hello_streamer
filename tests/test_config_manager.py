@@ -40,6 +40,7 @@ def test_load_validates_config_values(tmp_path, monkeypatch) -> None:
                 "check_interval": 5,
                 "action": "bad_action",
                 "run_on_startup": "yes",
+                "minimize_to_tray": "no",
                 "window_geometry": 123,
             }
         ),
@@ -59,6 +60,7 @@ def test_load_validates_config_values(tmp_path, monkeypatch) -> None:
     assert config["check_interval"] == config_manager.MIN_CHECK_INTERVAL
     assert config["action"] == "open_and_stop"
     assert config["run_on_startup"] is False
+    assert config["minimize_to_tray"] is True
     assert config["window_geometry"] is None
 
 
@@ -108,6 +110,7 @@ def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
             "check_interval": 30,
             "action": "notify_only",
             "run_on_startup": True,
+            "minimize_to_tray": False,
             "window_geometry": "720x520+10+10",
         }
     )
@@ -125,5 +128,6 @@ def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
         "check_interval": 30,
         "action": "notify_only",
         "run_on_startup": True,
+        "minimize_to_tray": False,
         "window_geometry": "720x520+10+10",
     }

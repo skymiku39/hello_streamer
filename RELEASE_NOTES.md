@@ -1,13 +1,11 @@
-# Hello Streamer v0.2.5
+# Hello Streamer v0.2.6
 
 ## 修復重點
 
-- 修復右側連結按鈕在 UPCOMING / LIVE 狀態下仍可能只開啟頻道首頁的問題。
-- 修復右側連結按鈕 hover 提示沒有依目前狀態更新的問題，現在會明確顯示開啟首頁、待機間或直播間。
-- 修復開發模式下啟用開機自啟會寫入 registry 的回歸；開機自啟維持只支援封裝版 exe。
+- 修正 README 中「開發模式會寫入開機自啟 registry」的過期說法；開機自啟維持只支援封裝版 `HelloStreamer.exe`。
+- 補齊 `minimize_to_tray` 設定的預設值、載入驗證與保存流程，避免縮小至系統匣設定在 config 正規化時遺失。
 
 ## 改善
 
-- 右側連結按鈕現在會依狀態切換目標：OFFLINE 開頻道首頁、UPCOMING 開待機間、LIVE 開直播間。
-- 新增關閉視窗行為選項，可選擇縮小到系統匣或直接退出程式。
-- 新增開機自啟 toggle，封裝版可直接從 UI 控制是否隨 Windows 啟動。
+- README 全面更新為目前功能狀態，補充 YouTube UPCOMING、狀態 badge、右側連結按鈕、系統匣、開機自啟與專案結構說明。
+- 補強 config manager 測試，涵蓋 `minimize_to_tray` 的非法值 fallback 與合法值保存。
