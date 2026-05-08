@@ -62,6 +62,76 @@ def _make_initial_data(
     }
 
 
+def _make_lockup_view_model(
+    video_id: str,
+    title: str,
+    badge_text: str = "",
+    metadata_text: str = "",
+) -> dict:
+    badges = []
+    if badge_text:
+        badges.append({"thumbnailBadgeViewModel": {"text": badge_text}})
+
+    metadata_parts = []
+    if metadata_text:
+        metadata_parts.append({"text": {"content": metadata_text}})
+
+    return {
+        "contentId": video_id,
+        "contentImage": {
+            "thumbnailViewModel": {
+                "overlays": [
+                    {
+                        "thumbnailBottomOverlayViewModel": {
+                            "badges": badges,
+                        }
+                    }
+                ]
+            }
+        },
+        "metadata": {
+            "lockupMetadataViewModel": {
+                "title": {"content": title},
+                "metadata": {
+                    "contentMetadataViewModel": {
+                        "metadataRows": [
+                            {
+                                "metadataParts": metadata_parts,
+                            }
+                        ],
+                    }
+                },
+            }
+        },
+    }
+
+
+def _make_initial_data_with_lockups(
+    lockups: list[dict],
+    display_name: str = "TestChannel",
+) -> dict:
+    contents = [
+        {"richItemRenderer": {"content": {"lockupViewModel": lockup}}}
+        for lockup in lockups
+    ]
+    return {
+        "metadata": {"channelMetadataRenderer": {"title": display_name}},
+        "contents": {
+            "twoColumnBrowseResultsRenderer": {
+                "tabs": [
+                    {
+                        "tabRenderer": {
+                            "content": {
+                                "richGridRenderer": {"contents": contents}
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+    }
+
+
 # ─────────────────────────────────────────────
 # TIDUS: get_channel_items via ytInitialData
 # ─────────────────────────────────────────────
@@ -88,6 +158,60 @@ class TestParseChannelItems:
         assert len(items) == 1
         assert items[0].style == "UPCOMING"
         assert items[0].scheduled_start != ""
+
+    def test_extracts_upcoming_from_event_data_without_overlay_style(self) -> None:
+        fetcher = YouTubeFetcher()
+        vr = _make_video_renderer("vid2", "Waiting Room", "DEFAULT", "1714924800")
+        vr.pop("thumbnailOverlays")
+        data = _make_initial_data([vr])
+        items, _ = fetcher._parse_channel_items(data, "chan")
+
+        assert len(items) == 1
+        assert items[0].style == "UPCOMING"
+        assert items[0].scheduled_start != ""
+
+    def test_extracts_upcoming_from_upcoming_event_overlay_style(self) -> None:
+        fetcher = YouTubeFetcher()
+        vr = _make_video_renderer(
+            "vid2", "Waiting Room", "UPCOMING_EVENT", "1714924800"
+        )
+        data = _make_initial_data([vr])
+        items, _ = fetcher._parse_channel_items(data, "chan")
+
+        assert len(items) == 1
+        assert items[0].style == "UPCOMING"
+        assert items[0].scheduled_start != ""
+
+    def test_extracts_upcoming_from_lockup_view_model_badge(self) -> None:
+        fetcher = YouTubeFetcher()
+        lockup = _make_lockup_view_model(
+            "vid_lockup",
+            "Waiting Room",
+            badge_text="即將直播",
+            metadata_text="預定發布時間：2026/5/8 下午15:30",
+        )
+        data = _make_initial_data_with_lockups([lockup])
+        items, display_name = fetcher._parse_channel_items(data, "chan")
+
+        assert len(items) == 1
+        assert items[0].video_id == "vid_lockup"
+        assert items[0].title == "Waiting Room"
+        assert items[0].style == "UPCOMING"
+        assert items[0].url == "https://www.youtube.com/watch?v=vid_lockup"
+        assert display_name == "TestChannel"
+
+    def test_extracts_default_from_lockup_view_model_without_upcoming_badge(self) -> None:
+        fetcher = YouTubeFetcher()
+        lockup = _make_lockup_view_model(
+            "vid_lockup",
+            "Regular Upload",
+            metadata_text="1 天前",
+        )
+        data = _make_initial_data_with_lockups([lockup])
+        items, _ = fetcher._parse_channel_items(data, "chan")
+
+        assert len(items) == 1
+        assert items[0].style == "DEFAULT"
 
     def test_extracts_default_video(self) -> None:
         fetcher = YouTubeFetcher()

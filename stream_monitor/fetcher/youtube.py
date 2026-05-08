@@ -188,6 +188,11 @@ class YouTubeFetcher(StreamFetcher):
                     )
                     if item:
                         out.append(item)
+                lockup = vr.get("lockupViewModel")
+                if isinstance(lockup, dict):
+                    item = self._parse_lockup_view_model(lockup, display_name)
+                    if item:
+                        out.append(item)
 
     def _extract_from_grid_items(
         self,
@@ -204,6 +209,11 @@ class YouTubeFetcher(StreamFetcher):
                 item = self._parse_video_renderer(renderer, channel_name, display_name)
                 if item:
                     out.append(item)
+            lockup = grid_item.get("lockupViewModel")
+            if isinstance(lockup, dict):
+                item = self._parse_lockup_view_model(lockup, display_name)
+                if item:
+                    out.append(item)
 
     def _parse_video_renderer(
         self, renderer: dict, channel_name: str, display_name: str
@@ -215,6 +225,7 @@ class YouTubeFetcher(StreamFetcher):
         title = self._extract_text(renderer.get("title", {}))
 
         style = "DEFAULT"
+        has_upcoming_data = isinstance(renderer.get("upcomingEventData"), dict)
         overlays = renderer.get("thumbnailOverlays", [])
         if isinstance(overlays, list):
             for overlay in overlays:
@@ -222,8 +233,15 @@ class YouTubeFetcher(StreamFetcher):
                     continue
                 tsr = overlay.get("thumbnailOverlayTimeStatusRenderer", {})
                 if isinstance(tsr, dict) and isinstance(tsr.get("style"), str):
-                    style = tsr["style"]
-                    break
+                    raw_style = tsr["style"].strip().upper()
+                    if raw_style == "LIVE":
+                        style = "LIVE"
+                        break
+                    if raw_style.startswith("UPCOMING"):
+                        style = "UPCOMING"
+
+        if style != "LIVE" and has_upcoming_data:
+            style = "UPCOMING"
 
         scheduled_start = ""
         if style == "UPCOMING":
@@ -244,10 +262,121 @@ class YouTubeFetcher(StreamFetcher):
             scheduled_start=scheduled_start,
         )
 
+    def _parse_lockup_view_model(
+        self, lockup: dict, display_name: str
+    ) -> VideoItem | None:
+        video_id = lockup.get("contentId")
+        if not isinstance(video_id, str) or not video_id:
+            renderer_context = lockup.get("rendererContext", {})
+            if isinstance(renderer_context, dict):
+                command_context = renderer_context.get("commandContext", {})
+                command = {}
+                if isinstance(command_context, dict):
+                    on_tap = command_context.get("onTap", {})
+                    if isinstance(on_tap, dict):
+                        command = on_tap.get("innertubeCommand", {}) or {}
+                if isinstance(command, dict):
+                    endpoint = command.get("watchEndpoint", {})
+                    if isinstance(endpoint, dict):
+                        video_id = endpoint.get("videoId")
+        if not isinstance(video_id, str) or not video_id:
+            return None
+
+        metadata = lockup.get("metadata", {})
+        metadata_model = {}
+        if isinstance(metadata, dict):
+            metadata_model = metadata.get("lockupMetadataViewModel", {}) or {}
+        title = ""
+        if isinstance(metadata_model, dict):
+            title = self._extract_text(metadata_model.get("title", {}))
+
+        badge_texts = self._extract_lockup_badge_texts(lockup)
+        metadata_texts = self._extract_lockup_metadata_texts(metadata_model)
+        searchable = " ".join([*badge_texts, *metadata_texts]).upper()
+
+        style = "DEFAULT"
+        if any("即將" in text or "預定" in text for text in [*badge_texts, *metadata_texts]):
+            style = "UPCOMING"
+        elif "UPCOMING" in searchable or "SCHEDULED" in searchable:
+            style = "UPCOMING"
+        elif "LIVE" in searchable or any("直播中" in text for text in badge_texts):
+            style = "LIVE"
+
+        return VideoItem(
+            video_id=video_id,
+            title=title,
+            style=style,
+            url=f"https://www.youtube.com/watch?v={video_id}",
+            display_name=display_name,
+        )
+
+    @staticmethod
+    def _extract_lockup_badge_texts(lockup: dict) -> list[str]:
+        texts: list[str] = []
+        thumbnail = (
+            lockup.get("contentImage", {})
+            .get("thumbnailViewModel", {})
+            if isinstance(lockup.get("contentImage"), dict)
+            else {}
+        )
+        overlays = thumbnail.get("overlays", []) if isinstance(thumbnail, dict) else []
+        if not isinstance(overlays, list):
+            return texts
+        for overlay in overlays:
+            if not isinstance(overlay, dict):
+                continue
+            bottom = overlay.get("thumbnailBottomOverlayViewModel", {})
+            if not isinstance(bottom, dict):
+                continue
+            badges = bottom.get("badges", [])
+            if not isinstance(badges, list):
+                continue
+            for badge in badges:
+                if not isinstance(badge, dict):
+                    continue
+                model = badge.get("thumbnailBadgeViewModel", {})
+                if not isinstance(model, dict):
+                    continue
+                text = model.get("text")
+                if isinstance(text, str) and text:
+                    texts.append(text)
+        return texts
+
+    @staticmethod
+    def _extract_lockup_metadata_texts(metadata_model: dict) -> list[str]:
+        texts: list[str] = []
+        metadata = metadata_model.get("metadata", {})
+        if not isinstance(metadata, dict):
+            return texts
+        content_model = metadata.get("contentMetadataViewModel", {})
+        if not isinstance(content_model, dict):
+            return texts
+        rows = content_model.get("metadataRows", [])
+        if not isinstance(rows, list):
+            return texts
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            parts = row.get("metadataParts", [])
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                text_obj = part.get("text", {})
+                if isinstance(text_obj, dict):
+                    text = text_obj.get("content")
+                    if isinstance(text, str) and text:
+                        texts.append(text)
+        return texts
+
     @staticmethod
     def _extract_text(obj: object) -> str:
         if not isinstance(obj, dict):
             return ""
+        content = obj.get("content")
+        if isinstance(content, str):
+            return content
         simple = obj.get("simpleText")
         if isinstance(simple, str):
             return simple
