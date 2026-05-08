@@ -18,6 +18,7 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 import requests
 
@@ -47,6 +48,12 @@ _JSON_DECODER = json.JSONDecoder()
 
 _MAX_RETRIES = 2
 _RETRY_DELAY = 3
+_WATCH_DETAILS_CACHE_TTL = 300
+
+
+class _WatchDetails(NamedTuple):
+    scheduled_start: str = ""
+    started_at: str = ""
 
 
 def _channel_url(channel_name: str) -> str:
@@ -65,6 +72,7 @@ def _unix_to_iso(ts: str) -> str:
 
 class YouTubeFetcher(StreamFetcher):
     platform = "youtube"
+    _watch_details_cache: dict[str, tuple[float, _WatchDetails]] = {}
 
     def __init__(self) -> None:
         self._session = requests.Session()
@@ -299,7 +307,7 @@ class YouTubeFetcher(StreamFetcher):
             style = "UPCOMING"
         elif "UPCOMING" in searchable or "SCHEDULED" in searchable:
             style = "UPCOMING"
-        elif "LIVE" in searchable or any("直播中" in text for text in badge_texts):
+        elif "LIVE" in searchable or any("直播" in text for text in badge_texts):
             style = "LIVE"
 
         return VideoItem(
@@ -401,7 +409,91 @@ class YouTubeFetcher(StreamFetcher):
             return []
 
         items, _display_name = self._parse_channel_items(data, channel_name)
+        self._fill_live_timing_details(items)
         return items
+
+    def _fill_live_timing_details(self, items: list[VideoItem]) -> None:
+        for item in items:
+            if item.style not in {"LIVE", "UPCOMING"}:
+                continue
+            if item.style == "UPCOMING" and item.scheduled_start:
+                continue
+            if item.style == "LIVE" and item.started_at:
+                continue
+            details = self._get_watch_details(item.video_id)
+            if item.style == "UPCOMING" and details.scheduled_start:
+                item.scheduled_start = details.scheduled_start
+            elif item.style == "LIVE" and details.started_at:
+                item.started_at = details.started_at
+
+    def _get_watch_details(self, video_id: str) -> _WatchDetails:
+        now = time.time()
+        cached = self._watch_details_cache.get(video_id)
+        if cached and now - cached[0] < _WATCH_DETAILS_CACHE_TTL:
+            return cached[1]
+
+        details = self._fetch_watch_details(video_id)
+        self._watch_details_cache[video_id] = (now, details)
+        return details
+
+    def _fetch_watch_details(self, video_id: str) -> _WatchDetails:
+        html = self._fetch_page(f"https://www.youtube.com/watch?v={video_id}")
+        if html is None:
+            return _WatchDetails()
+
+        player = self._extract_json_var(html, "ytInitialPlayerResponse")
+        if not isinstance(player, dict):
+            return _WatchDetails()
+
+        video_details = player.get("videoDetails", {})
+        is_upcoming = (
+            isinstance(video_details, dict)
+            and video_details.get("isUpcoming") is True
+        )
+
+        microformat = player.get("microformat", {})
+        renderer = {}
+        if isinstance(microformat, dict):
+            renderer = microformat.get("playerMicroformatRenderer", {}) or {}
+        live_details = {}
+        if isinstance(renderer, dict):
+            live_details = renderer.get("liveBroadcastDetails", {}) or {}
+
+        start = ""
+        if isinstance(live_details, dict):
+            start = live_details.get("startTimestamp", "") or ""
+        if not isinstance(start, str):
+            start = ""
+
+        if is_upcoming and start:
+            return _WatchDetails(scheduled_start=start)
+        if (
+            isinstance(live_details, dict)
+            and live_details.get("isLiveNow") is True
+            and start
+        ):
+            return _WatchDetails(started_at=start)
+
+        playability = player.get("playabilityStatus", {})
+        live_streamability = {}
+        if isinstance(playability, dict):
+            live_streamability = playability.get("liveStreamability", {}) or {}
+        live_renderer = {}
+        if isinstance(live_streamability, dict):
+            live_renderer = live_streamability.get("liveStreamabilityRenderer", {}) or {}
+        offline_slate = {}
+        if isinstance(live_renderer, dict):
+            offline_slate = live_renderer.get("offlineSlate", {}) or {}
+        slate_renderer = {}
+        if isinstance(offline_slate, dict):
+            slate_renderer = offline_slate.get("liveStreamOfflineSlateRenderer", {}) or {}
+        scheduled_time = ""
+        if isinstance(slate_renderer, dict):
+            scheduled_time = slate_renderer.get("scheduledStartTime", "") or ""
+        if isinstance(scheduled_time, str) and scheduled_time:
+            return _WatchDetails(scheduled_start=_unix_to_iso(scheduled_time))
+
+        return _WatchDetails()
 
     # ------------------------------------------------------------------
     # Public API: get_stream_info (used by AddChannelDialog validation)

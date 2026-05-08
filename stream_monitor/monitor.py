@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from stream_monitor.db import SeenVideoDB
@@ -35,6 +36,18 @@ class ChannelEntry:
         return f"{self.platform}:{self.name}"
 
 
+@dataclass
+class ChannelStatus:
+    status: bool | str | None
+    url: str = ""
+    title: str = ""
+    scheduled_start: str = ""
+    started_at: str = ""
+
+    def __eq__(self, other: object) -> bool:
+        return self.status == other
+
+
 StatusCallback = Callable[[ChannelEntry, StreamInfo], None]
 
 
@@ -49,7 +62,33 @@ def _video_item_to_stream_info(item: VideoItem, channel: str) -> StreamInfo:
         video_id=item.video_id,
         stream_status=_STYLE_TO_STATUS.get(item.style, "video"),
         scheduled_start=item.scheduled_start,
+        started_at=item.started_at,
     )
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _live_cache_key(entry_key: str, video_id: str = "") -> str:
+    return f"{entry_key}|{video_id or '_'}"
+
+
+def _entry_key_from_live_cache_key(key: str) -> str:
+    return key.split("|", 1)[0]
+
+
+def _sort_datetime(value: str, fallback: datetime) -> datetime:
+    return _parse_iso_datetime(value) or fallback
 
 
 class Monitor:
@@ -82,6 +121,7 @@ class Monitor:
         self._display_names: dict[str, str] = {}
         self._youtube_baselined: set[str] = set()
         self._fallback_triggered_live: dict[str, str] = {}
+        self._live_started_at: dict[str, str] = {}
         self._lock = threading.Lock()
 
     @property
@@ -122,6 +162,11 @@ class Monitor:
                 for key, val in self._fallback_triggered_live.items()
                 if key in keys
             }
+            self._live_started_at = {
+                key: value
+                for key, value in self._live_started_at.items()
+                if _entry_key_from_live_cache_key(key) in keys
+            }
             for entry in self._entries:
                 if entry.enabled and not old_enabled.get(entry.key, True):
                     self._last_status.pop(entry.key, None)
@@ -138,6 +183,7 @@ class Monitor:
             self._display_names.clear()
             self._youtube_baselined.clear()
             self._fallback_triggered_live = {}
+            self._live_started_at.clear()
         try:
             self._db.cleanup(days=30)
         except Exception:
@@ -172,9 +218,16 @@ class Monitor:
                 break
 
             for commit in commits:
+                if self._stop_event.is_set():
+                    break
                 commit()
 
+            if self._stop_event.is_set():
+                break
+
             for entry, info in went_live_batch:
+                if self._stop_event.is_set():
+                    break
                 if self._on_status_change:
                     try:
                         self._on_status_change(entry, info)
@@ -224,11 +277,27 @@ class Monitor:
 
         with self._lock:
             prev = self._last_status.get(entry.key)
-            self._last_status[entry.key] = info.is_live
+            if info.is_live:
+                live_key = _live_cache_key(entry.key)
+                started_at = info.started_at or self._live_started_at.get(live_key)
+                if not started_at:
+                    started_at = _utc_now_iso()
+                self._live_started_at[live_key] = started_at
+                info.started_at = started_at
+                self._last_status[entry.key] = ChannelStatus(
+                    status=True,
+                    url=info.url,
+                    title=info.title,
+                    started_at=started_at,
+                )
+            else:
+                self._live_started_at.pop(_live_cache_key(entry.key), None)
+                self._last_status[entry.key] = ChannelStatus(status=False)
             if info.display_name:
                 self._display_names[entry.key] = info.display_name
 
-        went_live = info.is_live and prev is not True
+        prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
+        went_live = info.is_live and prev_status is not True
         if went_live:
             info.stream_status = "live"
             return [(entry, info)]
@@ -253,6 +322,8 @@ class Monitor:
         new_events: list[tuple[ChannelEntry, StreamInfo]] = []
         has_live = False
         has_upcoming = False
+        live_items: list[VideoItem] = []
+        upcoming_items: list[VideoItem] = []
         with self._lock:
             is_baselined = entry.key in self._youtube_baselined
             fallback_title = self._fallback_triggered_live.get(entry.key)
@@ -263,8 +334,17 @@ class Monitor:
         for item in items:
             if item.style == "LIVE":
                 has_live = True
+                live_key = _live_cache_key(entry.key, item.video_id)
+                with self._lock:
+                    started_at = item.started_at or self._live_started_at.get(live_key)
+                    if not started_at:
+                        started_at = _utc_now_iso()
+                    self._live_started_at[live_key] = started_at
+                item.started_at = started_at
+                live_items.append(item)
             elif item.style == "UPCOMING":
                 has_upcoming = True
+                upcoming_items.append(item)
 
             if item.display_name:
                 with self._lock:
@@ -307,11 +387,52 @@ class Monitor:
 
         with self._lock:
             if has_live:
-                self._last_status[entry.key] = True
+                active_live_ids = {item.video_id for item in live_items}
+                self._live_started_at = {
+                    key: value
+                    for key, value in self._live_started_at.items()
+                    if (
+                        _entry_key_from_live_cache_key(key) != entry.key
+                        or key.rsplit("|", 1)[-1] in active_live_ids
+                    )
+                }
+                live_item = min(
+                    live_items,
+                    key=lambda item: _sort_datetime(
+                        item.started_at, datetime.now(timezone.utc)
+                    ),
+                )
+                self._last_status[entry.key] = ChannelStatus(
+                    status=True,
+                    url=live_item.url,
+                    title=live_item.title,
+                    started_at=live_item.started_at,
+                )
             elif has_upcoming:
-                self._last_status[entry.key] = "upcoming"
+                self._live_started_at = {
+                    key: value
+                    for key, value in self._live_started_at.items()
+                    if _entry_key_from_live_cache_key(key) != entry.key
+                }
+                upcoming_item = min(
+                    upcoming_items,
+                    key=lambda item: _sort_datetime(
+                        item.scheduled_start, datetime.max.replace(tzinfo=timezone.utc)
+                    ),
+                )
+                self._last_status[entry.key] = ChannelStatus(
+                    status="upcoming",
+                    url=upcoming_item.url,
+                    title=upcoming_item.title,
+                    scheduled_start=upcoming_item.scheduled_start,
+                )
             elif items:
-                self._last_status[entry.key] = False
+                self._live_started_at = {
+                    key: value
+                    for key, value in self._live_started_at.items()
+                    if _entry_key_from_live_cache_key(key) != entry.key
+                }
+                self._last_status[entry.key] = ChannelStatus(status=False)
             self._youtube_baselined.add(entry.key)
 
         def commit() -> None:
@@ -337,11 +458,32 @@ class Monitor:
 
         with self._lock:
             prev = self._last_status.get(entry.key)
-            self._last_status[entry.key] = info.is_live
+            if info.is_live:
+                live_key = _live_cache_key(entry.key)
+                started_at = info.started_at or self._live_started_at.get(live_key)
+                if not started_at:
+                    started_at = _utc_now_iso()
+                self._live_started_at[live_key] = started_at
+                info.started_at = started_at
+                self._last_status[entry.key] = ChannelStatus(
+                    status=True,
+                    url=info.url,
+                    title=info.title,
+                    started_at=started_at,
+                )
+            else:
+                self._live_started_at = {
+                    key: value
+                    for key, value in self._live_started_at.items()
+                    if _entry_key_from_live_cache_key(key) != entry.key
+                }
+                self._fallback_triggered_live.pop(entry.key, None)
+                self._last_status[entry.key] = ChannelStatus(status=False)
             if info.display_name:
                 self._display_names[entry.key] = info.display_name
 
-        went_live = info.is_live and prev is not True
+        prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
+        went_live = info.is_live and prev_status is not True
         if went_live:
             with self._lock:
                 self._fallback_triggered_live[entry.key] = info.title

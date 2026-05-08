@@ -8,6 +8,7 @@ import queue
 import re
 import sys
 import threading
+from datetime import datetime, timezone
 from typing import Any
 
 import customtkinter as ctk
@@ -16,7 +17,7 @@ from stream_monitor import config_manager
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
-from stream_monitor.monitor import ChannelEntry, Monitor
+from stream_monitor.monitor import ChannelEntry, ChannelStatus, Monitor
 from stream_monitor.notifier import action_for_stream_status, execute_action, open_url
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
@@ -38,6 +39,40 @@ if platform.system() != "Windows":
 
 def _font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
     return ctk.CTkFont(family=_FONT_FAMILY, size=size, weight=weight)
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _format_minutes_delta(total_seconds: float) -> str:
+    minutes = max(0, int(total_seconds // 60))
+    days, rem = divmod(minutes, 24 * 60)
+    hours, mins = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+
+def _format_countdown(target: str) -> str:
+    dt = _parse_iso_datetime(target)
+    if dt is None:
+        return ""
+    return _format_minutes_delta((dt - datetime.now(timezone.utc)).total_seconds())
+
+
+def _format_elapsed(started_at: str) -> str:
+    dt = _parse_iso_datetime(started_at)
+    if dt is None:
+        return ""
+    return _format_minutes_delta((datetime.now(timezone.utc) - dt).total_seconds())
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +454,7 @@ class ChannelRow(ctk.CTkFrame):
         super().__init__(parent, corner_radius=10, fg_color=_CLR_CARD, height=58)
         self.channel = channel
         self._on_toggle_enabled = on_toggle_enabled
+        self._active_url = ""
 
         color = _CLR_TWITCH if channel["platform"] == "twitch" else _CLR_YOUTUBE
         self._platform_color = color
@@ -455,6 +491,16 @@ class ChannelRow(ctk.CTkFrame):
         self.id_label.pack(anchor="w", fill="x", pady=(1, 0))
         self._refresh_name_labels()
 
+        self.time_label = ctk.CTkLabel(
+            self,
+            text="",
+            width=72,
+            anchor="e",
+            font=_font(12, "bold"),
+            text_color="#aab3d5",
+        )
+        self.time_label.pack(side="left", padx=(6, 0), pady=8)
+
         self.status_label = ctk.CTkLabel(
             self,
             text="  --  ",
@@ -463,6 +509,7 @@ class ChannelRow(ctk.CTkFrame):
             corner_radius=6,
         )
         self.status_label.pack(side="left", padx=6, pady=8)
+        self.status_label.bind("<Button-1>", lambda _event: self._open_active_page())
 
         self.delete_btn = ctk.CTkButton(
             self,
@@ -531,7 +578,7 @@ class ChannelRow(ctk.CTkFrame):
             fg_color="transparent",
             hover_color=_CLR_LINK_HOVER,
             font=_font(12),
-            command=self._open_channel_page,
+            command=self._open_current_page,
         )
         self.link_btn.pack(side="right", padx=(0, 4), pady=8)
 
@@ -556,6 +603,13 @@ class ChannelRow(ctk.CTkFrame):
     def _open_channel_page(self) -> None:
         open_url(self._channel_url())
 
+    def _open_current_page(self) -> None:
+        open_url(self._active_url or self._channel_url())
+
+    def _open_active_page(self) -> None:
+        if self._active_url:
+            open_url(self._active_url)
+
     def _on_toggle_click(self) -> None:
         enabled = not self.channel.get("enabled", True)
         self.channel["enabled"] = enabled
@@ -564,6 +618,8 @@ class ChannelRow(ctk.CTkFrame):
 
     def _apply_enabled_visual(self) -> None:
         enabled = self.channel.get("enabled", True)
+        self._active_url = ""
+        self.time_label.configure(text="")
         if enabled:
             self.configure(fg_color=_CLR_CARD)
             self.platform_label.configure(
@@ -591,22 +647,34 @@ class ChannelRow(ctk.CTkFrame):
             if hasattr(self, "_toggle_tip"):
                 self._toggle_tip.text = "恢復監聽此頻道"
 
-    def set_status(self, status: bool | str | None) -> None:
+    def set_status(self, status: bool | str | ChannelStatus | None) -> None:
         if not self.channel.get("enabled", True):
             return
-        if status is None:
+
+        detail = status if isinstance(status, ChannelStatus) else None
+        state = detail.status if detail else status
+        self._active_url = detail.url if detail else ""
+
+        if state is None:
+            self.time_label.configure(text="")
             self.status_label.configure(
                 text="  --  ", text_color="#666677", fg_color="transparent"
             )
-        elif status == "upcoming":
+        elif state == "upcoming":
+            countdown = _format_countdown(detail.scheduled_start if detail else "")
+            self.time_label.configure(text=countdown)
             self.status_label.configure(
                 text=" UPCOMING ", text_color="white", fg_color="#e65100"
             )
-        elif status is True or status == "live":
+        elif state is True or state == "live":
+            elapsed = _format_elapsed(detail.started_at if detail else "")
+            self.time_label.configure(text=elapsed)
             self.status_label.configure(
                 text=" ● LIVE ", text_color="white", fg_color="#1b5e20"
             )
         else:
+            self._active_url = ""
+            self.time_label.configure(text="")
             self.status_label.configure(
                 text=" OFFLINE ", text_color="#999999", fg_color="transparent"
             )

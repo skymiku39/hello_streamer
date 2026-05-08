@@ -39,11 +39,12 @@ _HEADERS = {
 
 _GQL_QUERY = """
 query StreamStatus($login: String!) {
-  user(login: $login) {
+      user(login: $login) {
     displayName
     stream {
       title
       type
+      createdAt
       viewersCount
       game {
         name
@@ -120,6 +121,7 @@ class TwitchFetcher(StreamFetcher):
             stream = user.get("stream")
             is_live = stream is not None and stream.get("type") == "live"
             title = stream.get("title", "") if stream else ""
+            started_at = stream.get("createdAt", "") if stream else ""
             return StreamInfo(
                 channel=channel_name,
                 platform="twitch",
@@ -127,6 +129,7 @@ class TwitchFetcher(StreamFetcher):
                 title=title,
                 url=f"https://www.twitch.tv/{channel_name}",
                 display_name=user.get("displayName", ""),
+                started_at=started_at,
             )
         except (KeyError, TypeError) as exc:
             logger.warning("Failed to parse Twitch response for %s: %s", channel_name, exc)

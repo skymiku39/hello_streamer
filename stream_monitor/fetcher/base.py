@@ -16,6 +16,7 @@ class VideoItem:
     url: str
     display_name: str = ""
     scheduled_start: str = ""  # ISO 8601, only for UPCOMING
+    started_at: str = ""  # ISO 8601, only for LIVE when available
 
 
 @dataclass
@@ -31,6 +32,7 @@ class StreamInfo:
     video_id: str = ""
     stream_status: str = ""  # "live", "upcoming", "video"
     scheduled_start: str = ""
+    started_at: str = ""
 
 
 class StreamFetcher(ABC):
