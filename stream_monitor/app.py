@@ -1323,7 +1323,7 @@ def main() -> None:
             app._show_window()
 
     lock._on_show = on_show_request
-
+    
     if not lock.try_lock():
         logger.info("Another instance is already running — activating it")
         sys.exit(0)
