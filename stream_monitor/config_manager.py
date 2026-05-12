@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-import sys
 from copy import deepcopy
-from pathlib import Path
 from typing import Any
+
+from stream_monitor import base_dir
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "channels": [],
@@ -28,13 +28,9 @@ PLATFORM_KEYS = {"twitch", "youtube"}
 MIN_CHECK_INTERVAL = 10
 
 
-def _config_path() -> Path:
+def _config_path():
     """Return the path to config.json next to the executable / script."""
-    if getattr(sys, "frozen", False):
-        base = Path(sys.executable).parent
-    else:
-        base = Path(__file__).resolve().parent.parent
-    return base / "config.json"
+    return base_dir() / "config.json"
 
 
 def _normalize_channels(value: Any) -> list[dict[str, str]]:

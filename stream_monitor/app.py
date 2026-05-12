@@ -15,7 +15,7 @@ from typing import Any
 
 import customtkinter as ctk
 
-from stream_monitor import config_manager
+from stream_monitor import base_dir, config_manager
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
@@ -1307,16 +1307,37 @@ def _fix_linux_frozen_env() -> None:
         del os.environ[lp_key]
 
 
+def _check_writable(directory: Path) -> None:
+    """Abort early with a user-friendly dialog if *directory* is not writable."""
+    probe = directory / ".write_test"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "啟動失敗",
+            f"程式所在目錄無法寫入：\n{directory}\n\n"
+            "請將程式移至有寫入權限的資料夾後再試。",
+        )
+        root.destroy()
+        sys.exit(1)
+
+
 def main() -> None:
     if getattr(sys, "frozen", False) and sys.platform != "win32":
         _fix_linux_frozen_env()
 
     log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
-    if getattr(sys, "frozen", False):
-        log_dir = Path(sys.executable).parent / "logs"
-    else:
-        log_dir = Path(__file__).resolve().parent.parent / "logs"
+    data_dir = base_dir()
+    _check_writable(data_dir)
+
+    log_dir = data_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "stream_monitor.log"
 
@@ -1334,14 +1355,16 @@ def main() -> None:
 
     silent = "--silent" in sys.argv
 
+    app: App | None = None
+
     lock = SingleInstance()
 
     def on_show_request() -> None:
-        if app:
+        if app is not None:
             app._show_window()
 
     lock._on_show = on_show_request
-    
+
     if not lock.try_lock():
         logger.info("Another instance is already running — activating it")
         sys.exit(0)

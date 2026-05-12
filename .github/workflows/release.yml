@@ -132,7 +132,9 @@ jobs:
 
   release:
     needs: [build-windows, build-linux]
-    if: always() && needs.build-windows.result == 'success'
+    if: |
+      needs.build-windows.result == 'success' &&
+      needs.build-linux.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
