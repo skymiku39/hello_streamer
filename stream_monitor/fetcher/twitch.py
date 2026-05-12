@@ -83,6 +83,16 @@ class TwitchFetcher(StreamFetcher):
                         time.sleep(_RETRY_DELAY)
                         continue
                     return None
+                if resp.status_code >= 500:
+                    logger.warning(
+                        "Twitch server error %d for %s (attempt %d/%d)",
+                        resp.status_code, channel_name,
+                        attempt + 1, _MAX_RETRIES + 1,
+                    )
+                    if attempt < _MAX_RETRIES:
+                        time.sleep(_RETRY_DELAY)
+                        continue
+                    return None
                 resp.raise_for_status()
                 data = resp.json()
                 if "errors" in data:

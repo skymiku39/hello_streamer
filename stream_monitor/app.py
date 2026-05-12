@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import platform
 import queue
 import re
 import sys
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import customtkinter as ctk
@@ -1309,9 +1311,25 @@ def main() -> None:
     if getattr(sys, "frozen", False) and sys.platform != "win32":
         _fix_linux_frozen_env()
 
-    logging.basicConfig(    
+    log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+    if getattr(sys, "frozen", False):
+        log_dir = Path(sys.executable).parent / "logs"
+    else:
+        log_dir = Path(__file__).resolve().parent.parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "stream_monitor.log"
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8",
+    )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_fmt))
+
+    logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format=log_fmt,
+        handlers=[logging.StreamHandler(), file_handler],
     )
 
     silent = "--silent" in sys.argv

@@ -93,6 +93,16 @@ class YouTubeFetcher(StreamFetcher):
                 if resp.status_code == 404:
                     logger.warning("YouTube page not found: %s", url)
                     return None
+                if resp.status_code >= 500:
+                    logger.warning(
+                        "YouTube server error %d for %s (attempt %d/%d)",
+                        resp.status_code, url,
+                        attempt + 1, _MAX_RETRIES + 1,
+                    )
+                    if attempt < _MAX_RETRIES:
+                        time.sleep(_RETRY_DELAY)
+                        continue
+                    return None
                 resp.raise_for_status()
                 return resp.text
             except requests.Timeout:
