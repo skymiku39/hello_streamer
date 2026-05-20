@@ -538,6 +538,22 @@ class Monitor:
             # the "kept-alive by strike-pending" set, so we can clear strikes
             # only for video_ids that the feed actually returned this poll.
             observed_live_ids = {item.video_id for item in live_items}
+
+            # ── Fallback-alias takeover ────────────────────────────────────
+            # When the fallback path saw the channel as live but TIDUS was
+            # empty, it stored payload under the bare entry key (video_id
+            # placeholder "_"). The moment TIDUS recovers and reports any
+            # LIVE video, that alias is *superseded* by the real video_id
+            # payload — not stale. Drop it silently here so it doesn't get
+            # caught by the strike machinery below and emit a fake
+            # went_offline (which would prematurely close the player while
+            # the stream is provably still live).
+            if has_live:
+                fallback_alias_key = _live_cache_key(entry.key)
+                self._live_payload.pop(fallback_alias_key, None)
+                self._offline_strikes.pop(fallback_alias_key, None)
+                self._fallback_triggered_live.pop(entry.key, None)
+
             active_live_ids = set(observed_live_ids)
             stale_candidates = [
                 key
@@ -596,6 +612,17 @@ class Monitor:
                     title=live_item.title,
                     started_at=live_item.started_at,
                 )
+            elif has_strike_pending:
+                # Hold the prior LIVE display steady while we wait out the
+                # transient miss. We deliberately don't touch _last_status
+                # or _live_started_at so the UI doesn't flash OFFLINE/UPCOMING
+                # for a single poll between transient feed dropouts.
+                #
+                # NOTE: this branch must come *before* has_upcoming — if the
+                # LIVE video drops out for one poll but an UPCOMING item is
+                # also present, we want the UI to stay on LIVE rather than
+                # flicker to "upcoming" and fire a spurious upcoming alert.
+                pass
             elif has_upcoming:
                 self._live_started_at = {
                     key: value
@@ -614,12 +641,6 @@ class Monitor:
                     title=upcoming_item.title,
                     scheduled_start=upcoming_item.scheduled_start,
                 )
-            elif has_strike_pending:
-                # Hold the prior LIVE display steady while we wait out the
-                # transient miss. We deliberately don't touch _last_status
-                # or _live_started_at so the UI doesn't flash OFFLINE for
-                # a single poll between transient feed dropouts.
-                pass
             elif items:
                 self._live_started_at = {
                     key: value
@@ -709,16 +730,42 @@ class Monitor:
         went_offline = (not info.is_live) and prev_status is True
         if went_offline:
             with self._lock:
-                stale_payload = self._live_payload.pop(live_key, None)
-                self._pending_offline_events.append(
-                    (entry, stale_payload or OfflineInfo(
+                # Fallback reports an *entire-channel* offline state. Anything
+                # we were tracking for this channel — whether it was the bare
+                # fallback alias (entry.key|_) or a TIDUS-derived
+                # entry.key|<video_id> — is now offline. Pop them all and
+                # emit a went_offline event per payload so close_on_offline
+                # can close every player we opened.
+                #
+                # Without this sweep, a leftover TIDUS payload would later
+                # be re-classified as "stale" by the main path the next time
+                # TIDUS comes back (with a different video_id) and fire a
+                # *second* went_offline event for the same stream that just
+                # ended — duplicate close + duplicate notification.
+                payloads_to_emit: list[OfflineInfo] = []
+                for k in list(self._live_payload.keys()):
+                    if _entry_key_from_live_cache_key(k) == entry.key:
+                        popped = self._live_payload.pop(k, None)
+                        if popped is not None:
+                            payloads_to_emit.append(popped)
+
+                # Drop strike counters too — we just committed to offline so
+                # any pending strikes for this channel are no longer relevant.
+                for k in list(self._offline_strikes.keys()):
+                    if _entry_key_from_live_cache_key(k) == entry.key:
+                        self._offline_strikes.pop(k, None)
+
+                if not payloads_to_emit:
+                    payloads_to_emit.append(OfflineInfo(
                         url=(prev.url if isinstance(prev, ChannelStatus) else ""),
                         title=(prev.title if isinstance(prev, ChannelStatus) else ""),
                         platform=entry.platform,
                         name=entry.name,
                         display_name=self._display_names.get(entry.key, ""),
                     ))
-                )
+
+                for payload in payloads_to_emit:
+                    self._pending_offline_events.append((entry, payload))
         if went_live:
             with self._lock:
                 self._fallback_triggered_live[entry.key] = info.title

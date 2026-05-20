@@ -1067,3 +1067,215 @@ def test_update_channels_clears_strikes_for_removed_entries(tmp_path) -> None:
         assert any("twitch:alice" in k for k in keys)
         assert not any("twitch:bob" in k for k in keys)
     db.close()
+
+
+# ─────────────────────────────────────────────
+# P1: TIDUS recovering after a fallback-live poll must not emit a fake
+# went_offline for the fallback alias.
+# ─────────────────────────────────────────────
+def test_youtube_fallback_alias_does_not_emit_offline_when_tidus_recovers(
+    monkeypatch, tmp_path
+) -> None:
+    """After fallback live → TIDUS live, the fallback alias is silently dropped."""
+    live_item = VideoItem(
+        video_id="vidX",
+        title="Stream",
+        url="https://www.youtube.com/watch?v=vidX",
+        style="LIVE",
+        display_name="YT Channel",
+    )
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[[], [live_item], [live_item], [live_item]],
+        info_batches=[
+            # Poll 1: TIDUS empty → fallback path sees the stream as live.
+            StreamInfo(
+                channel="yt",
+                platform="youtube",
+                is_live=True,
+                title="Stream",
+                url="https://www.youtube.com/@yt/live",
+                display_name="YT Channel",
+            ),
+        ],
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    captured_offline: list = []
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "yt"}],
+        db=db,
+        on_went_offline=lambda e, p: captured_offline.append((e, p)),
+    )
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    # Poll 1: fallback sees live → fallback alias stored in _live_payload.
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor_module._live_cache_key("youtube:yt") in monitor._live_payload
+
+    # Poll 2: TIDUS recovers → fallback alias must be dropped silently
+    # (no strike accumulation, no offline event), TIDUS payload installed.
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        # Fallback alias gone, no orphan strike, no pending offline event.
+        assert monitor_module._live_cache_key("youtube:yt") not in monitor._live_payload
+        assert monitor_module._live_cache_key("youtube:yt") not in monitor._offline_strikes
+        assert monitor._pending_offline_events == []
+        # TIDUS payload installed under the real video_id.
+        assert (
+            monitor_module._live_cache_key("youtube:yt", "vidX")
+            in monitor._live_payload
+        )
+
+    # Poll 3: still live → no spurious offline event later either.
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+    db.close()
+
+
+# ─────────────────────────────────────────────
+# P2: After TIDUS-live → fallback-confirmed-offline, the leftover TIDUS
+# payload must NOT cause a second went_offline when TIDUS later returns.
+# ─────────────────────────────────────────────
+def test_fallback_offline_clears_all_tidus_payloads(monkeypatch, tmp_path) -> None:
+    """Fallback offline = entire channel offline → all payloads emit once."""
+    live_item = VideoItem(
+        video_id="vidX",
+        title="Stream",
+        url="https://www.youtube.com/watch?v=vidX",
+        style="LIVE",
+        display_name="YT Channel",
+    )
+    new_live_item = VideoItem(
+        video_id="vidY",
+        title="Another Stream",
+        url="https://www.youtube.com/watch?v=vidY",
+        style="LIVE",
+        display_name="YT Channel",
+    )
+    fetcher = FakeYouTubeFetcher(
+        # Poll 1: TIDUS live (vidX). Poll 2-3: TIDUS empty (fallback strikes).
+        # Poll 4: TIDUS comes back with a *different* video_id (vidY).
+        items_batches=[[live_item], [], [], [new_live_item]],
+        info_batches=[
+            # Poll 2: fallback offline (strike 1, ignored).
+            StreamInfo(
+                channel="yt",
+                platform="youtube",
+                is_live=False,
+                title="",
+                url="",
+            ),
+            # Poll 3: fallback offline (strike 2 → confirmed). Fires
+            # went_offline for vidX and clears the leftover TIDUS payload.
+            StreamInfo(
+                channel="yt",
+                platform="youtube",
+                is_live=False,
+                title="",
+                url="",
+            ),
+        ],
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    _check_and_commit(monitor, entry)  # Poll 1: vidX live
+    _check_and_commit(monitor, entry)  # Poll 2: fallback offline strike 1
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+
+    _check_and_commit(monitor, entry)  # Poll 3: fallback offline strike 2
+    with monitor._lock:
+        # Exactly one offline event — for vidX — was emitted via the cleared
+        # TIDUS payload, not for the (non-existent) fallback alias.
+        offline_payloads = [p for _e, p in monitor._pending_offline_events]
+        vidX_events = [p for p in offline_payloads if p.video_id == "vidX"]
+        assert len(vidX_events) == 1, (
+            "fallback offline must emit went_offline for the prior TIDUS payload"
+        )
+        # The TIDUS payload was popped — no leftover that could re-fire later.
+        assert (
+            monitor_module._live_cache_key("youtube:yt", "vidX")
+            not in monitor._live_payload
+        )
+
+    # Snapshot pending events count, then clear and run Poll 4: TIDUS returns
+    # with a brand-new video_id (vidY). The cleared payload must NOT cause a
+    # second went_offline for vidX.
+    with monitor._lock:
+        monitor._pending_offline_events.clear()
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        post_recovery_offlines = [
+            p for _e, p in monitor._pending_offline_events
+        ]
+        assert post_recovery_offlines == [], (
+            "no leftover TIDUS payload should remain to re-fire offline events"
+        )
+    db.close()
+
+
+# ─────────────────────────────────────────────
+# P3: A single-poll live dropout must not flip the UI to UPCOMING (or fire
+# a phantom UPCOMING notification path's last_status side-effects).
+# ─────────────────────────────────────────────
+def test_youtube_single_live_dropout_with_upcoming_keeps_live_status(
+    monkeypatch, tmp_path
+) -> None:
+    """When LIVE flaps for one poll but UPCOMING is present, last_status stays LIVE."""
+    live_item = VideoItem(
+        video_id="vidLive",
+        title="Live Stream",
+        url="https://www.youtube.com/watch?v=vidLive",
+        style="LIVE",
+        display_name="YT Channel",
+    )
+    upcoming_item = VideoItem(
+        video_id="vidNext",
+        title="Premiere Later",
+        url="https://www.youtube.com/watch?v=vidNext",
+        style="UPCOMING",
+        display_name="YT Channel",
+        scheduled_start="2099-01-01T00:00:00+00:00",
+    )
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[
+            [live_item, upcoming_item],
+            [upcoming_item],  # LIVE flaps out, UPCOMING still there
+            [live_item, upcoming_item],
+        ]
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    # Poll 1: LIVE + UPCOMING → last_status = LIVE.
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._last_status["youtube:yt"].status is True
+        live_started_at_snapshot = dict(monitor._live_started_at)
+
+    # Poll 2: LIVE drops out (single-poll dropout) but UPCOMING remains. The
+    # anti-flap guard must hold last_status at LIVE rather than flipping to
+    # "upcoming", and must NOT clear _live_started_at for the live video.
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._last_status["youtube:yt"].status is True, (
+            "single-poll LIVE dropout must not flip UI to UPCOMING"
+        )
+        # _live_started_at for vidLive must survive the dropout so the
+        # "live since" timestamp stays stable.
+        assert monitor._live_started_at == live_started_at_snapshot
+        assert monitor._pending_offline_events == []
+
+    # Poll 3: LIVE returns → still no duplicate notifications / events.
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._last_status["youtube:yt"].status is True
+        assert monitor._pending_offline_events == []
+    db.close()
