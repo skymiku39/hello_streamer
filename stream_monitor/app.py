@@ -8,10 +8,12 @@ import platform
 import queue
 import re
 import sys
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 import customtkinter as ctk
 
@@ -464,10 +466,16 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         if sys.platform != "win32":
             self.update()
         self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
         self.result: dict[str, Any] | None = None
 
         settings = {**DEFAULT_BROWSER_SETTINGS, **(current or {})}
+        self._new_window_before_app_mode = bool(settings.get("new_window", True))
+        profile_stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        self._test_profile_dir = Path(tempfile.gettempdir()) / (
+            f"hello_streamer_app_mode_test_profile_{profile_stamp}"
+        )
 
         ctk.CTkLabel(
             self,
@@ -554,6 +562,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             toggle_frame,
             text="App Mode：純淨播放器 (--app=URL；已隱含獨立視窗)",
             variable=self.app_mode_var,
+            command=self._on_app_mode_toggle,
             font=_font(12),
         )
         self.app_mode_cb.pack(anchor="w", pady=(0, 4))
@@ -735,7 +744,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             border_color="#555566",
             hover_color="#333344",
             font=_font(13),
-            command=self.destroy,
+            command=self._on_cancel,
         ).pack(side="right", padx=(8, 0), pady=4)
 
         ctk.CTkButton(
@@ -780,6 +789,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._refresh_enabled_state()
         self._refresh_user_data_dir_state()
         self._on_path_change()
+        self._refresh_app_mode_state()
+        self._initial_snapshot = self._snapshot_browser_settings()
 
     def _refresh_enabled_state(self) -> None:
         state = "normal" if self.enabled_var.get() else "disabled"
@@ -798,6 +809,24 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._refresh_user_data_dir_state()
         self._refresh_geometry_state()
         self._on_path_change()
+        self._refresh_app_mode_state()
+
+    def _on_app_mode_toggle(self) -> None:
+        if self.app_mode_var.get():
+            self._new_window_before_app_mode = bool(self.new_window_var.get())
+            self.new_window_var.set(True)
+        else:
+            self.new_window_var.set(self._new_window_before_app_mode)
+        self._refresh_app_mode_state()
+
+    def _refresh_app_mode_state(self) -> None:
+        if self.app_mode_var.get():
+            self.new_window_var.set(True)
+
+        state = "normal"
+        if not self.enabled_var.get() or self.app_mode_var.get():
+            state = "disabled"
+        self.new_window_cb.configure(state=state)
 
     def _refresh_user_data_dir_state(self) -> None:
         if not self.enabled_var.get():
@@ -878,6 +907,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             )
             self.app_mode_cb.configure(state="normal")
             self._refresh_geometry_state()
+        self._refresh_app_mode_state()
 
     def _collect(self) -> dict[str, Any] | None:
         apply_geometry = bool(self.apply_geometry_var.get())
@@ -916,11 +946,14 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         else:
             user_data_dir = ""
 
+        app_mode = bool(self.app_mode_var.get())
+        new_window = True if app_mode else bool(self.new_window_var.get())
+
         return {
             "enabled": bool(self.enabled_var.get()),
             "browser_path": browser_path,
-            "new_window": bool(self.new_window_var.get()),
-            "app_mode": bool(self.app_mode_var.get()),
+            "new_window": new_window,
+            "app_mode": app_mode,
             "apply_geometry": apply_geometry,
             "x": x,
             "y": y,
@@ -931,15 +964,118 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "per_channel_profile": bool(self.per_channel_profile_var.get()),
         }
 
+    def _snapshot_browser_settings(self) -> dict[str, Any]:
+        app_mode = bool(self.app_mode_var.get())
+        return {
+            "enabled": bool(self.enabled_var.get()),
+            "browser_path": self.path_entry.get().strip(),
+            "new_window": True if app_mode else bool(self.new_window_var.get()),
+            "app_mode": app_mode,
+            "apply_geometry": bool(self.apply_geometry_var.get()),
+            "x": self.x_entry.get().strip(),
+            "y": self.y_entry.get().strip(),
+            "width": self.w_entry.get().strip(),
+            "height": self.h_entry.get().strip(),
+            "minimized": bool(self.minimized_var.get()),
+            "user_data_dir_enabled": bool(self.user_data_dir_enabled_var.get()),
+            "user_data_dir": self.user_data_dir_entry.get().strip(),
+            "per_channel_profile": bool(self.per_channel_profile_var.get()),
+        }
+
+    def _has_unsaved_changes(self) -> bool:
+        return self._snapshot_browser_settings() != self._initial_snapshot
+
+    def _on_cancel(self) -> None:
+        self.destroy()
+
+    def _on_window_close(self) -> None:
+        if not self._has_unsaved_changes():
+            self.destroy()
+            return
+
+        from tkinter import messagebox
+
+        choice = messagebox.askyesnocancel(
+            "Save browser settings?",
+            "Do you want to save your browser settings changes before closing?",
+            parent=self,
+        )
+        if choice is None:
+            return
+        if choice:
+            self._on_save()
+            return
+        self.destroy()
+
+    def _browser_test_url(self) -> str:
+        html = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hello Streamer Browser Test</title>
+  <style>
+    :root { color-scheme: dark; font-family: Segoe UI, sans-serif; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #111827;
+      color: #f8fafc;
+    }
+    main {
+      width: min(560px, calc(100vw - 48px));
+      padding: 32px;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      background: #1f2937;
+    }
+    h1 { margin: 0 0 12px; font-size: 28px; }
+    p { margin: 8px 0 0; color: #cbd5e1; line-height: 1.55; }
+    code { color: #93c5fd; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Hello Streamer Browser Test</h1>
+    <p>This local page is used to verify browser launch settings.</p>
+    <p>When App Mode is enabled, this should open without the browser address bar.</p>
+    <p><code id="stamp"></code></p>
+  </main>
+  <script>
+    document.getElementById("stamp").textContent =
+      new Date().toLocaleString();
+  </script>
+</body>
+</html>
+"""
+        try:
+            path = Path(tempfile.gettempdir()) / "hello_streamer_browser_test.html"
+            path.write_text(html, encoding="utf-8")
+            return path.as_uri()
+        except OSError:
+            logger.exception("Failed to write browser test page")
+            return "data:text/html;charset=utf-8," + quote(html)
+
+    def _browser_test_settings(self, data: dict[str, Any]) -> dict[str, Any]:
+        test_settings = dict(data)
+        if test_settings.get("app_mode"):
+            test_settings["user_data_dir"] = str(self._test_profile_dir)
+            test_settings["per_channel_profile"] = False
+        return test_settings
+
     def _on_test(self) -> None:
         data = self._collect()
         if data is None:
             return
+        test_url = self._browser_test_url()
+        test_settings = self._browser_test_settings(data)
         self.message_label.configure(
-            text="已嘗試開啟測試頁面（about:blank）。",
+            text="撌脣?閰阡?本機測試頁；App Mode 會使用獨立測試 Profile。",
             text_color="#64b5f6",
         )
-        open_url("about:blank", data if data["enabled"] else None)
+        open_url(test_url, test_settings if test_settings["enabled"] else None)
 
     def _on_save(self) -> None:
         data = self._collect()
