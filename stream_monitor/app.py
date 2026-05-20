@@ -16,6 +16,7 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 import customtkinter as ctk
+from PIL import Image, ImageDraw
 
 from stream_monitor import base_dir, config_manager
 from stream_monitor.config_manager import DEFAULT_BROWSER_SETTINGS
@@ -50,6 +51,52 @@ if platform.system() != "Windows":
 
 def _font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
     return ctk.CTkFont(family=_FONT_FAMILY, size=size, weight=weight)
+
+
+def _language_icon(size: int = 20) -> ctk.CTkImage:
+    """Create a crisp globe icon without relying on emoji font rendering."""
+    scale = 4
+    canvas = size * scale
+    pad = 2 * scale
+    stroke = 2 * scale
+    color = "#d8d8e5"
+
+    image = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    box = (pad, pad, canvas - pad - 1, canvas - pad - 1)
+
+    draw.ellipse(box, outline=color, width=stroke)
+    draw.arc(
+        (pad + 5 * scale, pad, canvas - pad - 5 * scale - 1, canvas - pad - 1),
+        88,
+        272,
+        fill=color,
+        width=stroke,
+    )
+    draw.arc(
+        (pad + 5 * scale, pad, canvas - pad - 5 * scale - 1, canvas - pad - 1),
+        -92,
+        92,
+        fill=color,
+        width=stroke,
+    )
+    draw.arc(
+        (pad, pad + 4 * scale, canvas - pad - 1, canvas - pad - 4 * scale - 1),
+        18,
+        162,
+        fill=color,
+        width=stroke,
+    )
+    draw.arc(
+        (pad, pad + 4 * scale, canvas - pad - 1, canvas - pad - 4 * scale - 1),
+        198,
+        342,
+        fill=color,
+        width=stroke,
+    )
+
+    image = image.resize((size, size), Image.Resampling.LANCZOS)
+    return ctk.CTkImage(light_image=image, dark_image=image, size=(size, size))
 
 
 def _parse_iso_datetime(value: str) -> datetime | None:
@@ -98,6 +145,12 @@ ACTION_LABELS: dict[str, str] = {
 }
 ACTION_DISPLAY = list(ACTION_LABELS.values())
 ACTION_BY_DISPLAY = {label: key for key, label in ACTION_LABELS.items()}
+LANGUAGE_PREVIEW_OPTIONS: list[tuple[str, str, bool]] = [
+    ("繁體中文", "目前介面", True),
+    ("English", "Coming soon", False),
+    ("日本語", "準備中", False),
+    ("한국어", "준비 중", False),
+]
 
 _CLR_BG_DARK = "#1a1a2e"
 _CLR_CARD = "#16213e"
@@ -448,6 +501,94 @@ class AddChannelDialog(ctk.CTkToplevel):
         if info.display_name:
             self.result["display_name"] = info.display_name
         self.destroy()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Language Preview Dialog
+# ═══════════════════════════════════════════════════════════════════════════
+class LanguagePreviewDialog(ctk.CTkToplevel):
+    """UI-only preview for the future language picker."""
+
+    def __init__(self, parent: ctk.CTk) -> None:
+        super().__init__(parent)
+        self.title("語言偏好")
+        self.geometry("360x360")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.configure(fg_color=_CLR_BG_DARK)
+
+        if sys.platform != "win32":
+            self.update()
+        self.grab_set()
+
+        ctk.CTkLabel(
+            self,
+            text="介面語言",
+            font=_font(16, "bold"),
+            anchor="w",
+        ).pack(padx=22, pady=(22, 4), fill="x")
+
+        ctk.CTkLabel(
+            self,
+            text="先放上入口與選項外觀，之後再接翻譯與儲存設定。",
+            font=_font(12),
+            text_color="#aaaabb",
+            anchor="w",
+            wraplength=300,
+        ).pack(padx=22, pady=(0, 14), fill="x")
+
+        for label, status, active in LANGUAGE_PREVIEW_OPTIONS:
+            row = ctk.CTkFrame(
+                self,
+                fg_color=_CLR_CARD if active else "transparent",
+                border_width=1,
+                border_color=_CLR_LINK if active else "#333355",
+                corner_radius=8,
+                height=44,
+            )
+            row.pack(padx=22, pady=(0, 8), fill="x")
+            row.pack_propagate(False)
+
+            ctk.CTkLabel(
+                row,
+                text=label,
+                font=_font(13, "bold" if active else "normal"),
+                anchor="w",
+            ).pack(side="left", padx=12, fill="x", expand=True)
+
+            ctk.CTkLabel(
+                row,
+                text=status,
+                font=_font(11),
+                text_color=_CLR_LINK if active else "#888899",
+                anchor="e",
+            ).pack(side="right", padx=12)
+
+        footer = ctk.CTkFrame(self, fg_color="transparent", height=50)
+        footer.pack(padx=22, pady=(2, 18), fill="x")
+        footer.pack_propagate(False)
+
+        ctk.CTkButton(
+            footer,
+            text="套用",
+            width=92,
+            height=36,
+            state="disabled",
+            font=_font(13, "bold"),
+        ).pack(side="right", pady=7)
+
+        ctk.CTkButton(
+            footer,
+            text="關閉",
+            width=92,
+            height=36,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#555566",
+            hover_color="#333344",
+            font=_font(13),
+            command=self.destroy,
+        ).pack(side="right", padx=(0, 8), pady=7)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1552,6 +1693,23 @@ class App(ctk.CTk):
         title_bar = ctk.CTkFrame(outer, fg_color="transparent")
         title_bar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
 
+        self.language_icon = _language_icon()
+        self.language_btn = ctk.CTkButton(
+            title_bar,
+            text="",
+            image=self.language_icon,
+            width=38,
+            height=32,
+            corner_radius=8,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#555566",
+            hover_color="#333344",
+            command=self._on_language_preview,
+        )
+        self.language_btn.pack(side="left", padx=(0, 10), pady=(2, 0))
+        _tooltip(self.language_btn, "多國語言切換（UI 預覽，尚未套用翻譯）")
+
         ctk.CTkLabel(
             title_bar,
             text="哈嘍主播",
@@ -1885,6 +2043,10 @@ class App(ctk.CTk):
                 self._save_config()
                 if self._monitor and self._monitor.is_running:
                     self._monitor.update_channels(channels)
+
+    def _on_language_preview(self) -> None:
+        dialog = LanguagePreviewDialog(self)
+        self.wait_window(dialog)
 
     # ------------------------------------------------------------------
     # Monitor control
