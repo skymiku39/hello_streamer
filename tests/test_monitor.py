@@ -58,7 +58,10 @@ class FakeYouTubeFetcher:
 # Twitch: boolean edge-trigger (unchanged)
 # ─────────────────────────────────────────────
 def test_twitch_triggers_only_on_live_transition(monkeypatch, tmp_path) -> None:
-    fetcher = FakeTwitchFetcher([False, True, True, False, True])
+    # Sequence chosen to exercise *confirmed* offline transitions only —
+    # the anti-flap guard requires two consecutive "not live" readings
+    # before it commits to the offline edge (see _OFFLINE_STRIKE_THRESHOLD).
+    fetcher = FakeTwitchFetcher([False, True, True, False, False, True])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     events: list[tuple[str, str]] = []
@@ -70,7 +73,7 @@ def test_twitch_triggers_only_on_live_transition(monkeypatch, tmp_path) -> None:
     entry = ChannelEntry(platform="twitch", name="hello")
 
     went_live: list[tuple[ChannelEntry, object]] = []
-    for _ in range(5):
+    for _ in range(6):
         results = _check_and_commit(monitor, entry)
         went_live.extend(results)
 
@@ -716,8 +719,12 @@ def test_update_channels_preserves_enabled_flag(tmp_path) -> None:
 # Went-offline edge events
 # ─────────────────────────────────────────────
 def test_twitch_emits_went_offline_after_live(monkeypatch, tmp_path) -> None:
-    """Live → offline edge must enqueue a went-offline event with the prior URL."""
-    fetcher = FakeTwitchFetcher([True, False])
+    """Live → offline edge must enqueue a went-offline event with the prior URL.
+
+    The anti-flap guard requires two consecutive "not live" readings before
+    committing to the offline edge, so the sequence here is [True, False, False].
+    """
+    fetcher = FakeTwitchFetcher([True, False, False])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -731,7 +738,12 @@ def test_twitch_emits_went_offline_after_live(monkeypatch, tmp_path) -> None:
     with monitor._lock:
         assert monitor._pending_offline_events == []
 
-    # Poll 2: went offline
+    # Poll 2: first "not live" reading — treated as transient noise.
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+
+    # Poll 3: second consecutive "not live" — now committed to offline.
     _check_and_commit(monitor, entry)
     with monitor._lock:
         assert len(monitor._pending_offline_events) == 1
@@ -761,7 +773,11 @@ def test_twitch_no_went_offline_when_never_was_live(monkeypatch, tmp_path) -> No
 def test_youtube_tidus_emits_went_offline_when_video_drops_out(
     monkeypatch, tmp_path
 ) -> None:
-    """Poll 1 has a LIVE video; poll 2 has no LIVE items → went-offline fires."""
+    """Poll 1 has a LIVE video; later polls have no LIVE items → went-offline fires.
+
+    With the anti-flap guard, the fallback path needs *two* consecutive
+    "not live" readings before committing to the offline edge.
+    """
     live_item = VideoItem(
         video_id="vid1",
         title="Live Stream",
@@ -769,7 +785,7 @@ def test_youtube_tidus_emits_went_offline_when_video_drops_out(
         style="LIVE",
         display_name="YT Channel",
     )
-    fetcher = FakeYouTubeFetcher(items_batches=[[live_item], []])
+    fetcher = FakeYouTubeFetcher(items_batches=[[live_item], [], []])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
@@ -780,7 +796,8 @@ def test_youtube_tidus_emits_went_offline_when_video_drops_out(
         assert monitor._pending_offline_events == []
 
     # Poll 2: items list returns []; this triggers the fallback path. Need
-    # to supply a non-live StreamInfo so fallback declares offline.
+    # to supply a non-live StreamInfo so fallback can see "not live".
+    # First strike: transient — no offline event yet.
     fetcher.info_batches = [
         StreamInfo(
             channel="yt",
@@ -788,8 +805,20 @@ def test_youtube_tidus_emits_went_offline_when_video_drops_out(
             is_live=False,
             title="",
             url="",
-        )
+        ),
+        StreamInfo(
+            channel="yt",
+            platform="youtube",
+            is_live=False,
+            title="",
+            url="",
+        ),
     ]
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+
+    # Poll 3: second consecutive "not live" → fallback now commits to offline.
     _check_and_commit(monitor, entry)
     with monitor._lock:
         # Fallback path emits the offline event with the prior payload.
@@ -802,7 +831,7 @@ def test_youtube_tidus_emits_went_offline_when_video_drops_out(
 def test_youtube_tidus_emits_went_offline_when_live_set_changes(
     monkeypatch, tmp_path
 ) -> None:
-    """LIVE video A in poll 1; LIVE video B (different vid) in poll 2 → A is offline."""
+    """LIVE A in poll 1; LIVE B in polls 2-3 → A confirmed offline after 2 strikes."""
     live_a = VideoItem(
         video_id="A",
         title="Stream A",
@@ -815,14 +844,20 @@ def test_youtube_tidus_emits_went_offline_when_live_set_changes(
         url="https://www.youtube.com/watch?v=B",
         style="LIVE",
     )
-    fetcher = FakeYouTubeFetcher(items_batches=[[live_a], [live_b]])
+    fetcher = FakeYouTubeFetcher(items_batches=[[live_a], [live_b], [live_b]])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
 
-    _check_and_commit(monitor, entry)
-    _check_and_commit(monitor, entry)
+    _check_and_commit(monitor, entry)  # A live
+    _check_and_commit(monitor, entry)  # A missing (strike 1)
+    with monitor._lock:
+        # Strike 1: A's offline edge is held back.
+        offline_urls = {p.url for _, p in monitor._pending_offline_events}
+        assert "https://www.youtube.com/watch?v=A" not in offline_urls
+
+    _check_and_commit(monitor, entry)  # A still missing (strike 2 → confirmed)
     with monitor._lock:
         offline_urls = {p.url for _, p in monitor._pending_offline_events}
         assert "https://www.youtube.com/watch?v=A" in offline_urls
@@ -840,4 +875,195 @@ def test_monitor_callback_signature_accepts_on_went_offline(tmp_path) -> None:
         db=db,
     )
     assert monitor._on_went_offline is not None
+    db.close()
+
+
+# ─────────────────────────────────────────────
+# Anti-flap guard: single-poll API hiccups must NOT trigger duplicate
+# went_live notifications or fake went_offline events.
+# ─────────────────────────────────────────────
+def test_twitch_single_offline_flap_does_not_emit_offline_event(
+    monkeypatch, tmp_path
+) -> None:
+    """A single not-live reading between two live readings is ignored entirely."""
+    fetcher = FakeTwitchFetcher([True, False, True])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    # Poll 1: went LIVE
+    went_live_1 = _check_and_commit(monitor, entry)
+    assert len(went_live_1) == 1
+
+    # Poll 2: transient "not live" (Twitch GQL cache hiccup). Should be
+    # absorbed by the strike guard — no offline event, last_status stays True.
+    went_live_2 = _check_and_commit(monitor, entry)
+    assert went_live_2 == []
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+        assert monitor._last_status["twitch:hello"].status is True
+
+    # Poll 3: back to live. Because last_status was preserved as True, this
+    # is NOT a new went_live edge → no duplicate notification.
+    went_live_3 = _check_and_commit(monitor, entry)
+    assert went_live_3 == []
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+    db.close()
+
+
+def test_twitch_strike_resets_when_channel_returns_live(monkeypatch, tmp_path) -> None:
+    """Once a previously-flapping channel returns live, the strike counter resets."""
+    fetcher = FakeTwitchFetcher([True, False, True, False, False])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hi"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hi")
+
+    _check_and_commit(monitor, entry)  # live
+    _check_and_commit(monitor, entry)  # not live (strike 1, ignored)
+    _check_and_commit(monitor, entry)  # live again → strike reset
+    with monitor._lock:
+        assert monitor._offline_strikes == {}
+        assert monitor._pending_offline_events == []
+
+    # New offline streak should require TWO strikes again, not one, because
+    # the previous strike was cleared by the intervening live reading.
+    _check_and_commit(monitor, entry)  # not live (fresh strike 1)
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+    _check_and_commit(monitor, entry)  # not live (strike 2 → confirmed)
+    with monitor._lock:
+        assert len(monitor._pending_offline_events) == 1
+    db.close()
+
+
+def test_youtube_fallback_single_offline_flap_is_absorbed(
+    monkeypatch, tmp_path
+) -> None:
+    """The YouTube fallback path must also debounce single-poll dropouts."""
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[[], [], []],
+        info_batches=[
+            StreamInfo(
+                channel="yt",
+                platform="youtube",
+                is_live=True,
+                title="Stream",
+                url="https://www.youtube.com/@yt/live",
+                display_name="YT",
+            ),
+            StreamInfo(
+                channel="yt",
+                platform="youtube",
+                is_live=False,
+                title="",
+                url="",
+            ),
+            StreamInfo(
+                channel="yt",
+                platform="youtube",
+                is_live=True,
+                title="Stream",
+                url="https://www.youtube.com/@yt/live",
+                display_name="YT",
+            ),
+        ],
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    # Poll 1: fallback (items empty), live → went_live event.
+    events_1 = _check_and_commit(monitor, entry)
+    assert len(events_1) == 1
+
+    # Poll 2: fallback, single not-live reading — must NOT emit offline event,
+    # must NOT fire a second went_live on the next poll.
+    events_2 = _check_and_commit(monitor, entry)
+    assert events_2 == []
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+        assert monitor._last_status["youtube:yt"].status is True
+
+    # Poll 3: fallback live again → no duplicate notification because last
+    # status was preserved as True throughout the flap.
+    events_3 = _check_and_commit(monitor, entry)
+    assert events_3 == []
+    db.close()
+
+
+def test_youtube_tidus_single_missing_video_id_is_absorbed(
+    monkeypatch, tmp_path
+) -> None:
+    """A single-poll dropout of a LIVE video in the TIDUS feed is ignored."""
+    live_item = VideoItem(
+        video_id="vidX",
+        title="Live Stream",
+        url="https://www.youtube.com/watch?v=vidX",
+        style="LIVE",
+        display_name="YT Channel",
+    )
+    other_item = VideoItem(
+        video_id="other",
+        title="Old VOD",
+        url="https://www.youtube.com/watch?v=other",
+        style="DEFAULT",
+    )
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[[live_item], [other_item], [live_item, other_item]]
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    # Poll 1: vidX is LIVE → went_live event.
+    events_1 = _check_and_commit(monitor, entry)
+    assert any(info.video_id == "vidX" for _e, info in events_1)
+
+    # Poll 2: vidX missing from feed (single-poll TIDUS dropout). Strike 1
+    # absorbs it — no offline event, last_status stays True.
+    events_2 = _check_and_commit(monitor, entry)
+    assert events_2 == []
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+        assert monitor._last_status["youtube:yt"].status is True
+
+    # Poll 3: vidX returns to the feed. No duplicate went_live event because
+    # the strike kept the video in _live_payload (DB also has it marked seen).
+    events_3 = _check_and_commit(monitor, entry)
+    assert events_3 == []
+    with monitor._lock:
+        assert monitor._offline_strikes == {}
+        assert monitor._pending_offline_events == []
+    db.close()
+
+
+def test_update_channels_clears_strikes_for_removed_entries(tmp_path) -> None:
+    """Removing a channel from the watch list also drops its pending strikes."""
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[
+            {"platform": "twitch", "name": "alice"},
+            {"platform": "twitch", "name": "bob"},
+        ],
+        db=db,
+    )
+    # Inject strikes for both channels directly (simulating mid-stream state).
+    with monitor._lock:
+        monitor._offline_strikes = {
+            monitor_module._live_cache_key("twitch:alice"): 1,
+            monitor_module._live_cache_key("twitch:bob"): 1,
+        }
+
+    monitor.update_channels([{"platform": "twitch", "name": "alice"}])
+
+    with monitor._lock:
+        # Bob's strike must be gone; Alice's strike survives.
+        keys = set(monitor._offline_strikes.keys())
+        assert any("twitch:alice" in k for k in keys)
+        assert not any("twitch:bob" in k for k in keys)
     db.close()

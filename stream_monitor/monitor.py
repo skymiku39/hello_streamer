@@ -24,6 +24,19 @@ _STYLE_TO_STATUS = {
     "DEFAULT": "video",
 }
 
+# Anti-flap guard: how many consecutive "not live" readings we require before
+# we trust a previously-live channel/video has actually gone offline.
+#
+# Why: Twitch GQL occasionally returns `stream: null` for a still-live channel
+# (CDN/cache lag at peak hours), and YouTube's TIDUS feed sometimes omits a
+# LIVE video for one poll. Without this guard, those single-poll dropouts
+# generate a fake went_offline → went_live edge pair, which (a) triggers a
+# duplicate "stream is live!" notification on the next poll and (b) — if the
+# user enabled close_on_offline — actually closes the player window the app
+# just opened. Requiring two consecutive misses makes both problems go away
+# while still bounding worst-case latency to two poll intervals.
+_OFFLINE_STRIKE_THRESHOLD = 2
+
 
 @dataclass
 class ChannelEntry:
@@ -143,6 +156,11 @@ class Monitor:
         # the stream was live. Used to fire went-offline events with the
         # exact URL/title we originally opened, even after live data is gone.
         self._live_payload: dict[str, OfflineInfo] = {}
+        # Consecutive-miss counter per live_cache_key. Incremented every poll a
+        # previously-live entry/video appears "not live"; reset when it comes
+        # back. Only when the counter reaches _OFFLINE_STRIKE_THRESHOLD do we
+        # commit to the offline edge (clear last_status, emit went_offline).
+        self._offline_strikes: dict[str, int] = {}
         # Filled by _check_* helpers within a single poll cycle; drained by
         # _run after went_live dispatch.
         self._pending_offline_events: list[tuple[ChannelEntry, OfflineInfo]] = []
@@ -196,9 +214,22 @@ class Monitor:
                 for key, value in self._live_payload.items()
                 if _entry_key_from_live_cache_key(key) in keys
             }
+            self._offline_strikes = {
+                key: value
+                for key, value in self._offline_strikes.items()
+                if _entry_key_from_live_cache_key(key) in keys
+            }
             for entry in self._entries:
                 if entry.enabled and not old_enabled.get(entry.key, True):
                     self._last_status.pop(entry.key, None)
+                    # Re-enabling a channel restarts its lifecycle, so any
+                    # stale strikes from the last time it was watched would
+                    # otherwise short-circuit the first real offline edge.
+                    self._offline_strikes = {
+                        k: v
+                        for k, v in self._offline_strikes.items()
+                        if _entry_key_from_live_cache_key(k) != entry.key
+                    }
 
     def update_interval(self, interval: int) -> None:
         self._interval = max(10, interval)
@@ -214,6 +245,7 @@ class Monitor:
             self._fallback_triggered_live = {}
             self._live_started_at.clear()
             self._live_payload.clear()
+            self._offline_strikes.clear()
             self._pending_offline_events.clear()
         try:
             self._db.cleanup(days=30)
@@ -325,9 +357,36 @@ class Monitor:
         if info is None:
             return []
 
+        live_key = _live_cache_key(entry.key)
+
         with self._lock:
             prev = self._last_status.get(entry.key)
-            live_key = _live_cache_key(entry.key)
+            prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
+
+            # ── Anti-flap guard ──────────────────────────────────────────
+            # If we previously saw this channel as LIVE and a single poll
+            # comes back "not live", treat it as a transient API miss and
+            # keep the last_status untouched until the strike threshold is
+            # reached. Without this guard a Twitch GQL hiccup creates a
+            # phantom went_offline → went_live edge pair (duplicate toast
+            # + close_on_offline closing the player we just opened).
+            if not info.is_live and prev_status is True:
+                strikes = self._offline_strikes.get(live_key, 0) + 1
+                if strikes < _OFFLINE_STRIKE_THRESHOLD:
+                    self._offline_strikes[live_key] = strikes
+                    if info.display_name:
+                        self._display_names[entry.key] = info.display_name
+                    logger.info(
+                        "Twitch %s: ignoring transient offline reading (%d/%d)",
+                        entry.key, strikes, _OFFLINE_STRIKE_THRESHOLD,
+                    )
+                    return []
+                # Threshold reached → commit to offline below.
+                self._offline_strikes.pop(live_key, None)
+            else:
+                # Either currently live, or already offline — no flap to track.
+                self._offline_strikes.pop(live_key, None)
+
             if info.is_live:
                 started_at = info.started_at or self._live_started_at.get(live_key)
                 if not started_at:
@@ -353,12 +412,11 @@ class Monitor:
             if info.display_name:
                 self._display_names[entry.key] = info.display_name
 
-        prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
         went_live = info.is_live and prev_status is not True
         went_offline = (not info.is_live) and prev_status is True
         if went_offline:
             with self._lock:
-                stale_payload = self._live_payload.pop(_live_cache_key(entry.key), None)
+                stale_payload = self._live_payload.pop(live_key, None)
                 self._pending_offline_events.append(
                     (entry, stale_payload or OfflineInfo(
                         url=(prev.url if isinstance(prev, ChannelStatus) else ""),
@@ -466,17 +524,56 @@ class Monitor:
         with self._lock:
             # Detect went-offline edges: anything in self._live_payload that
             # belongs to this entry but is no longer in this poll's LIVE set.
-            active_live_ids = {item.video_id for item in live_items}
-            stale_keys = [
+            #
+            # The TIDUS feed occasionally drops a still-live video from the
+            # /streams listing for a single poll (channel re-rendering,
+            # YouTube edge cache lag, "live now" tab partially populated).
+            # Without a strike guard those single-poll dropouts produce a
+            # phantom went_offline → went_live edge pair, duplicating the
+            # "stream went live" notification. We therefore require two
+            # consecutive misses *of the same video_id* before committing
+            # to the offline edge — and we treat strike-pending video_ids
+            # as still active so _live_started_at isn't wiped prematurely.
+            # Track the original (genuinely-present) LIVE set separately from
+            # the "kept-alive by strike-pending" set, so we can clear strikes
+            # only for video_ids that the feed actually returned this poll.
+            observed_live_ids = {item.video_id for item in live_items}
+            active_live_ids = set(observed_live_ids)
+            stale_candidates = [
                 key
                 for key in list(self._live_payload.keys())
                 if _entry_key_from_live_cache_key(key) == entry.key
                 and key.rsplit("|", 1)[-1] not in active_live_ids
             ]
-            for stale_key in stale_keys:
+            has_strike_pending = False
+            for stale_key in stale_candidates:
+                strikes = self._offline_strikes.get(stale_key, 0) + 1
+                if strikes < _OFFLINE_STRIKE_THRESHOLD:
+                    self._offline_strikes[stale_key] = strikes
+                    # Pretend the missing video_id is still live this poll
+                    # so the cleanup of _live_started_at below leaves its
+                    # started_at intact for the next strike window.
+                    active_live_ids.add(stale_key.rsplit("|", 1)[-1])
+                    has_strike_pending = True
+                    logger.info(
+                        "YouTube %s: ignoring transient missing video %s (%d/%d)",
+                        entry.key,
+                        stale_key.rsplit("|", 1)[-1],
+                        strikes,
+                        _OFFLINE_STRIKE_THRESHOLD,
+                    )
+                    continue
+                self._offline_strikes.pop(stale_key, None)
                 payload = self._live_payload.pop(stale_key, None)
                 if payload is not None:
                     self._pending_offline_events.append((entry, payload))
+
+            # Clear strikes only for video_ids that the feed *actually* showed
+            # as LIVE this poll — they're provably back, so the prior miss was
+            # noise. (We must NOT clear strikes for ids we only kept alive via
+            # the strike-pending branch above; those still need to accumulate.)
+            for vid in observed_live_ids:
+                self._offline_strikes.pop(_live_cache_key(entry.key, vid), None)
 
             if has_live:
                 self._live_started_at = {
@@ -517,6 +614,12 @@ class Monitor:
                     title=upcoming_item.title,
                     scheduled_start=upcoming_item.scheduled_start,
                 )
+            elif has_strike_pending:
+                # Hold the prior LIVE display steady while we wait out the
+                # transient miss. We deliberately don't touch _last_status
+                # or _live_started_at so the UI doesn't flash OFFLINE for
+                # a single poll between transient feed dropouts.
+                pass
             elif items:
                 self._live_started_at = {
                     key: value
@@ -547,9 +650,31 @@ class Monitor:
         if info is None:
             return []
 
+        live_key = _live_cache_key(entry.key)
+
         with self._lock:
             prev = self._last_status.get(entry.key)
-            live_key = _live_cache_key(entry.key)
+            prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
+
+            # ── Anti-flap guard (mirrors _check_twitch) ──────────────────
+            # The fallback path is used when the TIDUS feed returns nothing,
+            # which is exactly when a single transient miss is most likely.
+            # Same two-strike rule prevents the resulting phantom edge pair.
+            if not info.is_live and prev_status is True:
+                strikes = self._offline_strikes.get(live_key, 0) + 1
+                if strikes < _OFFLINE_STRIKE_THRESHOLD:
+                    self._offline_strikes[live_key] = strikes
+                    if info.display_name:
+                        self._display_names[entry.key] = info.display_name
+                    logger.info(
+                        "YouTube fallback %s: ignoring transient offline reading (%d/%d)",
+                        entry.key, strikes, _OFFLINE_STRIKE_THRESHOLD,
+                    )
+                    return []
+                self._offline_strikes.pop(live_key, None)
+            else:
+                self._offline_strikes.pop(live_key, None)
+
             if info.is_live:
                 started_at = info.started_at or self._live_started_at.get(live_key)
                 if not started_at:
@@ -580,12 +705,11 @@ class Monitor:
             if info.display_name:
                 self._display_names[entry.key] = info.display_name
 
-        prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
         went_live = info.is_live and prev_status is not True
         went_offline = (not info.is_live) and prev_status is True
         if went_offline:
             with self._lock:
-                stale_payload = self._live_payload.pop(_live_cache_key(entry.key), None)
+                stale_payload = self._live_payload.pop(live_key, None)
                 self._pending_offline_events.append(
                     (entry, stale_payload or OfflineInfo(
                         url=(prev.url if isinstance(prev, ChannelStatus) else ""),
