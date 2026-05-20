@@ -6,8 +6,7 @@ import json
 from copy import deepcopy
 from typing import Any
 
-from stream_monitor import base_dir
-from stream_monitor import i18n
+from stream_monitor import base_dir, i18n
 
 DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     "enabled": False,
