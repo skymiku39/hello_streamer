@@ -8,13 +8,27 @@ from typing import Any
 
 from stream_monitor import base_dir
 
+DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
+    "enabled": False,
+    "browser_path": "chrome",
+    "new_window": True,
+    "app_mode": False,
+    "x": 0,
+    "y": 0,
+    "width": 1280,
+    "height": 720,
+    "minimized": False,
+}
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "channels": [],
     "check_interval": 60,
     "action": "open_and_stop",
+    "monitor_mode": "trigger",
     "run_on_startup": False,
     "minimize_to_tray": True,
     "window_geometry": None,
+    "browser_settings": deepcopy(DEFAULT_BROWSER_SETTINGS),
 }
 
 ACTION_CHOICES = [
@@ -24,6 +38,7 @@ ACTION_CHOICES = [
     ("open_and_exit", "開啟網頁後關閉程式"),
 ]
 ACTION_KEYS = {key for key, _label in ACTION_CHOICES}
+MONITOR_MODE_KEYS = {"trigger", "watch"}
 PLATFORM_KEYS = {"twitch", "youtube"}
 MIN_CHECK_INTERVAL = 10
 
@@ -70,6 +85,38 @@ def _normalize_interval(value: Any) -> int:
     return max(MIN_CHECK_INTERVAL, interval)
 
 
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_browser_settings(value: Any) -> dict[str, Any]:
+    defaults = deepcopy(DEFAULT_BROWSER_SETTINGS)
+    if not isinstance(value, dict):
+        return defaults
+
+    normalized = deepcopy(defaults)
+
+    for bool_key in ("enabled", "new_window", "app_mode", "minimized"):
+        raw = value.get(bool_key)
+        if isinstance(raw, bool):
+            normalized[bool_key] = raw
+
+    browser_path = value.get("browser_path")
+    if isinstance(browser_path, str) and browser_path.strip():
+        normalized["browser_path"] = browser_path.strip()
+
+    for int_key in ("x", "y", "width", "height"):
+        normalized[int_key] = _coerce_int(value.get(int_key), normalized[int_key])
+
+    normalized["width"] = max(100, normalized["width"])
+    normalized["height"] = max(100, normalized["height"])
+
+    return normalized
+
+
 def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(DEFAULT_CONFIG)
     normalized["channels"] = _normalize_channels(config.get("channels"))
@@ -78,6 +125,10 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     action = config.get("action")
     if isinstance(action, str) and action in ACTION_KEYS:
         normalized["action"] = action
+
+    monitor_mode = config.get("monitor_mode")
+    if isinstance(monitor_mode, str) and monitor_mode in MONITOR_MODE_KEYS:
+        normalized["monitor_mode"] = monitor_mode
 
     run_on_startup = config.get("run_on_startup")
     if isinstance(run_on_startup, bool):
@@ -90,6 +141,10 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     window_geometry = config.get("window_geometry")
     if isinstance(window_geometry, str) and window_geometry.strip():
         normalized["window_geometry"] = window_geometry
+
+    normalized["browser_settings"] = _normalize_browser_settings(
+        config.get("browser_settings")
+    )
 
     return normalized
 

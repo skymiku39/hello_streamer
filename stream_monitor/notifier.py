@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import subprocess
 import webbrowser
-from typing import Callable
+from typing import Any, Callable
 
 from stream_monitor.fetcher.base import StreamInfo
 
@@ -15,11 +16,78 @@ logger = logging.getLogger(__name__)
 ActionCallback = Callable[[], None]
 
 
-def open_url(url: str) -> bool:
-    """Open *url* in the user's browser, with a Windows fallback."""
+def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
+    """Compose browser CLI arguments from a normalized browser_settings dict."""
+    browser_path = (settings.get("browser_path") or "chrome").strip() or "chrome"
+    args: list[str] = [browser_path]
+
+    if settings.get("new_window", True):
+        args.append("--new-window")
+
+    width = int(settings.get("width", 1280) or 1280)
+    height = int(settings.get("height", 720) or 720)
+    x = int(settings.get("x", 0) or 0)
+    y = int(settings.get("y", 0) or 0)
+
+    args.append(f"--window-position={x},{y}")
+    args.append(f"--window-size={width},{height}")
+
+    if settings.get("app_mode"):
+        args.append(f"--app={url}")
+    else:
+        args.append(url)
+
+    return args
+
+
+def _open_with_browser_settings(url: str, settings: dict[str, Any]) -> bool:
+    """Spawn the configured browser with CLI args. Returns True if Popen succeeded."""
+    args = _build_browser_args(url, settings)
+
+    startupinfo = None
+    creationflags = 0
+    if os.name == "nt" and settings.get("minimized"):
+        try:
+            startupinfo = subprocess.STARTUPINFO()  # type: ignore[attr-defined]
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW  # type: ignore[attr-defined]
+            startupinfo.wShowWindow = 11  # SW_SHOWMINNOACTIVE
+        except AttributeError:
+            startupinfo = None
+
+    try:
+        subprocess.Popen(
+            args,
+            startupinfo=startupinfo,
+            creationflags=creationflags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except FileNotFoundError:
+        logger.warning(
+            "Browser executable not found: %s — falling back to default browser",
+            args[0],
+        )
+    except OSError:
+        logger.exception("Failed to spawn browser with custom settings: %s", args)
+    return False
+
+
+def open_url(url: str, browser_settings: dict[str, Any] | None = None) -> bool:
+    """Open *url* in the user's browser.
+
+    If *browser_settings* is provided and ``enabled`` is true, the URL is
+    launched via ``subprocess`` so we can control window position, size and
+    minimised state (Chrome/Edge CLI flags). Otherwise we fall back to the
+    standard ``webbrowser`` module with a Windows shell fallback.
+    """
     if not url:
         logger.warning("Cannot open empty URL")
         return False
+
+    if browser_settings and browser_settings.get("enabled"):
+        if _open_with_browser_settings(url, browser_settings):
+            return True
 
     try:
         opened = webbrowser.open(url, new=2)
@@ -36,10 +104,12 @@ def open_url(url: str) -> bool:
         except OSError:
             logger.exception("Failed to open URL with Windows shell: %s", url)
     else:
-        import subprocess
-
         try:
-            subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(
+                ["xdg-open", url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             return True
         except FileNotFoundError:
             logger.warning("xdg-open not found; cannot open URL: %s", url)
@@ -120,8 +190,6 @@ def _toast_windows(info: StreamInfo, with_open_button: bool = True) -> None:
 def _toast_linux(info: StreamInfo, with_open_button: bool = True) -> None:
     """Send a desktop notification via notify-send (Linux)."""
     try:
-        import subprocess
-
         title, body = _build_toast_text(info)
 
         cmd = ["notify-send", "--app-name=Hello Streamer", title, body]
@@ -140,17 +208,24 @@ def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
         _toast_linux(info, with_open_button)
 
 
-def open_and_stop(info: StreamInfo, stop_fn: ActionCallback) -> None:
+def open_and_stop(
+    info: StreamInfo,
+    stop_fn: ActionCallback,
+    browser_settings: dict[str, Any] | None = None,
+) -> None:
     """Open stream URL in browser and stop monitoring."""
     _toast(info, with_open_button=False)
-    open_url(info.url)
+    open_url(info.url, browser_settings)
     stop_fn()
 
 
-def open_and_keep(info: StreamInfo) -> None:
+def open_and_keep(
+    info: StreamInfo,
+    browser_settings: dict[str, Any] | None = None,
+) -> None:
     """Open stream URL in browser, keep monitoring other channels."""
     _toast(info, with_open_button=False)
-    open_url(info.url)
+    open_url(info.url, browser_settings)
 
 
 def notify_only(info: StreamInfo) -> None:
@@ -158,10 +233,14 @@ def notify_only(info: StreamInfo) -> None:
     _toast(info, with_open_button=True)
 
 
-def open_and_exit(info: StreamInfo, exit_fn: ActionCallback) -> None:
+def open_and_exit(
+    info: StreamInfo,
+    exit_fn: ActionCallback,
+    browser_settings: dict[str, Any] | None = None,
+) -> None:
     """Open stream URL in browser, then exit the application."""
     _toast(info, with_open_button=False)
-    open_url(info.url)
+    open_url(info.url, browser_settings)
     exit_fn()
 
 
@@ -170,15 +249,16 @@ def execute_action(
     info: StreamInfo,
     stop_fn: ActionCallback | None = None,
     exit_fn: ActionCallback | None = None,
+    browser_settings: dict[str, Any] | None = None,
 ) -> None:
     """Dispatch the configured action."""
     if action == "open_and_stop":
-        open_and_stop(info, stop_fn or (lambda: None))
+        open_and_stop(info, stop_fn or (lambda: None), browser_settings)
     elif action == "open_and_keep":
-        open_and_keep(info)
+        open_and_keep(info, browser_settings)
     elif action == "notify_only":
         notify_only(info)
     elif action == "open_and_exit":
-        open_and_exit(info, exit_fn or (lambda: None))
+        open_and_exit(info, exit_fn or (lambda: None), browser_settings)
     else:
         logger.warning("Unknown action: %s", action)

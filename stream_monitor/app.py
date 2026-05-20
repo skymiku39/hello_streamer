@@ -11,11 +11,12 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import customtkinter as ctk
 
 from stream_monitor import base_dir, config_manager
+from stream_monitor.config_manager import DEFAULT_BROWSER_SETTINGS
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
@@ -442,6 +443,263 @@ class AddChannelDialog(ctk.CTkToplevel):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Browser Settings Dialog
+# ═══════════════════════════════════════════════════════════════════════════
+class BrowserSettingsDialog(ctk.CTkToplevel):
+    """Modal dialog for configuring how stream pages are opened in the browser."""
+
+    def __init__(self, parent: ctk.CTk, current: dict[str, Any]) -> None:
+        super().__init__(parent)
+        self.title("瀏覽器設定")
+        self.geometry("560x560")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.configure(fg_color=_CLR_BG_DARK)
+
+        if sys.platform != "win32":
+            self.update()
+        self.grab_set()
+
+        self.result: dict[str, Any] | None = None
+
+        settings = {**DEFAULT_BROWSER_SETTINGS, **(current or {})}
+
+        ctk.CTkLabel(
+            self,
+            text="瀏覽器開啟方式",
+            font=_font(13, "bold"),
+            anchor="w",
+        ).pack(padx=24, pady=(20, 4), fill="x")
+
+        ctk.CTkLabel(
+            self,
+            text="關閉自訂模式時，將使用系統預設瀏覽器（無法控制座標／視窗）。",
+            font=_font(12),
+            text_color="#aaaabb",
+            anchor="w",
+            wraplength=512,
+        ).pack(padx=24, pady=(0, 8), fill="x")
+
+        self.enabled_var = ctk.BooleanVar(value=bool(settings.get("enabled", False)))
+        self.enabled_switch = ctk.CTkSwitch(
+            self,
+            text="啟用自訂瀏覽器開啟（subprocess 模式）",
+            variable=self.enabled_var,
+            command=self._refresh_enabled_state,
+            font=_font(12),
+        )
+        self.enabled_switch.pack(padx=24, anchor="w")
+
+        # ── Browser path
+        path_frame = ctk.CTkFrame(self, fg_color="transparent")
+        path_frame.pack(padx=24, pady=(12, 0), fill="x")
+        path_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            path_frame, text="瀏覽器指令", font=_font(13), anchor="w", width=104
+        ).grid(row=0, column=0, sticky="w")
+
+        self.path_entry = ctk.CTkEntry(
+            path_frame,
+            placeholder_text="chrome / msedge / 或瀏覽器執行檔絕對路徑",
+            font=_font(13),
+            height=34,
+        )
+        self.path_entry.insert(0, settings.get("browser_path", "chrome"))
+        self.path_entry.grid(row=0, column=1, sticky="ew")
+
+        ctk.CTkLabel(
+            self,
+            text="提示：chrome、msedge 可直接輸入；若未在 PATH 內請填完整 .exe 路徑。",
+            font=_font(11),
+            text_color="#888899",
+            anchor="w",
+            wraplength=512,
+        ).pack(padx=24, pady=(4, 0), fill="x")
+
+        # ── Window mode toggles
+        toggle_frame = ctk.CTkFrame(self, fg_color="transparent")
+        toggle_frame.pack(padx=24, pady=(14, 0), fill="x")
+
+        self.new_window_var = ctk.BooleanVar(
+            value=bool(settings.get("new_window", True))
+        )
+        ctk.CTkCheckBox(
+            toggle_frame,
+            text="強制獨立新視窗 (--new-window)",
+            variable=self.new_window_var,
+            font=_font(12),
+        ).pack(anchor="w", pady=(0, 4))
+
+        self.app_mode_var = ctk.BooleanVar(value=bool(settings.get("app_mode", False)))
+        ctk.CTkCheckBox(
+            toggle_frame,
+            text="App Mode：開啟為純淨播放器 (--app=URL，隱藏網址列)",
+            variable=self.app_mode_var,
+            font=_font(12),
+        ).pack(anchor="w", pady=(0, 4))
+
+        self.minimized_var = ctk.BooleanVar(
+            value=bool(settings.get("minimized", False))
+        )
+        ctk.CTkCheckBox(
+            toggle_frame,
+            text="最小化啟動（不搶奪當前焦點，僅 Windows 有效）",
+            variable=self.minimized_var,
+            font=_font(12),
+        ).pack(anchor="w")
+
+        # ── Position / size
+        pos_frame = ctk.CTkFrame(self, fg_color=_CLR_CARD, corner_radius=10)
+        pos_frame.pack(padx=24, pady=(14, 0), fill="x")
+        pos_frame.grid_columnconfigure((1, 3), weight=1)
+
+        ctk.CTkLabel(
+            pos_frame, text="視窗位置 / 大小", font=_font(12, "bold"), anchor="w"
+        ).grid(row=0, column=0, columnspan=4, padx=12, pady=(10, 6), sticky="w")
+
+        def _make_int_entry(parent: ctk.CTkFrame, value: int) -> ctk.CTkEntry:
+            entry = ctk.CTkEntry(parent, width=84, height=30, font=_font(13), justify="center")
+            entry.insert(0, str(value))
+            return entry
+
+        ctk.CTkLabel(pos_frame, text="X", font=_font(12)).grid(
+            row=1, column=0, padx=(14, 4), pady=4, sticky="e"
+        )
+        self.x_entry = _make_int_entry(pos_frame, int(settings.get("x", 0)))
+        self.x_entry.grid(row=1, column=1, padx=(0, 14), pady=4, sticky="w")
+
+        ctk.CTkLabel(pos_frame, text="Y", font=_font(12)).grid(
+            row=1, column=2, padx=(14, 4), pady=4, sticky="e"
+        )
+        self.y_entry = _make_int_entry(pos_frame, int(settings.get("y", 0)))
+        self.y_entry.grid(row=1, column=3, padx=(0, 14), pady=4, sticky="w")
+
+        ctk.CTkLabel(pos_frame, text="寬度", font=_font(12)).grid(
+            row=2, column=0, padx=(14, 4), pady=(4, 10), sticky="e"
+        )
+        self.w_entry = _make_int_entry(pos_frame, int(settings.get("width", 1280)))
+        self.w_entry.grid(row=2, column=1, padx=(0, 14), pady=(4, 10), sticky="w")
+
+        ctk.CTkLabel(pos_frame, text="高度", font=_font(12)).grid(
+            row=2, column=2, padx=(14, 4), pady=(4, 10), sticky="e"
+        )
+        self.h_entry = _make_int_entry(pos_frame, int(settings.get("height", 720)))
+        self.h_entry.grid(row=2, column=3, padx=(0, 14), pady=(4, 10), sticky="w")
+
+        self.message_label = ctk.CTkLabel(
+            self, text="", font=_font(12), height=22, anchor="w", wraplength=512
+        )
+        self.message_label.pack(padx=24, pady=(8, 0), fill="x")
+
+        # ── Buttons
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent", height=52)
+        btn_frame.pack(padx=24, pady=(8, 18), fill="x")
+        btn_frame.pack_propagate(False)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="取消",
+            width=104,
+            height=40,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#555566",
+            hover_color="#333344",
+            font=_font(13),
+            command=self.destroy,
+        ).pack(side="right", padx=(8, 0), pady=4)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="測試開啟",
+            width=104,
+            height=40,
+            fg_color="transparent",
+            border_width=1,
+            border_color=_CLR_LINK,
+            hover_color=_CLR_LINK_HOVER,
+            text_color=_CLR_LINK,
+            font=_font(13),
+            command=self._on_test,
+        ).pack(side="right", padx=(8, 0), pady=4)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="儲存",
+            width=104,
+            height=40,
+            fg_color=_CLR_ADD,
+            hover_color=_CLR_ADD_HOVER,
+            font=_font(13, "bold"),
+            command=self._on_save,
+        ).pack(side="right", pady=4)
+
+        self._all_inputs: list[Any] = [
+            self.path_entry,
+            self.x_entry,
+            self.y_entry,
+            self.w_entry,
+            self.h_entry,
+        ]
+        self._refresh_enabled_state()
+
+    def _refresh_enabled_state(self) -> None:
+        state = "normal" if self.enabled_var.get() else "disabled"
+        for widget in self._all_inputs:
+            widget.configure(state=state)
+
+    def _collect(self) -> dict[str, Any] | None:
+        try:
+            x = int(self.x_entry.get())
+            y = int(self.y_entry.get())
+            width = int(self.w_entry.get())
+            height = int(self.h_entry.get())
+        except ValueError:
+            self.message_label.configure(
+                text="座標與大小必須為整數。", text_color="#ef5350"
+            )
+            return None
+
+        if width < 100 or height < 100:
+            self.message_label.configure(
+                text="寬度與高度至少需 100 像素。", text_color="#ef5350"
+            )
+            return None
+
+        browser_path = self.path_entry.get().strip() or "chrome"
+
+        return {
+            "enabled": bool(self.enabled_var.get()),
+            "browser_path": browser_path,
+            "new_window": bool(self.new_window_var.get()),
+            "app_mode": bool(self.app_mode_var.get()),
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "minimized": bool(self.minimized_var.get()),
+        }
+
+    def _on_test(self) -> None:
+        data = self._collect()
+        if data is None:
+            return
+        self.message_label.configure(
+            text="已嘗試開啟測試頁面（about:blank）。",
+            text_color="#64b5f6",
+        )
+        open_url("about:blank", data if data["enabled"] else None)
+
+    def _on_save(self) -> None:
+        data = self._collect()
+        if data is None:
+            return
+        self.result = data
+        self.destroy()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Channel Row
 # ═══════════════════════════════════════════════════════════════════════════
 class ChannelRow(ctk.CTkFrame):
@@ -455,10 +713,12 @@ class ChannelRow(ctk.CTkFrame):
         on_move_up: callable,
         on_move_down: callable,
         on_toggle_enabled: callable,
+        get_browser_settings: Callable[[], dict[str, Any] | None] | None = None,
     ) -> None:
         super().__init__(parent, corner_radius=10, fg_color=_CLR_CARD, height=58)
         self.channel = channel
         self._on_toggle_enabled = on_toggle_enabled
+        self._get_browser_settings = get_browser_settings or (lambda: None)
         self._active_url = ""
         self._status_title = ""
 
@@ -610,14 +870,14 @@ class ChannelRow(ctk.CTkFrame):
         return f"https://www.youtube.com/@{name}"
 
     def _open_channel_page(self) -> None:
-        open_url(self._channel_url())
+        open_url(self._channel_url(), self._get_browser_settings())
 
     def _open_current_page(self) -> None:
-        open_url(self._active_url or self._channel_url())
+        open_url(self._active_url or self._channel_url(), self._get_browser_settings())
 
     def _open_active_page(self) -> None:
         if self._active_url:
-            open_url(self._active_url)
+            open_url(self._active_url, self._get_browser_settings())
 
     def _set_link_tip(self, text: str) -> None:
         if hasattr(self, "_link_tip"):
@@ -764,6 +1024,8 @@ class App(ctk.CTk):
         self._channel_rows: list[ChannelRow] = []
         self._silent = silent
         self._truly_quitting = False
+        # monitor mode: "idle" | "trigger" | "watch"
+        self._monitor_mode: str = "idle"
 
         self.title("哈嘍主播  Hello Streamer")
         self.minsize(_MIN_WINDOW_WIDTH, _MIN_WINDOW_HEIGHT)
@@ -778,8 +1040,10 @@ class App(ctk.CTk):
         self._tray = TrayIcon(
             on_show=self._show_window,
             on_toggle_monitor=self._tray_toggle_monitor,
+            on_watch_only=lambda: self.after(0, self._on_watch),
+            on_stop=lambda: self.after(0, self._on_stop),
             on_quit=self._quit_app,
-            is_monitoring=lambda: self._monitor is not None and self._monitor.is_running,
+            get_mode=lambda: self._monitor_mode,
         )
         self._tray.start()
 
@@ -787,7 +1051,9 @@ class App(ctk.CTk):
             self.withdraw()
             channels = self.config.get("channels", [])
             if channels:
-                self.after(500, self._on_start)
+                saved_mode = self.config.get("monitor_mode", "trigger")
+                starter = self._on_watch if saved_mode == "watch" else self._on_start
+                self.after(500, starter)
 
     # ------------------------------------------------------------------
     # Window visibility
@@ -829,6 +1095,12 @@ class App(ctk.CTk):
             self.after(0, self._on_stop)
         else:
             self.after(0, self._on_start)
+
+    def _current_browser_settings(self) -> dict[str, Any] | None:
+        settings = self.config.get("browser_settings")
+        if isinstance(settings, dict) and settings.get("enabled"):
+            return settings
+        return None
 
     # ------------------------------------------------------------------
     # UI construction
@@ -874,6 +1146,26 @@ class App(ctk.CTk):
         )
         self.add_btn.pack(side="right")
         _tooltip(self.add_btn, "新增 Twitch 或 YouTube 頻道")
+
+        self.browser_settings_btn = ctk.CTkButton(
+            title_bar,
+            text="⚙  瀏覽器設定",
+            width=130,
+            height=36,
+            corner_radius=8,
+            fg_color="transparent",
+            border_width=1,
+            border_color=_CLR_LINK,
+            hover_color=_CLR_LINK_HOVER,
+            text_color=_CLR_LINK,
+            font=_font(13, "bold"),
+            command=self._on_browser_settings,
+        )
+        self.browser_settings_btn.pack(side="right", padx=(0, 8))
+        _tooltip(
+            self.browser_settings_btn,
+            "設定觸發時的瀏覽器：獨立視窗 / 座標 / 大小 / 最小化 / App Mode",
+        )
 
         self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
         self.startup_switch = ctk.CTkSwitch(
@@ -935,8 +1227,8 @@ class App(ctk.CTk):
 
         self.start_btn = ctk.CTkButton(
             left,
-            text="▶  開始監聽",
-            width=130,
+            text="▶  監聽+觸發",
+            width=132,
             height=38,
             corner_radius=8,
             fg_color=_CLR_START,
@@ -944,8 +1236,22 @@ class App(ctk.CTk):
             font=_font(14, "bold"),
             command=self._on_start,
         )
-        self.start_btn.pack(side="left", padx=(0, 8))
-        _tooltip(self.start_btn, "開始監聽所有已啟用的頻道")
+        self.start_btn.pack(side="left", padx=(0, 6))
+        _tooltip(self.start_btn, "開始監聽並在偵測到開播時執行觸發行為")
+
+        self.watch_btn = ctk.CTkButton(
+            left,
+            text="👁  只監測",
+            width=108,
+            height=38,
+            corner_radius=8,
+            fg_color="#1565c0",
+            hover_color="#0d47a1",
+            font=_font(14, "bold"),
+            command=self._on_watch,
+        )
+        self.watch_btn.pack(side="left", padx=(0, 6))
+        _tooltip(self.watch_btn, "只更新狀態與顯示，不執行觸發行為（不自動開網頁/不通知）")
 
         self.stop_btn = ctk.CTkButton(
             left,
@@ -1067,6 +1373,7 @@ class App(ctk.CTk):
             on_move_up=on_move_up,
             on_move_down=on_move_down,
             on_toggle_enabled=on_toggle_enabled,
+            get_browser_settings=self._current_browser_settings,
         )
         row.pack(fill="x", pady=3)
         self._channel_rows.append(row)
@@ -1148,13 +1455,11 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
     # Monitor control
     # ------------------------------------------------------------------
-    def _on_start(self) -> None:
+    def _ensure_monitor_running(self) -> bool:
+        """Start (or keep) the background monitor. Returns False if no channels."""
         channels = self.config.get("channels", [])
         if not channels:
-            return
-
-        if self._monitor and self._monitor.is_running:
-            return
+            return False
 
         try:
             interval = int(self.interval_var.get())
@@ -1162,26 +1467,45 @@ class App(ctk.CTk):
             interval = 60
         interval = max(10, interval)
         self.interval_var.set(str(interval))
-
         self.config["check_interval"] = interval
+
         action_display = self.action_var.get()
         action_key = ACTION_BY_DISPLAY.get(action_display, "open_and_stop")
         self.config["action"] = action_key
+
+        if self._monitor and self._monitor.is_running:
+            self._monitor.update_interval(interval)
+            self._monitor.update_channels(channels)
+        else:
+            self._monitor = Monitor(
+                channels=channels,
+                interval=interval,
+                on_status_change=self._on_channel_live,
+                on_poll_complete=self._on_poll_done,
+                db=self._db,
+            )
+            self._monitor.start()
+        return True
+
+    def _on_start(self) -> None:
+        if not self._ensure_monitor_running():
+            return
+        self._monitor_mode = "trigger"
+        self.config["monitor_mode"] = "trigger"
         self._save_config()
+        self._apply_monitor_mode_buttons()
+        self.status_text.configure(text="監聽+觸發中…", text_color=_CLR_LIVE)
+        self._tray.update_tooltip("哈嘍主播 — 監聽+觸發中")
 
-        self._monitor = Monitor(
-            channels=channels,
-            interval=interval,
-            on_status_change=self._on_channel_live,
-            on_poll_complete=self._on_poll_done,
-            db=self._db,
-        )
-        self._monitor.start()
-
-        self.start_btn.configure(state="disabled")
-        self.stop_btn.configure(state="normal")
-        self.status_text.configure(text="監聽中…", text_color=_CLR_LIVE)
-        self._tray.update_tooltip("哈嘍主播 — 監聽中")
+    def _on_watch(self) -> None:
+        if not self._ensure_monitor_running():
+            return
+        self._monitor_mode = "watch"
+        self.config["monitor_mode"] = "watch"
+        self._save_config()
+        self._apply_monitor_mode_buttons()
+        self.status_text.configure(text="只監測中…", text_color="#64b5f6")
+        self._tray.update_tooltip("哈嘍主播 — 只監測中")
 
     def _on_stop(self) -> None:
         if self._monitor:
@@ -1193,10 +1517,34 @@ class App(ctk.CTk):
                 self._event_queue.get_nowait()
         except queue.Empty:
             pass
-        self.start_btn.configure(state="normal")
-        self.stop_btn.configure(state="disabled")
+        self._monitor_mode = "idle"
+        self._apply_monitor_mode_buttons()
         self.status_text.configure(text="已停止", text_color=_CLR_OFFLINE)
         self._tray.update_tooltip("哈嘍主播 — 已停止")
+
+    def _apply_monitor_mode_buttons(self) -> None:
+        mode = self._monitor_mode
+        if mode == "trigger":
+            self.start_btn.configure(state="disabled")
+            self.watch_btn.configure(state="normal")
+            self.stop_btn.configure(state="normal")
+        elif mode == "watch":
+            self.start_btn.configure(state="normal")
+            self.watch_btn.configure(state="disabled")
+            self.stop_btn.configure(state="normal")
+        else:
+            self.start_btn.configure(state="normal")
+            self.watch_btn.configure(state="normal")
+            self.stop_btn.configure(state="disabled")
+
+    def _on_browser_settings(self) -> None:
+        dialog = BrowserSettingsDialog(
+            self, self.config.get("browser_settings", {}) or {}
+        )
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            self.config["browser_settings"] = dialog.result
+            self._save_config()
 
     # ------------------------------------------------------------------
     # Event bridge (monitor thread -> UI thread)
@@ -1231,19 +1579,30 @@ class App(ctk.CTk):
                 row.set_status(statuses.get(row.key))
 
         configured_action = self.config.get("action", "open_and_stop")
+        browser_settings = self._current_browser_settings()
         should_stop = False
         should_exit = False
+        trigger_enabled = self._monitor_mode == "trigger"
 
         for entry, info in live_events:
             if info.display_name:
                 self._apply_display_names({entry.key: info.display_name})
+
+            if not trigger_enabled:
+                continue
 
             action = action_for_stream_status(configured_action, info)
             if action is None:
                 continue
 
             noop = lambda: None  # noqa: E731
-            execute_action(action, info, stop_fn=noop, exit_fn=noop)
+            execute_action(
+                action,
+                info,
+                stop_fn=noop,
+                exit_fn=noop,
+                browser_settings=browser_settings,
+            )
 
             if action == "open_and_stop":
                 should_stop = True

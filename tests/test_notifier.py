@@ -164,3 +164,150 @@ def test_action_for_video_returns_none() -> None:
         )
         is None
     )
+
+
+# ─────────────────────────────────────────────
+# Browser-settings driven open_url
+# ─────────────────────────────────────────────
+def test_build_browser_args_default_window() -> None:
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "chrome",
+            "new_window": True,
+            "app_mode": False,
+            "x": 10,
+            "y": 20,
+            "width": 800,
+            "height": 600,
+        },
+    )
+    assert args == [
+        "chrome",
+        "--new-window",
+        "--window-position=10,20",
+        "--window-size=800,600",
+        "https://example.com",
+    ]
+
+
+def test_build_browser_args_app_mode_replaces_url() -> None:
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "msedge",
+            "new_window": False,
+            "app_mode": True,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+        },
+    )
+    assert "--new-window" not in args
+    assert "--app=https://example.com" in args
+    assert "https://example.com" not in args
+    assert args[0] == "msedge"
+
+
+def test_open_url_uses_browser_settings_when_enabled(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_popen(args, **kwargs):
+        calls.append(args)
+
+        class _Proc:
+            pass
+
+        return _Proc()
+
+    monkeypatch.setattr(notifier.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(notifier.webbrowser, "open", lambda *_a, **_k: True)
+
+    settings = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "new_window": True,
+        "app_mode": False,
+        "x": 5,
+        "y": 6,
+        "width": 1024,
+        "height": 768,
+        "minimized": False,
+    }
+
+    assert notifier.open_url("https://example.com", settings) is True
+    assert calls == [
+        [
+            "chrome",
+            "--new-window",
+            "--window-position=5,6",
+            "--window-size=1024,768",
+            "https://example.com",
+        ]
+    ]
+
+
+def test_open_url_falls_back_to_webbrowser_when_disabled(monkeypatch) -> None:
+    popen_called = []
+    monkeypatch.setattr(
+        notifier.subprocess,
+        "Popen",
+        lambda *a, **k: popen_called.append(a) or None,
+    )
+    opened = []
+    monkeypatch.setattr(
+        notifier.webbrowser,
+        "open",
+        lambda url, new=0: opened.append((url, new)) or True,
+    )
+
+    assert notifier.open_url("https://example.com", {"enabled": False}) is True
+    assert popen_called == []
+    assert opened == [("https://example.com", 2)]
+
+
+def test_open_url_subprocess_failure_falls_back(monkeypatch) -> None:
+    def fail_popen(*_a, **_k):
+        raise FileNotFoundError("no chrome")
+
+    opened = []
+    monkeypatch.setattr(notifier.subprocess, "Popen", fail_popen)
+    monkeypatch.setattr(
+        notifier.webbrowser,
+        "open",
+        lambda url, new=0: opened.append((url, new)) or True,
+    )
+
+    settings = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "new_window": True,
+        "app_mode": False,
+        "x": 0,
+        "y": 0,
+        "width": 800,
+        "height": 600,
+        "minimized": False,
+    }
+    assert notifier.open_url("https://example.com", settings) is True
+    assert opened == [("https://example.com", 2)]
+
+
+def test_execute_open_and_keep_passes_browser_settings(monkeypatch) -> None:
+    monkeypatch.setattr(notifier, "_toast", lambda *_a, **_k: None)
+
+    captured: dict[str, object] = {}
+
+    def fake_open(url, browser_settings=None):
+        captured["url"] = url
+        captured["settings"] = browser_settings
+        return True
+
+    monkeypatch.setattr(notifier, "open_url", fake_open)
+
+    settings = {"enabled": True, "browser_path": "chrome"}
+    notifier.execute_action("open_and_keep", _info(), browser_settings=settings)
+
+    assert captured["url"] == "https://www.twitch.tv/hello"
+    assert captured["settings"] is settings
