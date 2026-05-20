@@ -25,6 +25,7 @@ from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelEntry, ChannelStatus, Monitor
 from stream_monitor.notifier import (
     action_for_stream_status,
+    close_browser_window_for_url,
     detect_browser_family,
     execute_action,
     open_url,
@@ -458,7 +459,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent: ctk.CTk, current: dict[str, Any]) -> None:
         super().__init__(parent)
         self.title("瀏覽器設定")
-        self.geometry("600x820")
+        self.geometry("600x880")
         self.resizable(False, False)
         self.transient(parent)
         self.configure(fg_color=_CLR_BG_DARK)
@@ -577,6 +578,26 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(12),
         )
         self.minimized_cb.pack(anchor="w")
+
+        self.close_on_offline_var = ctk.BooleanVar(
+            value=bool(settings.get("close_on_offline", False))
+        )
+        self.close_on_offline_cb = ctk.CTkCheckBox(
+            toggle_frame,
+            text="🗙 關台時自動關閉播放器視窗 (PostMessage WM_CLOSE)",
+            variable=self.close_on_offline_var,
+            font=_font(12),
+        )
+        self.close_on_offline_cb.pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(
+            toggle_frame,
+            text="只關閉本程式開啟的視窗（HWND 已登記）；找不到時才用視窗標題關鍵字後備。",
+            font=_font(10),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 2))
 
         # ── Isolated profile (forces a fresh Chrome master process so
         # --app= / --window-position actually take effect)
@@ -800,6 +821,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.new_window_cb,
             self.app_mode_cb,
             self.minimized_cb,
+            self.close_on_offline_cb,
             self.user_data_dir_cb,
             self.per_channel_profile_cb,
             self.apply_geometry_cb,
@@ -962,6 +984,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "minimized": bool(self.minimized_var.get()),
             "user_data_dir": user_data_dir,
             "per_channel_profile": bool(self.per_channel_profile_var.get()),
+            "close_on_offline": bool(self.close_on_offline_var.get()),
         }
 
     def _snapshot_browser_settings(self) -> dict[str, Any]:
@@ -980,6 +1003,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "user_data_dir_enabled": bool(self.user_data_dir_enabled_var.get()),
             "user_data_dir": self.user_data_dir_entry.get().strip(),
             "per_channel_profile": bool(self.per_channel_profile_var.get()),
+            "close_on_offline": bool(self.close_on_offline_var.get()),
         }
 
     def _has_unsaved_changes(self) -> bool:
@@ -1868,6 +1892,7 @@ class App(ctk.CTk):
                 interval=interval,
                 on_status_change=self._on_channel_live,
                 on_poll_complete=self._on_poll_done,
+                on_went_offline=self._on_channel_offline,
                 db=self._db,
             )
             self._monitor.start()
@@ -1938,6 +1963,11 @@ class App(ctk.CTk):
     def _on_channel_live(self, entry: ChannelEntry, info: StreamInfo) -> None:
         self._event_queue.put(("live", (entry, info)))
 
+    def _on_channel_offline(self, entry: ChannelEntry, offline_info: Any) -> None:
+        # Forward to the UI thread; the actual close call needs ctypes/Win32
+        # which we don't want to invoke from the monitor's polling thread.
+        self._event_queue.put(("offline", (entry, offline_info)))
+
     def _on_poll_done(self) -> None:
         if self._monitor:
             statuses = self._monitor.snapshot_statuses()
@@ -1946,6 +1976,7 @@ class App(ctk.CTk):
 
     def _poll_events(self) -> None:
         live_events: list[tuple[ChannelEntry, StreamInfo]] = []
+        offline_events: list[tuple[ChannelEntry, Any]] = []
         latest_status_update: tuple[dict, dict] | None = None
 
         try:
@@ -1953,6 +1984,8 @@ class App(ctk.CTk):
                 kind, data = self._event_queue.get_nowait()
                 if kind == "live":
                     live_events.append(data)
+                elif kind == "offline":
+                    offline_events.append(data)
                 elif kind == "status_update":
                     latest_status_update = data
         except queue.Empty:
@@ -1995,12 +2028,42 @@ class App(ctk.CTk):
             elif action == "open_and_exit":
                 should_exit = True
 
+        if offline_events and browser_settings.get("close_on_offline"):
+            for entry, offline_info in offline_events:
+                self._handle_channel_offline(entry, offline_info)
+
         if should_stop:
             self._on_stop()
         elif should_exit:
             self._quit_app()
 
         self.after(500, self._poll_events)
+
+    def _handle_channel_offline(
+        self, entry: ChannelEntry, offline_info: Any
+    ) -> None:
+        """Close any browser window we opened for this channel."""
+        url = getattr(offline_info, "url", "") or ""
+        if not url:
+            return
+        # Build a small list of keywords for the title-fallback path:
+        # the channel slug (e.g. "Kaicenat") and the display name help when
+        # the URL was opened via webbrowser (no HWND tracking).
+        keywords: list[str] = []
+        if entry.name:
+            keywords.append(entry.name)
+        display_name = getattr(offline_info, "display_name", "") or ""
+        if display_name and display_name not in keywords:
+            keywords.append(display_name)
+        try:
+            closed = close_browser_window_for_url(url, title_keywords=keywords)
+        except Exception:
+            logger.exception("close_browser_window_for_url failed for %s", url)
+            return
+        if closed:
+            logger.info(
+                "Closed %d browser window(s) for %s (%s)", closed, entry.key, url
+            )
 
     # ------------------------------------------------------------------
     # Settings
