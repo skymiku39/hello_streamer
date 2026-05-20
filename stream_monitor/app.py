@@ -21,7 +21,12 @@ from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelEntry, ChannelStatus, Monitor
-from stream_monitor.notifier import action_for_stream_status, execute_action, open_url
+from stream_monitor.notifier import (
+    action_for_stream_status,
+    detect_browser_family,
+    execute_action,
+    open_url,
+)
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
 from stream_monitor.tray import TrayIcon
@@ -451,7 +456,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent: ctk.CTk, current: dict[str, Any]) -> None:
         super().__init__(parent)
         self.title("瀏覽器設定")
-        self.geometry("560x560")
+        self.geometry("580x720")
         self.resizable(False, False)
         self.transient(parent)
         self.configure(fg_color=_CLR_BG_DARK)
@@ -507,6 +512,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self.path_entry.insert(0, settings.get("browser_path", "chrome"))
         self.path_entry.grid(row=0, column=1, sticky="ew")
+        self.path_entry.bind("<KeyRelease>", self._on_path_change)
 
         ctk.CTkLabel(
             self,
@@ -517,37 +523,104 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             wraplength=512,
         ).pack(padx=24, pady=(4, 0), fill="x")
 
+        self.compat_label = ctk.CTkLabel(
+            self,
+            text="",
+            font=_font(11, "bold"),
+            text_color="#ffb74d",
+            anchor="w",
+            wraplength=512,
+            height=20,
+        )
+        self.compat_label.pack(padx=24, pady=(2, 0), fill="x")
+
         # ── Window mode toggles
         toggle_frame = ctk.CTkFrame(self, fg_color="transparent")
-        toggle_frame.pack(padx=24, pady=(14, 0), fill="x")
+        toggle_frame.pack(padx=24, pady=(10, 0), fill="x")
 
         self.new_window_var = ctk.BooleanVar(
             value=bool(settings.get("new_window", True))
         )
-        ctk.CTkCheckBox(
+        self.new_window_cb = ctk.CTkCheckBox(
             toggle_frame,
             text="強制獨立新視窗 (--new-window)",
             variable=self.new_window_var,
             font=_font(12),
-        ).pack(anchor="w", pady=(0, 4))
+        )
+        self.new_window_cb.pack(anchor="w", pady=(0, 4))
 
         self.app_mode_var = ctk.BooleanVar(value=bool(settings.get("app_mode", False)))
-        ctk.CTkCheckBox(
+        self.app_mode_cb = ctk.CTkCheckBox(
             toggle_frame,
-            text="App Mode：開啟為純淨播放器 (--app=URL，隱藏網址列)",
+            text="App Mode：純淨播放器 (--app=URL；已隱含獨立視窗)",
             variable=self.app_mode_var,
             font=_font(12),
-        ).pack(anchor="w", pady=(0, 4))
+        )
+        self.app_mode_cb.pack(anchor="w", pady=(0, 4))
 
         self.minimized_var = ctk.BooleanVar(
             value=bool(settings.get("minimized", False))
         )
-        ctk.CTkCheckBox(
+        self.minimized_cb = ctk.CTkCheckBox(
             toggle_frame,
-            text="最小化啟動（不搶奪當前焦點，僅 Windows 有效）",
+            text="最小化啟動（不搶焦點；由本程式於視窗出現後自動 Win32 縮小）",
             variable=self.minimized_var,
             font=_font(12),
-        ).pack(anchor="w")
+        )
+        self.minimized_cb.pack(anchor="w")
+
+        # ── Isolated profile (forces a fresh Chrome master process so
+        # --app= / --window-position actually take effect)
+        profile_frame = ctk.CTkFrame(self, fg_color=_CLR_CARD, corner_radius=10)
+        profile_frame.pack(padx=24, pady=(14, 0), fill="x")
+        profile_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            profile_frame,
+            text="獨立瀏覽器 Profile（建議啟用）",
+            font=_font(12, "bold"),
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=3, padx=12, pady=(10, 2), sticky="w")
+
+        ctk.CTkLabel(
+            profile_frame,
+            text="Chrome / Edge 已開啟時，--app= 與座標/大小會被忽略。設定獨立 Profile "
+                 "可強迫瀏覽器以新 master process 開啟，所有設定才會生效。\n"
+                 "代價：此 profile 沒有你主瀏覽器的書籤/登入/外掛（彈窗純粹播片用）。",
+            font=_font(11),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=500,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 6), sticky="w")
+
+        try:
+            default_profile_dir = str(base_dir() / "browser_profile")
+        except Exception:
+            default_profile_dir = ""
+
+        saved_profile_dir = (settings.get("user_data_dir") or "").strip()
+        self.user_data_dir_enabled_var = ctk.BooleanVar(value=bool(saved_profile_dir))
+
+        self.user_data_dir_cb = ctk.CTkCheckBox(
+            profile_frame,
+            text="啟用獨立 Profile",
+            variable=self.user_data_dir_enabled_var,
+            command=self._refresh_user_data_dir_state,
+            font=_font(12),
+        )
+        self.user_data_dir_cb.grid(row=2, column=0, padx=12, pady=(0, 8), sticky="w")
+
+        self.user_data_dir_entry = ctk.CTkEntry(
+            profile_frame,
+            placeholder_text=default_profile_dir or "C:\\Path\\To\\Profile\\Folder",
+            font=_font(12),
+            height=30,
+        )
+        self.user_data_dir_entry.insert(0, saved_profile_dir or default_profile_dir)
+        self.user_data_dir_entry.grid(
+            row=2, column=1, columnspan=2, padx=(0, 12), pady=(0, 8), sticky="ew"
+        )
 
         # ── Position / size
         pos_frame = ctk.CTkFrame(self, fg_color=_CLR_CARD, corner_radius=10)
@@ -642,12 +715,68 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.w_entry,
             self.h_entry,
         ]
+        self._family_dependent: list[Any] = [
+            self.x_entry,
+            self.y_entry,
+            self.w_entry,
+            self.h_entry,
+            self.app_mode_cb,
+        ]
         self._refresh_enabled_state()
+        self._refresh_user_data_dir_state()
+        self._on_path_change()
 
     def _refresh_enabled_state(self) -> None:
         state = "normal" if self.enabled_var.get() else "disabled"
         for widget in self._all_inputs:
             widget.configure(state=state)
+        for widget in (
+            self.new_window_cb,
+            self.app_mode_cb,
+            self.minimized_cb,
+            self.user_data_dir_cb,
+        ):
+            widget.configure(state=state)
+        self._refresh_user_data_dir_state()
+        self._on_path_change()
+
+    def _refresh_user_data_dir_state(self) -> None:
+        if not self.enabled_var.get():
+            self.user_data_dir_entry.configure(state="disabled")
+            return
+        self.user_data_dir_entry.configure(
+            state="normal" if self.user_data_dir_enabled_var.get() else "disabled"
+        )
+
+    def _on_path_change(self, _event: Any = None) -> None:
+        if not self.enabled_var.get():
+            self.compat_label.configure(text="（自訂模式已停用 — 將使用系統預設瀏覽器）")
+            return
+
+        executable = self.path_entry.get().strip() or "chrome"
+        family = detect_browser_family(executable)
+
+        if family == "firefox":
+            self.compat_label.configure(
+                text="⚠ 偵測到 Firefox：座標 / 大小 / App Mode 都無法控制（CLI 不支援），相關欄位已停用。",
+                text_color="#ffb74d",
+            )
+            for widget in self._family_dependent:
+                widget.configure(state="disabled")
+        elif family == "chromium":
+            self.compat_label.configure(
+                text="✓ Chromium 系列瀏覽器：所有參數都可使用。",
+                text_color="#81c784",
+            )
+            for widget in self._family_dependent:
+                widget.configure(state="normal")
+        else:
+            self.compat_label.configure(
+                text="ℹ 未知瀏覽器類型 — 仍會嘗試送出 Chromium 參數，若無效請改用 chrome / msedge。",
+                text_color="#90caf9",
+            )
+            for widget in self._family_dependent:
+                widget.configure(state="normal")
 
     def _collect(self) -> dict[str, Any] | None:
         try:
@@ -669,6 +798,17 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         browser_path = self.path_entry.get().strip() or "chrome"
 
+        if self.user_data_dir_enabled_var.get():
+            user_data_dir = self.user_data_dir_entry.get().strip()
+            if not user_data_dir:
+                self.message_label.configure(
+                    text="獨立 Profile 已啟用但路徑為空，請填入資料夾路徑。",
+                    text_color="#ef5350",
+                )
+                return None
+        else:
+            user_data_dir = ""
+
         return {
             "enabled": bool(self.enabled_var.get()),
             "browser_path": browser_path,
@@ -679,6 +819,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "width": width,
             "height": height,
             "minimized": bool(self.minimized_var.get()),
+            "user_data_dir": user_data_dir,
         }
 
     def _on_test(self) -> None:
