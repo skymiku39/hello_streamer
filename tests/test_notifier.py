@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from stream_monitor import notifier
 from stream_monitor.fetcher.base import StreamInfo
@@ -1257,6 +1258,9 @@ def test_configure_user32_signatures_sets_argtypes() -> None:
         IsWindowVisible = FakeFn()
         GetWindowTextLengthW = FakeFn()
         GetClassNameW = FakeFn()
+        GetWindowTextW = FakeFn()
+        PostMessageW = FakeFn()
+        IsWindow = FakeFn()
 
     user32 = FakeUser32()
     notifier._configure_user32_signatures(user32)
@@ -1272,3 +1276,214 @@ def test_configure_user32_signatures_sets_argtypes() -> None:
     user32.SetWindowPos.argtypes = "tampered"
     notifier._configure_user32_signatures(user32)
     assert user32.SetWindowPos.argtypes == "tampered"
+
+
+# ─────────────────────────────────────────────
+# Window tracking + close-on-offline
+# ─────────────────────────────────────────────
+def _reset_tracked_hwnds() -> None:
+    with notifier._TRACKED_HWNDS_LOCK:
+        notifier._TRACKED_HWNDS_BY_URL.clear()
+
+
+def test_register_and_snapshot_tracked_hwnds_roundtrip() -> None:
+    _reset_tracked_hwnds()
+    try:
+        notifier._register_tracked_hwnd("https://x", 1234)
+        notifier._register_tracked_hwnd("https://x", 5678)
+        notifier._register_tracked_hwnd("https://y", 99)
+        assert notifier._snapshot_tracked_hwnds("https://x") == {1234, 5678}
+        assert notifier._snapshot_tracked_hwnds("https://y") == {99}
+        assert notifier._snapshot_tracked_hwnds("https://missing") == set()
+    finally:
+        _reset_tracked_hwnds()
+
+
+def test_register_tracked_hwnd_ignores_empty_url_and_zero_hwnd() -> None:
+    _reset_tracked_hwnds()
+    try:
+        notifier._register_tracked_hwnd("", 1)
+        notifier._register_tracked_hwnd("https://x", 0)
+        assert not notifier._TRACKED_HWNDS_BY_URL
+    finally:
+        _reset_tracked_hwnds()
+
+
+def test_clear_tracked_hwnds_removes_the_entry() -> None:
+    _reset_tracked_hwnds()
+    try:
+        notifier._register_tracked_hwnd("https://x", 42)
+        notifier._clear_tracked_hwnds("https://x")
+        assert notifier._snapshot_tracked_hwnds("https://x") == set()
+    finally:
+        _reset_tracked_hwnds()
+
+
+def test_close_browser_window_for_url_no_op_on_non_windows(monkeypatch) -> None:
+    monkeypatch.setattr(notifier, "_is_windows", lambda: False)
+    assert notifier.close_browser_window_for_url("https://x") == 0
+
+
+def test_close_browser_window_for_url_uses_tracked_hwnds(monkeypatch) -> None:
+    _reset_tracked_hwnds()
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    closed_hwnds: list[int] = []
+    monkeypatch.setattr(
+        notifier,
+        "_post_close_window",
+        lambda hwnd: (closed_hwnds.append(hwnd), True)[1],
+    )
+    monkeypatch.setattr(
+        notifier,
+        "_find_hwnds_by_title_keyword",
+        lambda kws: {999},  # should NOT be used when tracking hits
+    )
+
+    notifier._register_tracked_hwnd("https://stream", 11)
+    notifier._register_tracked_hwnd("https://stream", 22)
+
+    result = notifier.close_browser_window_for_url(
+        "https://stream", title_keywords=["channel"]
+    )
+
+    assert result == 2
+    assert set(closed_hwnds) == {11, 22}
+    # Registry is cleared after the close call.
+    assert notifier._snapshot_tracked_hwnds("https://stream") == set()
+
+
+def test_close_browser_window_for_url_falls_back_to_title_keyword(monkeypatch) -> None:
+    _reset_tracked_hwnds()
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    closed: list[int] = []
+    monkeypatch.setattr(
+        notifier,
+        "_post_close_window",
+        lambda hwnd: (closed.append(hwnd), True)[1],
+    )
+    monkeypatch.setattr(
+        notifier,
+        "_find_hwnds_by_title_keyword",
+        lambda kws: {777} if "Kaicenat" in kws else set(),
+    )
+
+    result = notifier.close_browser_window_for_url(
+        "https://www.twitch.tv/Kaicenat", title_keywords=["Kaicenat"]
+    )
+
+    assert result == 1
+    assert closed == [777]
+
+
+def test_close_browser_window_for_url_returns_zero_when_no_match(monkeypatch) -> None:
+    _reset_tracked_hwnds()
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(notifier, "_post_close_window", lambda hwnd: False)
+    monkeypatch.setattr(notifier, "_find_hwnds_by_title_keyword", lambda kws: set())
+
+    assert (
+        notifier.close_browser_window_for_url(
+            "https://x", title_keywords=["nope"]
+        )
+        == 0
+    )
+
+
+def test_close_browser_window_for_url_empty_url_returns_zero(monkeypatch) -> None:
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    assert notifier.close_browser_window_for_url("") == 0
+
+
+def test_find_hwnds_by_title_keyword_case_insensitive_substring(monkeypatch) -> None:
+    monkeypatch.setattr(
+        notifier,
+        "_enum_visible_hwnds_with_title",
+        lambda: [
+            (1, "Kaicenat - Twitch"),
+            (2, "Chrome - New Tab"),
+            (3, "kaicenat live stream"),
+        ],
+    )
+    matches = notifier._find_hwnds_by_title_keyword(["KaIcEnAt"])
+    assert matches == {1, 3}
+
+
+def test_find_hwnds_by_title_keyword_empty_keyword_list_returns_empty(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        notifier,
+        "_enum_visible_hwnds_with_title",
+        lambda: [(1, "anything")],
+    )
+    assert notifier._find_hwnds_by_title_keyword(["  ", ""]) == set()
+
+
+def test_post_close_window_posts_wm_close(monkeypatch) -> None:
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+
+    user32 = MagicMock()
+    user32.IsWindow.return_value = 1
+    user32.PostMessageW.return_value = 1
+
+    fake_ctypes = MagicMock()
+    fake_ctypes.windll.user32 = user32
+    monkeypatch.setitem(__import__("sys").modules, "ctypes", fake_ctypes)
+    monkeypatch.setattr(notifier, "_configure_user32_signatures", lambda _u: None)
+
+    assert notifier._post_close_window(0xABCD) is True
+    user32.IsWindow.assert_called_once_with(0xABCD)
+    user32.PostMessageW.assert_called_once_with(0xABCD, notifier._WM_CLOSE, 0, 0)
+
+
+def test_post_close_window_returns_false_when_hwnd_invalid(monkeypatch) -> None:
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+
+    user32 = MagicMock()
+    user32.IsWindow.return_value = 0
+    fake_ctypes = MagicMock()
+    fake_ctypes.windll.user32 = user32
+    monkeypatch.setitem(__import__("sys").modules, "ctypes", fake_ctypes)
+    monkeypatch.setattr(notifier, "_configure_user32_signatures", lambda _u: None)
+
+    assert notifier._post_close_window(0xDEAD) is False
+    user32.PostMessageW.assert_not_called()
+
+
+def test_apply_new_browser_window_settings_async_registers_tracked_url(
+    monkeypatch,
+) -> None:
+    """The post-launch worker should call _register_tracked_hwnd as it
+    discovers each new browser window so close-on-offline can find them."""
+    _reset_tracked_hwnds()
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+
+    user32 = MagicMock()
+    user32.ShowWindow.return_value = 1
+    user32.SetWindowPos.return_value = 1
+    fake_ctypes = MagicMock()
+    fake_ctypes.windll.user32 = user32
+    monkeypatch.setitem(__import__("sys").modules, "ctypes", fake_ctypes)
+    monkeypatch.setattr(notifier, "_configure_user32_signatures", lambda _u: None)
+
+    enum_results = iter([
+        set(),  # first poll: nothing new
+        {1234},  # second poll: discovered the new window
+        {1234},
+    ])
+    monkeypatch.setattr(
+        notifier, "_enum_browser_hwnds", lambda _cls: next(enum_results)
+    )
+
+    thread = notifier._apply_new_browser_window_settings_async(
+        "Chrome_WidgetWin_1",
+        baseline=set(),
+        settings={"x": 0, "y": 0, "width": 1280, "height": 720, "minimized": False},
+        apply_geometry=True,
+        deadline_s=1.0,
+        track_for_url="https://x",
+    )
+    assert thread is not None
+    thread.join(timeout=2.0)
+    assert notifier._snapshot_tracked_hwnds("https://x") == {1234}
+    _reset_tracked_hwnds()

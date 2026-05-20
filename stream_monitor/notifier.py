@@ -33,8 +33,17 @@ _SW_RESTORE = 9          # un-maximise / un-minimise before repositioning
 _SW_SHOWMINNOACTIVE = 7  # minimize without taking focus
 _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
+_WM_CLOSE = 0x0010
 _MINIMIZE_POLL_INTERVAL_S = 0.15
 _MINIMIZE_DEADLINE_S = 8.0  # generous: Chrome cold-start can take 2-3s
+
+# url -> set of HWNDs we spawned for that URL. Populated by the post-launch
+# window manager and consumed by close_browser_window_for_url so that "stream
+# went offline" events can shut the right tab without nuking unrelated
+# browser windows. Module-global on purpose: multiple App instances would
+# step on each other anyway because Windows HWNDs are process-global.
+_TRACKED_HWNDS_BY_URL: dict[str, set[int]] = {}
+_TRACKED_HWNDS_LOCK = threading.Lock()
 
 
 def _is_windows() -> bool:
@@ -224,6 +233,20 @@ def _configure_user32_signatures(user32: Any) -> None:
     user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
     user32.GetClassNameW.restype = ctypes.c_int
 
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+
+    user32.PostMessageW.argtypes = [
+        wintypes.HWND,
+        ctypes.c_uint,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
+    user32.PostMessageW.restype = wintypes.BOOL
+
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindow.restype = wintypes.BOOL
+
     user32._hello_streamer_signed = True  # type: ignore[attr-defined]
 
 
@@ -234,6 +257,7 @@ def _apply_new_browser_window_settings_async(
     *,
     apply_geometry: bool = True,
     deadline_s: float = _MINIMIZE_DEADLINE_S,
+    track_for_url: str = "",
 ) -> threading.Thread | None:
     """Spawn a daemon thread that configures any *new* HWND of *class_name*.
 
@@ -298,11 +322,14 @@ def _apply_new_browser_window_settings_async(
                     if minimized:
                         user32.ShowWindow(hwnd, _SW_SHOWMINNOACTIVE)
                     managed.add(hwnd)
+                    if track_for_url:
+                        _register_tracked_hwnd(track_for_url, hwnd)
                     logger.debug(
-                        "Managed new browser window HWND=%s geometry=%s minimized=%s",
+                        "Managed new browser window HWND=%s geometry=%s minimized=%s url=%s",
                         hwnd,
                         (x, y, width, height) if apply_geometry else None,
                         minimized,
+                        track_for_url or "<not tracked>",
                     )
                 except OSError:
                     logger.exception("Window management failed for HWND=%s", hwnd)
@@ -342,6 +369,169 @@ def _minimize_new_browser_windows_async(
         apply_geometry=False,
         deadline_s=deadline_s,
     )
+
+
+# ---------------------------------------------------------------------------
+# HWND tracking: register windows we spawn so we can close them later.
+# ---------------------------------------------------------------------------
+def _register_tracked_hwnd(url: str, hwnd: int) -> None:
+    """Remember that we opened HWND for URL — keyed by URL so a later
+    ``close_browser_window_for_url(url)`` knows which window(s) to close."""
+    if not url or not hwnd:
+        return
+    with _TRACKED_HWNDS_LOCK:
+        _TRACKED_HWNDS_BY_URL.setdefault(url, set()).add(int(hwnd))
+
+
+def _snapshot_tracked_hwnds(url: str) -> set[int]:
+    with _TRACKED_HWNDS_LOCK:
+        return set(_TRACKED_HWNDS_BY_URL.get(url, set()))
+
+
+def _clear_tracked_hwnds(url: str) -> None:
+    with _TRACKED_HWNDS_LOCK:
+        _TRACKED_HWNDS_BY_URL.pop(url, None)
+
+
+def _enum_visible_hwnds_with_title() -> list[tuple[int, str]]:
+    """Return ``(hwnd, title)`` for all visible top-level windows with text.
+
+    Used by ``close_browser_window_for_url`` as a title-keyword fallback when
+    no HWND was tracked (e.g. the URL was opened via the system default
+    browser instead of through our launcher).
+    """
+    if not _is_windows():
+        return []
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return []
+
+    try:
+        user32 = ctypes.windll.user32
+    except (AttributeError, OSError):
+        return []
+
+    try:
+        _configure_user32_signatures(user32)
+    except Exception:
+        logger.debug("Could not configure user32 signatures", exc_info=True)
+
+    enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    results: list[tuple[int, str]] = []
+
+    def _callback(hwnd: int, _lparam: int) -> bool:
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length == 0:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        if buf.value:
+            results.append((int(hwnd), buf.value))
+        return True
+
+    try:
+        user32.EnumWindows(enum_proc(_callback), 0)
+    except OSError:
+        logger.exception("EnumWindows (title enum) failed")
+        return []
+
+    return results
+
+
+def _post_close_window(hwnd: int) -> bool:
+    """Politely ask Windows to close HWND. Returns True on success.
+
+    Uses ``PostMessage(WM_CLOSE)`` rather than ``TerminateProcess`` so the
+    browser can fire ``beforeunload`` handlers and unload tabs cleanly. This
+    is the same code path the user triggers by hitting the [X] button.
+    """
+    if not _is_windows() or not hwnd:
+        return False
+
+    try:
+        import ctypes
+    except ImportError:
+        return False
+
+    try:
+        user32 = ctypes.windll.user32
+    except (AttributeError, OSError):
+        return False
+
+    try:
+        _configure_user32_signatures(user32)
+    except Exception:
+        logger.debug("Could not configure user32 signatures", exc_info=True)
+
+    try:
+        if not user32.IsWindow(hwnd):
+            return False
+        result = user32.PostMessageW(hwnd, _WM_CLOSE, 0, 0)
+        return bool(result)
+    except OSError:
+        logger.exception("PostMessage(WM_CLOSE) failed for HWND=%s", hwnd)
+        return False
+
+
+def _find_hwnds_by_title_keyword(keywords: list[str]) -> set[int]:
+    """Return HWNDs whose visible window title contains any of *keywords*.
+
+    Case-insensitive substring match (after stripping whitespace). Empty
+    keywords are ignored; an empty list returns an empty set.
+    """
+    cleaned = [k.strip().lower() for k in keywords if k and k.strip()]
+    if not cleaned:
+        return set()
+
+    matches: set[int] = set()
+    for hwnd, title in _enum_visible_hwnds_with_title():
+        low = title.lower()
+        if any(k in low for k in cleaned):
+            matches.add(hwnd)
+    return matches
+
+
+def close_browser_window_for_url(
+    url: str, *, title_keywords: list[str] | None = None
+) -> int:
+    """Close any browser window we previously opened for *url*.
+
+    Returns the count of windows that received a WM_CLOSE. The lookup is:
+
+    1. Exact HWND tracked by our post-launch window manager (most reliable;
+       only sends WM_CLOSE to the window WE opened).
+    2. Title-keyword fallback for the case where the URL was opened via
+       ``webbrowser`` (no tracking) or the tracked HWNDs went stale
+       (browser crashed, user closed manually, etc.). Each keyword is
+       case-insensitively substring-matched against visible window titles.
+
+    Safe on non-Windows (returns 0 without doing anything).
+    """
+    if not _is_windows() or not url:
+        return 0
+
+    hwnds = _snapshot_tracked_hwnds(url)
+    closed = 0
+
+    for hwnd in hwnds:
+        if _post_close_window(hwnd):
+            closed += 1
+
+    # Always clear the registry afterwards so a re-trigger for the same URL
+    # starts fresh (otherwise a future close call could try a stale HWND).
+    _clear_tracked_hwnds(url)
+
+    if closed == 0 and title_keywords:
+        for hwnd in _find_hwnds_by_title_keyword(title_keywords):
+            if _post_close_window(hwnd):
+                closed += 1
+
+    return closed
 
 
 # Filesystem-safe characters only. Anything else gets collapsed to "_" so a
@@ -619,6 +809,7 @@ def _open_with_browser_settings(url: str, settings: dict[str, Any]) -> bool:
             baseline,
             effective_settings,
             apply_geometry=bool(effective_settings.get("apply_geometry", True)),
+            track_for_url=url,
         )
 
     return True
