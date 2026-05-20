@@ -29,11 +29,16 @@ _WIN32_WINDOW_CLASS_BY_FAMILY = {
     "firefox": "MozillaWindowClass",
 }
 
+_SW_HIDE = 0
+_SW_SHOW = 5
 _SW_RESTORE = 9          # un-maximise / un-minimise before repositioning
 _SW_SHOWMINNOACTIVE = 7  # minimize without taking focus
 _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
 _WM_CLOSE = 0x0010
+_GWL_EXSTYLE = -20
+_WS_EX_TOOLWINDOW = 0x00000080
+_WS_EX_APPWINDOW = 0x00040000
 _MINIMIZE_POLL_INTERVAL_S = 0.15
 _MINIMIZE_DEADLINE_S = 8.0  # generous: Chrome cold-start can take 2-3s
 
@@ -247,6 +252,15 @@ def _configure_user32_signatures(user32: Any) -> None:
     user32.IsWindow.argtypes = [wintypes.HWND]
     user32.IsWindow.restype = wintypes.BOOL
 
+    # GetWindowLong/SetWindowLong (W variant). We deliberately use the *Long*
+    # form (not LongPtr) because GWL_EXSTYLE is always a 32-bit DWORD on every
+    # Windows ABI, and the W form exists on 64-bit Windows too for back-compat.
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = wintypes.LONG
+
+    user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+    user32.SetWindowLongW.restype = wintypes.LONG
+
     user32._hello_streamer_signed = True  # type: ignore[attr-defined]
 
 
@@ -293,6 +307,7 @@ def _apply_new_browser_window_settings_async(
     width = max(100, int(settings.get("width", 1280) or 1280))
     height = max(100, int(settings.get("height", 720) or 720))
     minimized = bool(settings.get("minimized"))
+    hide_from_taskbar = bool(settings.get("hide_from_taskbar"))
     set_window_pos_flags = _SWP_NOZORDER | _SWP_NOACTIVATE
 
     def _worker() -> None:
@@ -319,16 +334,23 @@ def _apply_new_browser_window_settings_async(
                             height,
                             set_window_pos_flags,
                         )
+                    if hide_from_taskbar:
+                        # Must happen BEFORE minimize: minimizing a window
+                        # whose WS_EX_TOOLWINDOW we then toggle on can
+                        # leave a "ghost" taskbar slot until the next
+                        # visibility change. Apply first, then minimize.
+                        _hide_window_from_taskbar(user32, hwnd)
                     if minimized:
                         user32.ShowWindow(hwnd, _SW_SHOWMINNOACTIVE)
                     managed.add(hwnd)
                     if track_for_url:
                         _register_tracked_hwnd(track_for_url, hwnd)
                     logger.debug(
-                        "Managed new browser window HWND=%s geometry=%s minimized=%s url=%s",
+                        "Managed new browser window HWND=%s geometry=%s minimized=%s hide_taskbar=%s url=%s",
                         hwnd,
                         (x, y, width, height) if apply_geometry else None,
                         minimized,
+                        hide_from_taskbar,
                         track_for_url or "<not tracked>",
                     )
                 except OSError:
@@ -369,6 +391,49 @@ def _minimize_new_browser_windows_async(
         apply_geometry=False,
         deadline_s=deadline_s,
     )
+
+
+# ---------------------------------------------------------------------------
+# Taskbar visibility: flip the WS_EX_TOOLWINDOW bit so the window stops
+# appearing in the Windows taskbar and Alt+Tab list.
+# ---------------------------------------------------------------------------
+def _hide_window_from_taskbar(user32: Any, hwnd: int) -> bool:
+    """Set ``WS_EX_TOOLWINDOW`` (and clear ``WS_EX_APPWINDOW``) on *hwnd*.
+
+    Returns True when the style was actually changed, False otherwise. The
+    function expects *user32* to be the already-loaded ``ctypes.windll.user32``
+    proxy with our signatures applied (caller should have called
+    ``_configure_user32_signatures``).
+
+    Side-effect: also performs a SW_HIDE → SW_SHOW cycle, which is the
+    documented way to make Windows re-evaluate whether the window deserves a
+    taskbar slot. Without it, the style change is honoured *next* time the
+    window changes visibility, which from the user's perspective looks like
+    "nothing happened".
+    """
+    try:
+        current = user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+    except OSError:
+        logger.exception("GetWindowLong failed for HWND=%s", hwnd)
+        return False
+
+    desired = (int(current) | _WS_EX_TOOLWINDOW) & ~_WS_EX_APPWINDOW
+    if desired == current:
+        return False
+
+    try:
+        user32.SetWindowLongW(hwnd, _GWL_EXSTYLE, desired)
+        # The taskbar caches whether each top-level window is "app-worthy"
+        # at the moment WS_VISIBLE flips on. Toggling visibility forces a
+        # refresh; otherwise the taskbar icon sticks around until the next
+        # show/hide cycle.
+        user32.ShowWindow(hwnd, _SW_HIDE)
+        user32.ShowWindow(hwnd, _SW_SHOW)
+    except OSError:
+        logger.exception("SetWindowLong/ShowWindow failed for HWND=%s", hwnd)
+        return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------

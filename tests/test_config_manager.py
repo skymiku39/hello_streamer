@@ -215,3 +215,23 @@ def test_load_close_on_offline_defaults_to_false(tmp_path, monkeypatch) -> None:
     assert (
         config_manager.load()["browser_settings"]["close_on_offline"] is False
     )
+
+
+def test_load_normalizes_hide_from_taskbar(tmp_path, monkeypatch) -> None:
+    import json
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"browser_settings": {"hide_from_taskbar": True}}),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    assert config_manager.load()["browser_settings"]["hide_from_taskbar"] is True
+
+
+def test_load_hide_from_taskbar_defaults_to_false(tmp_path, monkeypatch) -> None:
+    _use_config_path(monkeypatch, tmp_path / "config.json")
+    assert (
+        config_manager.load()["browser_settings"]["hide_from_taskbar"] is False
+    )

@@ -37,6 +37,10 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     # opened on the going-live edge once the channel transitions back to
     # offline. Default off so users opt-in deliberately.
     "close_on_offline": False,
+    # When True, the post-launch Win32 worker flips WS_EX_TOOLWINDOW on the
+    # spawned browser window so it disappears from the taskbar and Alt+Tab.
+    # Off by default — most users still want a taskbar slot to switch to.
+    "hide_from_taskbar": False,
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -126,6 +130,7 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
         "minimized",
         "per_channel_profile",
         "close_on_offline",
+        "hide_from_taskbar",
     ):
         raw = value.get(bool_key)
         if isinstance(raw, bool):

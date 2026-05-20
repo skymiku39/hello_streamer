@@ -459,7 +459,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent: ctk.CTk, current: dict[str, Any]) -> None:
         super().__init__(parent)
         self.title("瀏覽器設定")
-        self.geometry("600x880")
+        self.geometry("600x940")
         self.resizable(False, False)
         self.transient(parent)
         self.configure(fg_color=_CLR_BG_DARK)
@@ -592,6 +592,27 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             toggle_frame,
             text="只關閉本程式開啟的視窗（HWND 已登記）；找不到時才用視窗標題關鍵字後備。",
+            font=_font(10),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 2))
+
+        self.hide_from_taskbar_var = ctk.BooleanVar(
+            value=bool(settings.get("hide_from_taskbar", False))
+        )
+        self.hide_from_taskbar_cb = ctk.CTkCheckBox(
+            toggle_frame,
+            text="👻 從工作列與 Alt+Tab 隱藏 (WS_EX_TOOLWINDOW)",
+            variable=self.hide_from_taskbar_var,
+            font=_font(12),
+        )
+        self.hide_from_taskbar_cb.pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(
+            toggle_frame,
+            text="視窗依然可見，但不會佔工作列空間，也不會在 Alt+Tab 中干擾。\n"
+                 "代價：無法從工作列把它叫到最上層（需從本程式控制）。",
             font=_font(10),
             text_color="#9aa0b4",
             anchor="w",
@@ -822,6 +843,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.app_mode_cb,
             self.minimized_cb,
             self.close_on_offline_cb,
+            self.hide_from_taskbar_cb,
             self.user_data_dir_cb,
             self.per_channel_profile_cb,
             self.apply_geometry_cb,
@@ -985,6 +1007,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "user_data_dir": user_data_dir,
             "per_channel_profile": bool(self.per_channel_profile_var.get()),
             "close_on_offline": bool(self.close_on_offline_var.get()),
+            "hide_from_taskbar": bool(self.hide_from_taskbar_var.get()),
         }
 
     def _snapshot_browser_settings(self) -> dict[str, Any]:
@@ -1004,6 +1027,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "user_data_dir": self.user_data_dir_entry.get().strip(),
             "per_channel_profile": bool(self.per_channel_profile_var.get()),
             "close_on_offline": bool(self.close_on_offline_var.get()),
+            "hide_from_taskbar": bool(self.hide_from_taskbar_var.get()),
         }
 
     def _has_unsaved_changes(self) -> bool:

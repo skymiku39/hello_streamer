@@ -1261,6 +1261,8 @@ def test_configure_user32_signatures_sets_argtypes() -> None:
         GetWindowTextW = FakeFn()
         PostMessageW = FakeFn()
         IsWindow = FakeFn()
+        GetWindowLongW = FakeFn()
+        SetWindowLongW = FakeFn()
 
     user32 = FakeUser32()
     notifier._configure_user32_signatures(user32)
@@ -1448,6 +1450,169 @@ def test_post_close_window_returns_false_when_hwnd_invalid(monkeypatch) -> None:
 
     assert notifier._post_close_window(0xDEAD) is False
     user32.PostMessageW.assert_not_called()
+
+
+def test_hide_window_from_taskbar_flips_ws_ex_toolwindow() -> None:
+    """Verify the helper ORs WS_EX_TOOLWINDOW in and ANDs WS_EX_APPWINDOW out,
+    then performs a SW_HIDE -> SW_SHOW cycle to refresh the taskbar."""
+    user32 = MagicMock()
+    # Pretend the window currently has WS_EX_APPWINDOW set and nothing else.
+    user32.GetWindowLongW.return_value = notifier._WS_EX_APPWINDOW
+
+    assert notifier._hide_window_from_taskbar(user32, 0x1234) is True
+
+    user32.GetWindowLongW.assert_called_once_with(0x1234, notifier._GWL_EXSTYLE)
+
+    set_call = user32.SetWindowLongW.call_args
+    assert set_call.args[0] == 0x1234
+    assert set_call.args[1] == notifier._GWL_EXSTYLE
+    new_style = set_call.args[2]
+    # Tool-window bit set, app-window bit cleared.
+    assert new_style & notifier._WS_EX_TOOLWINDOW
+    assert not (new_style & notifier._WS_EX_APPWINDOW)
+
+    # SW_HIDE -> SW_SHOW pair (in that order) refreshes the taskbar.
+    show_calls = [c.args for c in user32.ShowWindow.call_args_list]
+    assert show_calls == [(0x1234, notifier._SW_HIDE), (0x1234, notifier._SW_SHOW)]
+
+
+def test_hide_window_from_taskbar_noop_when_already_hidden() -> None:
+    """If WS_EX_TOOLWINDOW is already set and WS_EX_APPWINDOW already cleared,
+    no syscalls beyond GetWindowLongW should fire."""
+    user32 = MagicMock()
+    user32.GetWindowLongW.return_value = notifier._WS_EX_TOOLWINDOW
+
+    assert notifier._hide_window_from_taskbar(user32, 0x5678) is False
+    user32.SetWindowLongW.assert_not_called()
+    user32.ShowWindow.assert_not_called()
+
+
+def test_hide_window_from_taskbar_returns_false_on_getwindowlong_failure() -> None:
+    user32 = MagicMock()
+    user32.GetWindowLongW.side_effect = OSError("boom")
+
+    assert notifier._hide_window_from_taskbar(user32, 0x1) is False
+    user32.SetWindowLongW.assert_not_called()
+
+
+def test_apply_new_browser_window_settings_async_hides_from_taskbar(
+    monkeypatch,
+) -> None:
+    """The post-launch worker should call _hide_window_from_taskbar when the
+    settings dict has hide_from_taskbar=True."""
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+
+    user32 = MagicMock()
+    user32.ShowWindow.return_value = 1
+    user32.SetWindowPos.return_value = 1
+    fake_ctypes = MagicMock()
+    fake_ctypes.windll.user32 = user32
+    monkeypatch.setitem(__import__("sys").modules, "ctypes", fake_ctypes)
+    monkeypatch.setattr(notifier, "_configure_user32_signatures", lambda _u: None)
+
+    enum_results = iter([
+        set(),
+        {4321},
+        {4321},
+    ])
+    monkeypatch.setattr(
+        notifier, "_enum_browser_hwnds", lambda _cls: next(enum_results)
+    )
+
+    hide_calls: list[int] = []
+    monkeypatch.setattr(
+        notifier,
+        "_hide_window_from_taskbar",
+        lambda u32, hwnd: hide_calls.append(hwnd) or True,
+    )
+
+    thread = notifier._apply_new_browser_window_settings_async(
+        "Chrome_WidgetWin_1",
+        baseline=set(),
+        settings={
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+            "minimized": False,
+            "hide_from_taskbar": True,
+        },
+        apply_geometry=True,
+        deadline_s=1.0,
+    )
+    assert thread is not None
+    thread.join(timeout=2.0)
+    assert hide_calls == [4321]
+
+
+def test_apply_new_browser_window_settings_async_skips_taskbar_hide_when_off(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+
+    user32 = MagicMock()
+    fake_ctypes = MagicMock()
+    fake_ctypes.windll.user32 = user32
+    monkeypatch.setitem(__import__("sys").modules, "ctypes", fake_ctypes)
+    monkeypatch.setattr(notifier, "_configure_user32_signatures", lambda _u: None)
+
+    enum_results = iter([set(), {1}, {1}])
+    monkeypatch.setattr(
+        notifier, "_enum_browser_hwnds", lambda _cls: next(enum_results)
+    )
+
+    called = []
+    monkeypatch.setattr(
+        notifier,
+        "_hide_window_from_taskbar",
+        lambda u32, hwnd: called.append(hwnd) or True,
+    )
+
+    thread = notifier._apply_new_browser_window_settings_async(
+        "Chrome_WidgetWin_1",
+        baseline=set(),
+        settings={"hide_from_taskbar": False},
+        apply_geometry=False,
+        deadline_s=1.0,
+    )
+    assert thread is not None
+    thread.join(timeout=2.0)
+    assert called == []
+
+
+def test_configure_user32_signatures_includes_getwindowlong() -> None:
+    """_configure_user32_signatures should declare argtypes for the
+    GetWindowLongW / SetWindowLongW pair used by the taskbar-hide helper."""
+    import ctypes
+    from ctypes import wintypes
+
+    class FakeFn:
+        argtypes: object = None
+        restype: object = None
+
+    class FakeUser32:
+        SetWindowPos = FakeFn()
+        ShowWindow = FakeFn()
+        IsWindowVisible = FakeFn()
+        GetWindowTextLengthW = FakeFn()
+        GetClassNameW = FakeFn()
+        GetWindowTextW = FakeFn()
+        PostMessageW = FakeFn()
+        IsWindow = FakeFn()
+        GetWindowLongW = FakeFn()
+        SetWindowLongW = FakeFn()
+
+    user32 = FakeUser32()
+    notifier._configure_user32_signatures(user32)
+
+    assert user32.GetWindowLongW.argtypes[0] is wintypes.HWND
+    assert user32.GetWindowLongW.argtypes[1] is ctypes.c_int
+    assert user32.GetWindowLongW.restype is wintypes.LONG
+
+    assert user32.SetWindowLongW.argtypes[0] is wintypes.HWND
+    assert user32.SetWindowLongW.argtypes[1] is ctypes.c_int
+    assert user32.SetWindowLongW.argtypes[2] is wintypes.LONG
+    assert user32.SetWindowLongW.restype is wintypes.LONG
 
 
 def test_apply_new_browser_window_settings_async_registers_tracked_url(
