@@ -365,3 +365,659 @@ def test_execute_open_and_keep_passes_browser_settings(monkeypatch) -> None:
 
     assert captured["url"] == "https://www.twitch.tv/hello"
     assert captured["settings"] is settings
+
+
+# ─────────────────────────────────────────────
+# Browser-family aware flag handling
+# ─────────────────────────────────────────────
+def _stub_browser_resolution(monkeypatch, exe: str = "chrome") -> None:
+    """Force ``_resolve_browser_executable`` to echo back a fixed exe path."""
+    monkeypatch.setattr(notifier, "_resolve_browser_executable", lambda _value: exe)
+
+
+def test_detect_browser_family() -> None:
+    assert notifier.detect_browser_family("chrome") == "chromium"
+    assert notifier.detect_browser_family("chrome.exe") == "chromium"
+    assert (
+        notifier.detect_browser_family(
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        )
+        == "chromium"
+    )
+    assert notifier.detect_browser_family("msedge.exe") == "chromium"
+    assert notifier.detect_browser_family("brave.exe") == "chromium"
+    assert notifier.detect_browser_family("firefox") == "firefox"
+    assert notifier.detect_browser_family("firefox.exe") == "firefox"
+    assert notifier.detect_browser_family("/usr/bin/firefox") == "firefox"
+    assert notifier.detect_browser_family("safari") == "unknown"
+
+
+def test_build_browser_args_app_mode_drops_redundant_new_window(monkeypatch) -> None:
+    """--app= already implies a new window, so --new-window must not appear."""
+    _stub_browser_resolution(monkeypatch, "chrome")
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "chrome",
+            "new_window": True,
+            "app_mode": True,
+            "x": 100,
+            "y": 50,
+            "width": 1280,
+            "height": 720,
+        },
+    )
+    assert "--new-window" not in args
+    assert "--app=https://example.com" in args
+    assert "--window-position=100,50" in args
+    assert "--window-size=1280,720" in args
+
+
+def test_build_browser_args_chromium_minimized_does_not_emit_cli_flag(
+    monkeypatch,
+) -> None:
+    """--start-minimized isn't a real Chromium switch; minimisation is Win32-only."""
+    _stub_browser_resolution(monkeypatch, "chrome")
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "chrome",
+            "new_window": True,
+            "app_mode": False,
+            "minimized": True,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+        },
+    )
+    assert "--start-minimized" not in args
+    assert "--new-window" in args
+
+
+def test_build_browser_args_app_mode_minimized_no_cli_flag(monkeypatch) -> None:
+    _stub_browser_resolution(monkeypatch, "msedge")
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "msedge",
+            "new_window": False,
+            "app_mode": True,
+            "minimized": True,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+        },
+    )
+    assert "--start-minimized" not in args
+    assert "--app=https://example.com" in args
+
+
+def test_build_browser_args_no_new_window_drops_geometry_and_warns(
+    monkeypatch, caplog
+) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+    with caplog.at_level("WARNING", logger="stream_monitor.notifier"):
+        args = notifier._build_browser_args(
+            "https://example.com",
+            {
+                "browser_path": "chrome",
+                "new_window": False,
+                "app_mode": False,
+                "minimized": True,
+                "x": 100,
+                "y": 0,
+                "width": 800,
+                "height": 600,
+            },
+        )
+    assert args == ["chrome", "https://example.com"]
+    assert all(not a.startswith("--window-") for a in args)
+    assert any("new_window" in rec.message for rec in caplog.records)
+
+
+def test_build_browser_args_firefox_strips_chromium_flags(monkeypatch, caplog) -> None:
+    _stub_browser_resolution(monkeypatch, "firefox")
+    with caplog.at_level("WARNING", logger="stream_monitor.notifier"):
+        args = notifier._build_browser_args(
+            "https://example.com",
+            {
+                "browser_path": "firefox",
+                "new_window": True,
+                "app_mode": True,
+                "minimized": False,
+                "x": 100,
+                "y": 50,
+                "width": 800,
+                "height": 600,
+            },
+        )
+    assert args == ["firefox", "--new-window", "https://example.com"]
+    assert not any(a.startswith("--app=") for a in args)
+    assert not any(a.startswith("--window-position") for a in args)
+    assert not any(a.startswith("--window-size") for a in args)
+    assert any("Firefox" in rec.message for rec in caplog.records)
+
+
+def test_build_browser_args_firefox_default_geometry_no_warning(
+    monkeypatch, caplog
+) -> None:
+    """When geometry equals defaults & no app_mode, Firefox shouldn't spam a warning."""
+    _stub_browser_resolution(monkeypatch, "firefox")
+    with caplog.at_level("WARNING", logger="stream_monitor.notifier"):
+        args = notifier._build_browser_args(
+            "https://example.com",
+            {
+                "browser_path": "firefox",
+                "new_window": True,
+                "app_mode": False,
+                "minimized": False,
+                "x": 0,
+                "y": 0,
+                "width": 1280,
+                "height": 720,
+            },
+        )
+    assert args == ["firefox", "--new-window", "https://example.com"]
+    assert not any("Firefox" in rec.message for rec in caplog.records)
+
+
+def test_build_browser_args_firefox_without_new_window(monkeypatch) -> None:
+    _stub_browser_resolution(monkeypatch, "firefox")
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "firefox",
+            "new_window": False,
+            "app_mode": False,
+            "minimized": False,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+        },
+    )
+    assert args == ["firefox", "https://example.com"]
+
+
+# ─────────────────────────────────────────────
+# Win32 minimize-after-launch wiring
+# ─────────────────────────────────────────────
+def test_open_with_browser_settings_triggers_win32_window_management_on_windows(
+    monkeypatch,
+) -> None:
+    """On Windows we diff HWNDs and apply geometry/minimize after launch."""
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+
+    enum_calls: list[str] = []
+    monkeypatch.setattr(
+        notifier,
+        "_enum_browser_hwnds",
+        lambda class_name: enum_calls.append(class_name) or {1, 2},
+    )
+
+    manager_calls: list[tuple[str, set[int], dict[str, object], bool]] = []
+    monkeypatch.setattr(
+        notifier,
+        "_apply_new_browser_window_settings_async",
+        lambda class_name, baseline, settings, apply_geometry=True, **_kw: manager_calls.append(
+            (class_name, baseline, settings, apply_geometry)
+        ),
+    )
+
+    settings = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "new_window": True,
+        "app_mode": False,
+        "minimized": True,
+        "x": 123,
+        "y": 45,
+        "width": 900,
+        "height": 700,
+    }
+
+    assert notifier._open_with_browser_settings("https://example.com", settings) is True
+    assert enum_calls == ["Chrome_WidgetWin_1"]
+    assert manager_calls == [("Chrome_WidgetWin_1", {1, 2}, settings, True)]
+
+
+def test_open_with_browser_settings_uses_firefox_class(monkeypatch) -> None:
+    _stub_browser_resolution(monkeypatch, "firefox")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        notifier, "_enum_browser_hwnds", lambda class_name: {99}
+    )
+    monkeypatch.setattr(
+        notifier,
+        "_apply_new_browser_window_settings_async",
+        lambda class_name, baseline, settings, **_kw: captured.update(
+            class_name=class_name, baseline=baseline
+        ),
+    )
+
+    settings = {
+        "enabled": True,
+        "browser_path": "firefox",
+        "new_window": True,
+        "app_mode": False,
+        "minimized": True,
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720,
+    }
+
+    assert notifier._open_with_browser_settings("https://example.com", settings) is True
+    assert captured == {"class_name": "MozillaWindowClass", "baseline": {99}}
+
+
+def test_open_with_browser_settings_applies_geometry_when_minimize_disabled(
+    monkeypatch,
+) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+
+    enum_calls: list[str] = []
+    monkeypatch.setattr(
+        notifier,
+        "_enum_browser_hwnds",
+        lambda class_name: enum_calls.append(class_name) or set(),
+    )
+
+    manager_calls: list[object] = []
+    monkeypatch.setattr(
+        notifier,
+        "_apply_new_browser_window_settings_async",
+        lambda *a, **k: manager_calls.append((a, k)),
+    )
+
+    settings = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "new_window": True,
+        "app_mode": False,
+        "minimized": False,
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720,
+    }
+
+    assert notifier._open_with_browser_settings("https://example.com", settings) is True
+    assert enum_calls == ["Chrome_WidgetWin_1"]
+    assert len(manager_calls) == 1
+
+
+def test_open_with_browser_settings_skips_minimize_on_non_windows(monkeypatch) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: False)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+
+    manager_calls: list[object] = []
+    monkeypatch.setattr(
+        notifier,
+        "_apply_new_browser_window_settings_async",
+        lambda *a, **k: manager_calls.append((a, k)),
+    )
+
+    settings = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "new_window": True,
+        "app_mode": False,
+        "minimized": True,
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720,
+    }
+
+    assert notifier._open_with_browser_settings("https://example.com", settings) is True
+    assert manager_calls == []
+
+
+def test_minimize_new_browser_windows_async_returns_none_off_windows(monkeypatch) -> None:
+    monkeypatch.setattr(notifier, "_is_windows", lambda: False)
+    assert (
+        notifier._minimize_new_browser_windows_async("Chrome_WidgetWin_1", set()) is None
+    )
+
+
+def test_enum_browser_hwnds_returns_empty_off_windows(monkeypatch) -> None:
+    monkeypatch.setattr(notifier, "_is_windows", lambda: False)
+    assert notifier._enum_browser_hwnds("Chrome_WidgetWin_1") == set()
+
+
+def test_minimize_thread_actually_minimizes_new_window(monkeypatch) -> None:
+    """End-to-end: simulate a new browser window appearing after spawn and
+    verify the background worker calls ShowWindow on it with SW_SHOWMINNOACTIVE."""
+    import ctypes
+    import sys
+
+    # Skip when the real Windows user32 isn't usable (e.g. Linux CI machines).
+    if sys.platform != "win32":
+        return
+
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+
+    snapshots = iter(
+        [
+            {1, 2, 3},  # baseline
+            {1, 2, 3},  # nothing new yet
+            {1, 2, 3, 999},  # new window appeared
+        ]
+    )
+
+    def fake_enum(class_name):
+        try:
+            return next(snapshots)
+        except StopIteration:
+            return {1, 2, 3, 999}
+
+    monkeypatch.setattr(notifier, "_enum_browser_hwnds", fake_enum)
+
+    show_window_calls: list[tuple[int, int]] = []
+
+    class FakeUser32:
+        def ShowWindow(self, hwnd, cmd):
+            show_window_calls.append((int(hwnd), int(cmd)))
+            return True
+
+    class FakeWindll:
+        user32 = FakeUser32()
+
+    monkeypatch.setattr(ctypes, "windll", FakeWindll())
+
+    thread = notifier._minimize_new_browser_windows_async(
+        "Chrome_WidgetWin_1", baseline={1, 2, 3}, deadline_s=2.0
+    )
+    assert thread is not None
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+    assert show_window_calls == [(999, notifier._SW_SHOWMINNOACTIVE)]
+
+
+def test_window_manager_thread_applies_geometry_and_minimize(monkeypatch) -> None:
+    """Geometry path: SW_RESTORE → SetWindowPos → SW_SHOWMINNOACTIVE.
+
+    SW_RESTORE is the new safety call we add before SetWindowPos so that
+    Chrome windows opened in maximised state actually move on screen.
+    """
+    import ctypes
+    import sys
+
+    if sys.platform != "win32":
+        return
+
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+
+    snapshots = iter(
+        [
+            {1, 2, 3},
+            {1, 2, 3, 999},
+        ]
+    )
+
+    def fake_enum(class_name):
+        try:
+            return next(snapshots)
+        except StopIteration:
+            return {1, 2, 3, 999}
+
+    monkeypatch.setattr(notifier, "_enum_browser_hwnds", fake_enum)
+
+    set_window_pos_calls: list[tuple[int, int, int, int, int, int, int]] = []
+    show_window_calls: list[tuple[int, int]] = []
+
+    class FakeUser32:
+        def SetWindowPos(self, hwnd, insert_after, x, y, width, height, flags):
+            set_window_pos_calls.append(
+                (
+                    int(hwnd),
+                    int(insert_after),
+                    int(x),
+                    int(y),
+                    int(width),
+                    int(height),
+                    int(flags),
+                )
+            )
+            return True
+
+        def ShowWindow(self, hwnd, cmd):
+            show_window_calls.append((int(hwnd), int(cmd)))
+            return True
+
+    class FakeWindll:
+        user32 = FakeUser32()
+
+    monkeypatch.setattr(ctypes, "windll", FakeWindll())
+
+    thread = notifier._apply_new_browser_window_settings_async(
+        "Chrome_WidgetWin_1",
+        baseline={1, 2, 3},
+        settings={
+            "x": 111,
+            "y": 222,
+            "width": 900,
+            "height": 600,
+            "minimized": True,
+        },
+        deadline_s=2.0,
+    )
+    assert thread is not None
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+    assert set_window_pos_calls == [
+        (
+            999,
+            0,
+            111,
+            222,
+            900,
+            600,
+            notifier._SWP_NOZORDER | notifier._SWP_NOACTIVATE,
+        )
+    ]
+    # First SW_RESTORE (so SetWindowPos is visible on maximised windows),
+    # then SW_SHOWMINNOACTIVE for the requested minimize.
+    assert show_window_calls == [
+        (999, notifier._SW_RESTORE),
+        (999, notifier._SW_SHOWMINNOACTIVE),
+    ]
+
+
+# ─────────────────────────────────────────────
+# user_data_dir injection (the master-process workaround)
+# ─────────────────────────────────────────────
+def test_build_browser_args_chromium_user_data_dir_injected(monkeypatch) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "chrome",
+            "new_window": True,
+            "app_mode": False,
+            "minimized": False,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+            "user_data_dir": r"C:\my\profile",
+        },
+    )
+    assert args[1] == "--user-data-dir=C:\\my\\profile"
+    assert args == [
+        "chrome",
+        "--user-data-dir=C:\\my\\profile",
+        "--new-window",
+        "--window-position=0,0",
+        "--window-size=1280,720",
+        "https://example.com",
+    ]
+
+
+def test_build_browser_args_chromium_user_data_dir_with_app_mode(monkeypatch) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "chrome",
+            "new_window": False,
+            "app_mode": True,
+            "minimized": False,
+            "x": 100,
+            "y": 50,
+            "width": 800,
+            "height": 600,
+            "user_data_dir": "/tmp/profile",
+        },
+    )
+    assert "--user-data-dir=/tmp/profile" in args
+    assert "--app=https://example.com" in args
+    assert "--window-position=100,50" in args
+    assert "--window-size=800,600" in args
+
+
+def test_build_browser_args_firefox_user_data_dir_uses_profile(monkeypatch) -> None:
+    _stub_browser_resolution(monkeypatch, "firefox")
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "firefox",
+            "new_window": True,
+            "app_mode": False,
+            "minimized": False,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+            "user_data_dir": "/home/me/ff_profile",
+        },
+    )
+    # Firefox uses ``-profile <path> -no-remote`` instead of --user-data-dir.
+    assert args == [
+        "firefox",
+        "-profile",
+        "/home/me/ff_profile",
+        "-no-remote",
+        "--new-window",
+        "https://example.com",
+    ]
+
+
+def test_build_browser_args_chromium_warns_when_user_data_dir_missing(
+    monkeypatch, caplog
+) -> None:
+    """If user enables custom geometry/AppMode but skips user_data_dir, warn."""
+    _stub_browser_resolution(monkeypatch, "chrome")
+    with caplog.at_level("WARNING", logger="stream_monitor.notifier"):
+        notifier._build_browser_args(
+            "https://example.com",
+            {
+                "browser_path": "chrome",
+                "new_window": False,
+                "app_mode": True,
+                "minimized": False,
+                "x": 200,
+                "y": 200,
+                "width": 1280,
+                "height": 720,
+                "user_data_dir": "",
+            },
+        )
+    assert any(
+        "user_data_dir" in rec.message and "Chrome/Edge" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_build_browser_args_chromium_no_warning_when_user_data_dir_provided(
+    monkeypatch, caplog
+) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+    with caplog.at_level("WARNING", logger="stream_monitor.notifier"):
+        notifier._build_browser_args(
+            "https://example.com",
+            {
+                "browser_path": "chrome",
+                "new_window": True,
+                "app_mode": True,
+                "minimized": False,
+                "x": 200,
+                "y": 200,
+                "width": 1280,
+                "height": 720,
+                "user_data_dir": "/tmp/profile",
+            },
+        )
+    assert not any(
+        "user_data_dir" in rec.message and "Chrome/Edge" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_open_with_browser_settings_creates_user_data_dir(monkeypatch, tmp_path) -> None:
+    """The profile folder should be created on disk before the browser launches."""
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: False)  # skip Win32 path
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+
+    profile_dir = tmp_path / "fresh_profile"
+    assert not profile_dir.exists()
+
+    settings = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "new_window": True,
+        "app_mode": False,
+        "minimized": False,
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720,
+        "user_data_dir": str(profile_dir),
+    }
+
+    assert notifier._open_with_browser_settings("https://example.com", settings) is True
+    assert profile_dir.is_dir()
+
+
+def test_configure_user32_signatures_sets_argtypes() -> None:
+    """Verify HWND args are declared as wintypes.HWND (avoids 64-bit truncation)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class FakeFn:
+        argtypes: object = None
+        restype: object = None
+
+    class FakeUser32:
+        SetWindowPos = FakeFn()
+        ShowWindow = FakeFn()
+        IsWindowVisible = FakeFn()
+        GetWindowTextLengthW = FakeFn()
+        GetClassNameW = FakeFn()
+
+    user32 = FakeUser32()
+    notifier._configure_user32_signatures(user32)
+
+    assert user32.SetWindowPos.argtypes[0] is wintypes.HWND
+    assert user32.SetWindowPos.argtypes[1] is wintypes.HWND
+    assert user32.SetWindowPos.restype is wintypes.BOOL
+    assert user32.ShowWindow.argtypes[0] is wintypes.HWND
+    assert user32.ShowWindow.argtypes[1] is ctypes.c_int
+    assert user32.ShowWindow.restype is wintypes.BOOL
+
+    # Re-running is a no-op (guard flag).
+    user32.SetWindowPos.argtypes = "tampered"
+    notifier._configure_user32_signatures(user32)
+    assert user32.SetWindowPos.argtypes == "tampered"
