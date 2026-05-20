@@ -1,15 +1,16 @@
-# Hello Streamer v0.5.0
+# Hello Streamer v0.5.1
 
 ## 重點更新
 
-- 新增多國語言介面，支援繁體中文、English、日本語、한국어。
-- 新增語言偏好對話框，可在執行中切換主視窗、對話框、工具提示與系統匣文字。
-- 語言設定會保存到 `config.json`，下次啟動時自動套用。
-- 系統匣、通知文字與主要 UI 字串改由集中式 i18n 字串表管理，方便後續維護與擴充語系。
-- README 已更新為完整使用文件，補齊瀏覽器設定、App Mode、Profile、離線自動關閉與疑難排解說明。
+- 新增開播 / 離線防抖保護，Twitch 或 YouTube 單次查詢短暫掉線時不會立刻判定直播結束。
+- 修正 Twitch GQL 偶發回傳 `stream: null` 時，可能造成重複開播通知或誤觸發離線關閉的問題。
+- 強化 YouTube TIDUS 與 fallback 監控流程，避免 LIVE 影片短暫從清單消失時切到 UPCOMING、重複通知或產生錯誤離線事件。
+- 修正 YouTube fallback live 與 TIDUS live 互相接手時，舊 payload 可能被誤判為離線的情境。
+- 測試補齊 Twitch / YouTube 單次抖動、連續離線確認、fallback 接手與 TIDUS payload 清理情境。
+- README 已更新監控穩定性與下載檔名說明。
 
 ## 下載檔案
 
-- Windows 請下載 `HelloStreamer-v0.5.0-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.5.0-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.5.0-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v0.5.1-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.5.1-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.5.1-linux-arm64.tar.gz`

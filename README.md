@@ -16,6 +16,7 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 - 可透過 URL 貼上新增頻道，支援 Twitch channel、YouTube handle 與 YouTube channel ID。
 - 可停用單一頻道、調整頻道順序、移除頻道。
 - 支援繁體中文、英文、日文、韓文介面，語言可在執行中切換。
+- 內建開播 / 離線防抖機制，降低平台短暫查詢異常造成的重複通知或誤關閉視窗。
 - 支援兩種監控模式：
   - 觸發模式：偵測到開播時執行設定的動作。
   - 觀察模式：只更新畫面狀態，不自動通知或開啟瀏覽器。
@@ -29,9 +30,9 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 | 平台 | 檔案 |
 | --- | --- |
-| Windows x64 | `HelloStreamer-v0.5.0-windows-x64.exe` |
-| Linux x64 | `HelloStreamer-v0.5.0-linux-x64.tar.gz` |
-| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v0.5.0-linux-arm64.tar.gz` |
+| Windows x64 | `HelloStreamer-v0.5.1-windows-x64.exe` |
+| Linux x64 | `HelloStreamer-v0.5.1-linux-x64.tar.gz` |
+| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v0.5.1-linux-arm64.tar.gz` |
 
 Windows 第一次執行時可能會顯示安全提示，請確認來源是本專案的 GitHub Release。
 
@@ -64,6 +65,17 @@ Windows 第一次執行時可能會顯示安全提示，請確認來源是本專
 | 開啟並結束程式 | 打開直播頁後關閉 Hello Streamer。 |
 
 YouTube 預定直播會強制走「只通知」，避免尚未開播時就自動打開播放器。
+
+## 監控穩定性
+
+直播平台偶爾會出現短暫查詢異常，例如 Twitch 暫時回傳未開播，或 YouTube 的直播清單在單次輪詢中漏掉仍在直播的影片。Hello Streamer 會要求連續兩次確認離線，才會真的觸發離線事件。
+
+這個保護可以避免：
+
+- 單次 API 抖動造成重複「已開播」通知。
+- 已開啟的播放器因短暫誤判離線而被自動關閉。
+- YouTube LIVE 影片短暫消失時，畫面閃回 UPCOMING 或 OFFLINE。
+- YouTube fallback 監控與 TIDUS 清單恢復時產生錯誤離線事件。
 
 ## 介面語言
 
