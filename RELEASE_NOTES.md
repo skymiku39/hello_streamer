@@ -1,18 +1,15 @@
-# Hello Streamer v0.3.8
+# Hello Streamer v0.4.0
 
-## 修復重點
+## 重點更新
 
-- **修復 YouTube 偵測在 Linux/Raspberry Pi 上失敗的問題**
-  - YouTube 在沒有 cookie 的全新 session 中會回傳隱私同意頁面而非頻道實際內容
-  - 預設設置 `CONSENT` 和 `SOCS` cookie 繞過同意頁，讓 fetcher 能正確解析 `ytInitialData`
-  - 此修正同時適用於 Windows 和 Linux，提升穩定性
+- 全新瀏覽器設定流程：支援瀏覽器路徑解析、Chrome / Edge / Firefox 相容性提示、獨立 Profile、每頻道 Profile、幾何設定開關與測試頁。
+- App Mode 行為更直覺：勾選 App Mode 時會自動啟用並鎖定獨立視窗，避免 UI 狀態和實際瀏覽器行為不一致。
+- 測試開啟改用本機 HTML 測試頁，App Mode 測試會使用專用暫時 Profile，避免 `about:blank` 或既有瀏覽器程序干擾判斷。
+- Windows 上加強瀏覽器視窗控制：在新視窗出現後用 Win32 API 套用位置、大小與最小化狀態，減少 Chrome / Edge 忽略啟動參數的問題。
+- 關閉瀏覽器設定視窗時，若有未儲存變更會詢問是否存檔；按取消則維持直接放棄變更。
 
-- **修復「新增頻道」對話框空白**（延續 v0.3.7）
-  - `CTkToplevel` 在 Linux 上呼叫 `update()` 後再 `grab_set()`
-  - 字型改用通用 `sans-serif`
+## 下載檔案
 
-## 下載建議
-
-- Windows 請下載 `HelloStreamer-v0.3.8-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.3.8-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.3.8-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v0.4.0-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.4.0-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.4.0-linux-arm64.tar.gz`
