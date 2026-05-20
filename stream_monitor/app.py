@@ -456,7 +456,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent: ctk.CTk, current: dict[str, Any]) -> None:
         super().__init__(parent)
         self.title("瀏覽器設定")
-        self.geometry("580x720")
+        self.geometry("600x820")
         self.resizable(False, False)
         self.transient(parent)
         self.configure(fg_color=_CLR_BG_DARK)
@@ -622,14 +622,69 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             row=2, column=1, columnspan=2, padx=(0, 12), pady=(0, 8), sticky="ew"
         )
 
+        self.per_channel_profile_var = ctk.BooleanVar(
+            value=bool(settings.get("per_channel_profile", True))
+        )
+        self.per_channel_profile_cb = ctk.CTkCheckBox(
+            profile_frame,
+            text="每個頻道使用獨立子資料夾（強烈建議）",
+            variable=self.per_channel_profile_var,
+            command=self._refresh_user_data_dir_state,
+            font=_font(12),
+        )
+        self.per_channel_profile_cb.grid(
+            row=3, column=0, columnspan=3, padx=12, pady=(0, 4), sticky="w"
+        )
+        ctk.CTkLabel(
+            profile_frame,
+            text="開啟時：browser_profile/twitch_<channel>、youtube_<handle> 各一份。\n"
+                 "確保 App Mode 純淨視窗對每個頻道都有效（不會被 Chrome master "
+                 "process 吃掉），代價是每頻道需重新登入一次。",
+            font=_font(11),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=500,
+            justify="left",
+        ).grid(row=4, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="w")
+
         # ── Position / size
         pos_frame = ctk.CTkFrame(self, fg_color=_CLR_CARD, corner_radius=10)
         pos_frame.pack(padx=24, pady=(14, 0), fill="x")
         pos_frame.grid_columnconfigure((1, 3), weight=1)
 
-        ctk.CTkLabel(
-            pos_frame, text="視窗位置 / 大小", font=_font(12, "bold"), anchor="w"
-        ).grid(row=0, column=0, columnspan=4, padx=12, pady=(10, 6), sticky="w")
+        header_frame = ctk.CTkFrame(pos_frame, fg_color="transparent")
+        header_frame.grid(row=0, column=0, columnspan=4, padx=12, pady=(10, 4), sticky="ew")
+        header_frame.grid_columnconfigure(1, weight=1)
+
+        self.apply_geometry_var = ctk.BooleanVar(
+            value=bool(settings.get("apply_geometry", True))
+        )
+        self.apply_geometry_cb = ctk.CTkCheckBox(
+            header_frame,
+            text="套用自訂視窗位置 / 大小",
+            variable=self.apply_geometry_var,
+            command=self._refresh_geometry_state,
+            font=_font(12, "bold"),
+        )
+        self.apply_geometry_cb.grid(row=0, column=0, sticky="w")
+
+        self.reset_geometry_btn = ctk.CTkButton(
+            header_frame,
+            text="恢復預設",
+            width=82,
+            height=26,
+            corner_radius=6,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#555566",
+            hover_color="#333344",
+            font=_font(11),
+            command=self._on_reset_geometry,
+        )
+        self.reset_geometry_btn.grid(row=0, column=2, sticky="e")
+
+        _tooltip(self.apply_geometry_cb, "關閉時：使用系統預設視窗位置與大小")
+        _tooltip(self.reset_geometry_btn, "重設為 X=0, Y=0, 1280×720")
 
         def _make_int_entry(parent: ctk.CTkFrame, value: int) -> ctk.CTkEntry:
             entry = ctk.CTkEntry(parent, width=84, height=30, font=_font(13), justify="center")
@@ -735,17 +790,61 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.app_mode_cb,
             self.minimized_cb,
             self.user_data_dir_cb,
+            self.per_channel_profile_cb,
+            self.apply_geometry_cb,
+            self.reset_geometry_btn,
         ):
             widget.configure(state=state)
         self._refresh_user_data_dir_state()
+        self._refresh_geometry_state()
         self._on_path_change()
 
     def _refresh_user_data_dir_state(self) -> None:
         if not self.enabled_var.get():
             self.user_data_dir_entry.configure(state="disabled")
+            self.per_channel_profile_cb.configure(state="disabled")
             return
+        profile_enabled = self.user_data_dir_enabled_var.get()
         self.user_data_dir_entry.configure(
-            state="normal" if self.user_data_dir_enabled_var.get() else "disabled"
+            state="normal" if profile_enabled else "disabled"
+        )
+        self.per_channel_profile_cb.configure(
+            state="normal" if profile_enabled else "disabled"
+        )
+
+    def _refresh_geometry_state(self) -> None:
+        """Enable / disable X/Y/W/H entries based on the apply_geometry checkbox."""
+        if not self.enabled_var.get():
+            for entry in (self.x_entry, self.y_entry, self.w_entry, self.h_entry):
+                entry.configure(state="disabled")
+            self.reset_geometry_btn.configure(state="disabled")
+            return
+
+        # Path-family override (Firefox) is applied separately in _on_path_change;
+        # don't undo that disable here when apply_geometry is on.
+        geometry_state = "normal" if self.apply_geometry_var.get() else "disabled"
+        for entry in (self.x_entry, self.y_entry, self.w_entry, self.h_entry):
+            entry.configure(state=geometry_state)
+        self.reset_geometry_btn.configure(
+            state="normal" if self.apply_geometry_var.get() else "disabled"
+        )
+
+    def _on_reset_geometry(self) -> None:
+        """Reset X/Y/W/H to the system-default values."""
+        defaults = {
+            self.x_entry: 0,
+            self.y_entry: 0,
+            self.w_entry: 1280,
+            self.h_entry: 720,
+        }
+        for entry, value in defaults.items():
+            current_state = entry.cget("state")
+            entry.configure(state="normal")
+            entry.delete(0, "end")
+            entry.insert(0, str(value))
+            entry.configure(state=current_state)
+        self.message_label.configure(
+            text="已恢復視窗預設值 (0, 0, 1280×720)。", text_color="#64b5f6"
         )
 
     def _on_path_change(self, _event: Any = None) -> None:
@@ -768,29 +867,37 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
                 text="✓ Chromium 系列瀏覽器：所有參數都可使用。",
                 text_color="#81c784",
             )
-            for widget in self._family_dependent:
-                widget.configure(state="normal")
+            # app_mode checkbox is always allowed; X/Y/W/H respect the user's
+            # apply_geometry choice — restored via _refresh_geometry_state().
+            self.app_mode_cb.configure(state="normal")
+            self._refresh_geometry_state()
         else:
             self.compat_label.configure(
                 text="ℹ 未知瀏覽器類型 — 仍會嘗試送出 Chromium 參數，若無效請改用 chrome / msedge。",
                 text_color="#90caf9",
             )
-            for widget in self._family_dependent:
-                widget.configure(state="normal")
+            self.app_mode_cb.configure(state="normal")
+            self._refresh_geometry_state()
 
     def _collect(self) -> dict[str, Any] | None:
+        apply_geometry = bool(self.apply_geometry_var.get())
+
         try:
             x = int(self.x_entry.get())
             y = int(self.y_entry.get())
             width = int(self.w_entry.get())
             height = int(self.h_entry.get())
         except ValueError:
-            self.message_label.configure(
-                text="座標與大小必須為整數。", text_color="#ef5350"
-            )
-            return None
+            if apply_geometry:
+                self.message_label.configure(
+                    text="座標與大小必須為整數。", text_color="#ef5350"
+                )
+                return None
+            # When apply_geometry is off the fields aren't used, so silently
+            # fall back to defaults so the user can save without filling them.
+            x, y, width, height = 0, 0, 1280, 720
 
-        if width < 100 or height < 100:
+        if apply_geometry and (width < 100 or height < 100):
             self.message_label.configure(
                 text="寬度與高度至少需 100 像素。", text_color="#ef5350"
             )
@@ -814,12 +921,14 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "browser_path": browser_path,
             "new_window": bool(self.new_window_var.get()),
             "app_mode": bool(self.app_mode_var.get()),
+            "apply_geometry": apply_geometry,
             "x": x,
             "y": y,
             "width": width,
             "height": height,
             "minimized": bool(self.minimized_var.get()),
             "user_data_dir": user_data_dir,
+            "per_channel_profile": bool(self.per_channel_profile_var.get()),
         }
 
     def _on_test(self) -> None:

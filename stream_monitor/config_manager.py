@@ -13,6 +13,9 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     "browser_path": "chrome",
     "new_window": True,
     "app_mode": False,
+    # When False the X/Y/Width/Height fields are ignored entirely and the
+    # browser decides where/how big to draw the window (system default).
+    "apply_geometry": True,
     "x": 0,
     "y": 0,
     "width": 1280,
@@ -24,6 +27,12 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     # --window-position / --window-size / --app= work when the browser is
     # already running.
     "user_data_dir": "",
+    # When True (default) we append "<platform>_<channel>" to user_data_dir
+    # so each channel gets its own browser master process. This is the only
+    # reliable way to keep --app= working across multiple stream triggers,
+    # because Chrome's master process drops --app= when launched against a
+    # profile that already has an open window.
+    "per_channel_profile": True,
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -105,7 +114,14 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
 
     normalized = deepcopy(defaults)
 
-    for bool_key in ("enabled", "new_window", "app_mode", "minimized"):
+    for bool_key in (
+        "enabled",
+        "new_window",
+        "app_mode",
+        "apply_geometry",
+        "minimized",
+        "per_channel_profile",
+    ):
         raw = value.get(bool_key)
         if isinstance(raw, bool):
             normalized[bool_key] = raw
