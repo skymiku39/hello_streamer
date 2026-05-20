@@ -494,14 +494,14 @@ wheels = [
 
 [[package]]
 name = "stream-monitor"
-version = "0.2.6"
+version = "0.3.8"
 source = { editable = "." }
 dependencies = [
     { name = "customtkinter" },
     { name = "pillow" },
     { name = "pystray" },
     { name = "requests" },
-    { name = "winotify" },
+    { name = "winotify", marker = "sys_platform == 'win32'" },
 ]
 
 [package.optional-dependencies]
@@ -520,7 +520,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "requests", specifier = ">=2.31" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "winotify", specifier = ">=1.1" },
+    { name = "winotify", marker = "sys_platform == 'win32'", specifier = ">=1.1" },
 ]
 provides-extras = ["dev"]
 

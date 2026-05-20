@@ -1,11 +1,18 @@
-# Hello Streamer v0.2.6
+# Hello Streamer v0.3.8
 
 ## 修復重點
 
-- 修正 README 中「開發模式會寫入開機自啟 registry」的過期說法；開機自啟維持只支援封裝版 `HelloStreamer.exe`。
-- 補齊 `minimize_to_tray` 設定的預設值、載入驗證與保存流程，避免縮小至系統匣設定在 config 正規化時遺失。
+- **修復 YouTube 偵測在 Linux/Raspberry Pi 上失敗的問題**
+  - YouTube 在沒有 cookie 的全新 session 中會回傳隱私同意頁面而非頻道實際內容
+  - 預設設置 `CONSENT` 和 `SOCS` cookie 繞過同意頁，讓 fetcher 能正確解析 `ytInitialData`
+  - 此修正同時適用於 Windows 和 Linux，提升穩定性
 
-## 改善
+- **修復「新增頻道」對話框空白**（延續 v0.3.7）
+  - `CTkToplevel` 在 Linux 上呼叫 `update()` 後再 `grab_set()`
+  - 字型改用通用 `sans-serif`
 
-- README 全面更新為目前功能狀態，補充 YouTube UPCOMING、狀態 badge、右側連結按鈕、系統匣、開機自啟與專案結構說明。
-- 補強 config manager 測試，涵蓋 `minimize_to_tray` 的非法值 fallback 與合法值保存。
+## 下載建議
+
+- Windows 請下載 `HelloStreamer-v0.3.8-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.3.8-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.3.8-linux-arm64.tar.gz`

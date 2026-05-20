@@ -1,4 +1,4 @@
-"""觸發行為 — 開播偵測後的四種動作 + 豐富 Toast 通知。"""
+"""觸發行為 — 開播偵測後的四種動作 + 桌面通知（Windows Toast / Linux notify-send）。"""
 
 from __future__ import annotations
 
@@ -35,6 +35,16 @@ def open_url(url: str) -> bool:
             return True
         except OSError:
             logger.exception("Failed to open URL with Windows shell: %s", url)
+    else:
+        import subprocess
+
+        try:
+            subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except FileNotFoundError:
+            logger.warning("xdg-open not found; cannot open URL: %s", url)
+        except OSError:
+            logger.exception("Failed to open URL with xdg-open: %s", url)
 
     return False
 
@@ -63,25 +73,32 @@ def action_for_stream_status(configured_action: str, info: StreamInfo) -> str | 
     return configured_action
 
 
-def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
-    """Send a rich Windows Toast notification with optional action button."""
+def _build_toast_text(info: StreamInfo) -> tuple[str, str]:
+    """Return (title, body) for a notification based on stream status."""
+    channel_name = info.display_name or info.channel
+    platform_display = info.platform.upper()
+    status = info.stream_status or "live"
+
+    if status == "upcoming":
+        title = f"\U0001f4c5 {channel_name} 已建立待機室 [{platform_display}]"
+        time_str = _format_scheduled_start(info.scheduled_start)
+        body = f"預計開播：{time_str}" if time_str else (info.title or "即將開播")
+    elif status == "video":
+        title = f"\U0001f3ac {channel_name} 上傳了新影片 [{platform_display}]"
+        body = info.title or "新影片"
+    else:
+        title = f"\U0001f534 {channel_name} 開播了！ [{platform_display}]"
+        body = info.title or f"{channel_name} is now live on {info.platform}"
+
+    return title, body
+
+
+def _toast_windows(info: StreamInfo, with_open_button: bool = True) -> None:
+    """Send a rich Windows Toast notification via winotify."""
     try:
         from winotify import Notification
 
-        channel_name = info.display_name or info.channel
-        platform_display = info.platform.upper()
-        status = info.stream_status or "live"
-
-        if status == "upcoming":
-            title = f"📅 {channel_name} 已建立待機室 [{platform_display}]"
-            time_str = _format_scheduled_start(info.scheduled_start)
-            body = f"預計開播：{time_str}" if time_str else (info.title or "即將開播")
-        elif status == "video":
-            title = f"🎬 {channel_name} 上傳了新影片 [{platform_display}]"
-            body = info.title or "新影片"
-        else:
-            title = f"🔴 {channel_name} 開播了！ [{platform_display}]"
-            body = info.title or f"{channel_name} is now live on {info.platform}"
+        title, body = _build_toast_text(info)
 
         toast = Notification(
             app_id="哈嘍主播 Hello Streamer",
@@ -97,7 +114,30 @@ def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
 
         toast.show()
     except Exception:
-        logger.exception("Failed to show toast notification")
+        logger.exception("Failed to show Windows toast notification")
+
+
+def _toast_linux(info: StreamInfo, with_open_button: bool = True) -> None:
+    """Send a desktop notification via notify-send (Linux)."""
+    try:
+        import subprocess
+
+        title, body = _build_toast_text(info)
+
+        cmd = ["notify-send", "--app-name=Hello Streamer", title, body]
+        subprocess.run(cmd, check=False, timeout=5)
+    except FileNotFoundError:
+        logger.warning("notify-send not found; desktop notifications unavailable")
+    except Exception:
+        logger.exception("Failed to show Linux notification")
+
+
+def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
+    """Send a desktop notification (platform-dispatched)."""
+    if platform.system() == "Windows":
+        _toast_windows(info, with_open_button)
+    else:
+        _toast_linux(info, with_open_button)
 
 
 def open_and_stop(info: StreamInfo, stop_fn: ActionCallback) -> None:

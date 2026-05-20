@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import platform
 import queue
 import re
 import sys
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import customtkinter as ctk
 
-from stream_monitor import config_manager
+from stream_monitor import base_dir, config_manager
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
@@ -34,7 +36,7 @@ ctk.set_default_color_theme("blue")
 # ---------------------------------------------------------------------------
 _FONT_FAMILY = "Microsoft JhengHei UI"
 if platform.system() != "Windows":
-    _FONT_FAMILY = "Noto Sans TC"
+    _FONT_FAMILY = "sans-serif"
 
 
 def _font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
@@ -218,8 +220,11 @@ class AddChannelDialog(ctk.CTkToplevel):
         self.geometry("680x430")
         self.resizable(False, False)
         self.transient(parent)
-        self.grab_set()
         self.configure(fg_color=_CLR_BG_DARK)
+
+        if sys.platform != "win32":
+            self.update()
+        self.grab_set()
 
         self.result: dict[str, str] | None = None
 
@@ -1284,18 +1289,78 @@ class App(ctk.CTk):
         self.destroy()
 
 
+def _fix_linux_frozen_env() -> None:
+    """Restore LD_LIBRARY_PATH for PyInstaller --onefile on Linux.
+
+    PyInstaller overrides LD_LIBRARY_PATH to its temp extraction dir, which
+    breaks DNS resolution (glibc NSS dlopen) and subprocess calls (browser,
+    xdg-open).  Restoring the original value after Python is fully loaded is
+    safe because all bundled .so files are already mapped into memory.
+    """
+    import os
+
+    lp_key = "LD_LIBRARY_PATH"
+    lp_orig = os.environ.get(lp_key + "_ORIG")
+    if lp_orig is not None:
+        os.environ[lp_key] = lp_orig
+    elif lp_key in os.environ:
+        del os.environ[lp_key]
+
+
+def _check_writable(directory: Path) -> None:
+    """Abort early with a user-friendly dialog if *directory* is not writable."""
+    probe = directory / ".write_test"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "啟動失敗",
+            f"程式所在目錄無法寫入：\n{directory}\n\n"
+            "請將程式移至有寫入權限的資料夾後再試。",
+        )
+        root.destroy()
+        sys.exit(1)
+
+
 def main() -> None:
+    if getattr(sys, "frozen", False) and sys.platform != "win32":
+        _fix_linux_frozen_env()
+
+    log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+    data_dir = base_dir()
+    _check_writable(data_dir)
+
+    log_dir = data_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "stream_monitor.log"
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8",
+    )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_fmt))
+
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format=log_fmt,
+        handlers=[logging.StreamHandler(), file_handler],
     )
 
     silent = "--silent" in sys.argv
 
+    app: App | None = None
+
     lock = SingleInstance()
 
     def on_show_request() -> None:
-        if app:
+        if app is not None:
             app._show_window()
 
     lock._on_show = on_show_request

@@ -77,6 +77,11 @@ class YouTubeFetcher(StreamFetcher):
     def __init__(self) -> None:
         self._session = requests.Session()
         self._session.headers.update(_HEADERS)
+        self._session.cookies.set("CONSENT", "PENDING+987", domain=".youtube.com")
+        self._session.cookies.set(
+            "SOCS", "CAESEwgDEgk2NDcwMTcxMjQaAmVuIAEaBgiA_LyaBg",
+            domain=".youtube.com",
+        )
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -87,6 +92,16 @@ class YouTubeFetcher(StreamFetcher):
                 resp = self._session.get(url, timeout=15)
                 if resp.status_code == 404:
                     logger.warning("YouTube page not found: %s", url)
+                    return None
+                if resp.status_code >= 500:
+                    logger.warning(
+                        "YouTube server error %d for %s (attempt %d/%d)",
+                        resp.status_code, url,
+                        attempt + 1, _MAX_RETRIES + 1,
+                    )
+                    if attempt < _MAX_RETRIES:
+                        time.sleep(_RETRY_DELAY)
+                        continue
                     return None
                 resp.raise_for_status()
                 return resp.text

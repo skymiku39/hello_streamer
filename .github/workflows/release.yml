@@ -1,4 +1,4 @@
-name: Build and Release Windows App
+name: Build and Release Desktop Apps
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
 
     steps:
@@ -28,19 +28,133 @@ jobs:
       - name: Install Dependencies
         run: uv sync --extra dev
 
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Compile Python
+        run: uv run python -m compileall -f stream_monitor build.py
+
+      - name: Pytest
+        run: uv run pytest -q
+
       - name: Build Executable
         run: uv run python build.py
 
-      - name: Upload Build Artifact
+      - name: Package Windows executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+          Copy-Item -LiteralPath dist/HelloStreamer.exe -Destination "release/HelloStreamer-${{ github.ref_name }}-windows-x64.exe"
+
+      - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: HelloStreamer-exe
-          path: dist/HelloStreamer.exe
+          name: release-windows-x64
+          path: release/*
+
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: linux-x64
+            platform: linux/amd64
+          - artifact: linux-arm64
+            platform: linux/arm64
+
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        if: matrix.platform != 'linux/amd64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build Linux executable in Debian Bookworm
+        run: |
+          docker run --rm --platform "${{ matrix.platform }}" \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            debian:bookworm \
+            bash -c '
+              set -euo pipefail
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                python3 \
+                python3-venv \
+                python3-pip \
+                python3-tk \
+                python3-gi \
+                python3-gi-cairo \
+                libpython3.11 \
+                libgirepository1.0-dev \
+                gir1.2-gtk-3.0 \
+                gir1.2-ayatanaappindicator3-0.1 \
+                libnotify-bin \
+                fonts-dejavu-core \
+                binutils \
+                gcc \
+                libc-dev \
+                file
+              rm -rf .venv build dist
+              python3 -m venv --system-site-packages .venv
+              . .venv/bin/activate
+              python -m pip install --upgrade pip
+              python -m pip install -e ".[dev]"
+              python -m ruff check .
+              python -m compileall -f stream_monitor build.py
+              python -m pytest -q
+              python build.py
+              echo "=== Build output ==="
+              file dist/HelloStreamer
+            '
+
+      - name: Fix file ownership
+        run: sudo chown -R "$(id -u):$(id -g)" .
+
+      - name: Package Linux executable
+        run: |
+          mkdir -p release package
+          cp dist/HelloStreamer package/HelloStreamer
+          chmod +x package/HelloStreamer
+          tar -czf "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C package HelloStreamer
+
+      - name: Upload Release Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.artifact }}
+          path: release/*
+
+  release:
+    needs: [build-windows, build-linux]
+    if: |
+      needs.build-windows.result == 'success' &&
+      needs.build-linux.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Release Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: release-*
+          merge-multiple: true
+
+      - name: List release files
+        run: ls -lh release/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/HelloStreamer.exe
+          files: release/*
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
         env:

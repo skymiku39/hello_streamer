@@ -1,6 +1,6 @@
 [project]
 name = "stream-monitor"
-version = "0.2.6"
+version = "0.3.8"
 description = "哈嘍主播 — 監控 Twitch/YouTube 實況主開播狀態的桌面應用程式"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
@@ -8,7 +8,7 @@ dependencies = [
     "customtkinter>=5.2",
     "requests>=2.31",
     "Pillow>=10.0",
-    "winotify>=1.1",
+    "winotify>=1.1; sys_platform == 'win32'",
     "pystray>=0.19",
 ]
 

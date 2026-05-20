@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from stream_monitor import base_dir
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +29,7 @@ def _style_key(style: str) -> str:
 
 
 def _db_path() -> Path:
-    if getattr(sys, "frozen", False):
-        base = Path(sys.executable).parent
-    else:
-        base = Path(__file__).resolve().parent.parent
-    return base / "seen_videos.db"
+    return base_dir() / "seen_videos.db"
 
 
 class SeenVideoDB:
