@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import shutil
 import subprocess
 import webbrowser
+from pathlib import Path
 from typing import Any, Callable
 
 from stream_monitor.fetcher.base import StreamInfo
@@ -15,11 +17,82 @@ logger = logging.getLogger(__name__)
 
 ActionCallback = Callable[[], None]
 
+_WINDOWS_BROWSER_ALIASES = {
+    "chrome": "chrome",
+    "chrome.exe": "chrome",
+    "google chrome": "chrome",
+    "msedge": "msedge",
+    "msedge.exe": "msedge",
+    "edge": "msedge",
+    "microsoft edge": "msedge",
+    "firefox": "firefox",
+    "firefox.exe": "firefox",
+    "mozilla firefox": "firefox",
+}
+
+_WINDOWS_BROWSER_PATHS = {
+    "chrome": (
+        ("ProgramFiles", "Google", "Chrome", "Application", "chrome.exe"),
+        ("ProgramFiles(x86)", "Google", "Chrome", "Application", "chrome.exe"),
+        ("LOCALAPPDATA", "Google", "Chrome", "Application", "chrome.exe"),
+    ),
+    "msedge": (
+        ("ProgramFiles", "Microsoft", "Edge", "Application", "msedge.exe"),
+        ("ProgramFiles(x86)", "Microsoft", "Edge", "Application", "msedge.exe"),
+        ("LOCALAPPDATA", "Microsoft", "Edge", "Application", "msedge.exe"),
+    ),
+    "firefox": (
+        ("ProgramFiles", "Mozilla Firefox", "firefox.exe"),
+        ("ProgramFiles(x86)", "Mozilla Firefox", "firefox.exe"),
+        ("LOCALAPPDATA", "Mozilla Firefox", "firefox.exe"),
+    ),
+}
+
+
+def _clean_browser_path(value: str) -> str:
+    """Trim whitespace and one layer of quotes from a browser executable path."""
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in "\"'":
+        return cleaned[1:-1].strip()
+    return cleaned
+
+
+def _windows_browser_candidates(alias: str) -> list[Path]:
+    candidates: list[Path] = []
+    for env_key, *parts in _WINDOWS_BROWSER_PATHS.get(alias, ()):
+        base = os.environ.get(env_key)
+        if base:
+            candidates.append(Path(base, *parts))
+    return candidates
+
+
+def _resolve_browser_executable(browser_path: str) -> str:
+    """Resolve friendly browser names like ``chrome`` to executable paths."""
+    cleaned = _clean_browser_path(browser_path)
+    expanded = os.path.expandvars(os.path.expanduser(cleaned))
+
+    explicit_path = Path(expanded)
+    if explicit_path.is_file():
+        return str(explicit_path)
+
+    path_match = shutil.which(expanded)
+    if path_match:
+        return path_match
+
+    if platform.system() == "Windows":
+        alias = _WINDOWS_BROWSER_ALIASES.get(expanded.lower())
+        if alias:
+            for candidate in _windows_browser_candidates(alias):
+                if candidate.is_file():
+                    return str(candidate)
+
+    return expanded
+
 
 def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
     """Compose browser CLI arguments from a normalized browser_settings dict."""
     browser_path = (settings.get("browser_path") or "chrome").strip() or "chrome"
-    args: list[str] = [browser_path]
+    args: list[str] = [_resolve_browser_executable(browser_path)]
 
     if settings.get("new_window", True):
         args.append("--new-window")

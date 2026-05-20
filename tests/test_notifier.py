@@ -173,7 +173,7 @@ def test_build_browser_args_default_window() -> None:
     args = notifier._build_browser_args(
         "https://example.com",
         {
-            "browser_path": "chrome",
+            "browser_path": "custom-browser",
             "new_window": True,
             "app_mode": False,
             "x": 10,
@@ -183,7 +183,7 @@ def test_build_browser_args_default_window() -> None:
         },
     )
     assert args == [
-        "chrome",
+        "custom-browser",
         "--new-window",
         "--window-position=10,20",
         "--window-size=800,600",
@@ -195,7 +195,7 @@ def test_build_browser_args_app_mode_replaces_url() -> None:
     args = notifier._build_browser_args(
         "https://example.com",
         {
-            "browser_path": "msedge",
+            "browser_path": "custom-browser",
             "new_window": False,
             "app_mode": True,
             "x": 0,
@@ -207,7 +207,61 @@ def test_build_browser_args_app_mode_replaces_url() -> None:
     assert "--new-window" not in args
     assert "--app=https://example.com" in args
     assert "https://example.com" not in args
-    assert args[0] == "msedge"
+    assert args[0] == "custom-browser"
+
+
+def test_build_browser_args_resolves_windows_chrome_alias(
+    tmp_path, monkeypatch
+) -> None:
+    program_files = tmp_path / "Program Files"
+    chrome = program_files / "Google" / "Chrome" / "Application" / "chrome.exe"
+    chrome.parent.mkdir(parents=True)
+    chrome.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(notifier.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(notifier.shutil, "which", lambda _value: None)
+    monkeypatch.setenv("ProgramFiles", str(program_files))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "chrome",
+            "new_window": False,
+            "app_mode": False,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+        },
+    )
+
+    assert args[0] == str(chrome)
+
+
+def test_build_browser_args_strips_quoted_explicit_browser_path(
+    tmp_path, monkeypatch
+) -> None:
+    browser = tmp_path / "Browser With Spaces" / "browser.exe"
+    browser.parent.mkdir()
+    browser.write_text("", encoding="utf-8")
+    monkeypatch.setattr(notifier.shutil, "which", lambda _value: None)
+
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": f'"{browser}"',
+            "new_window": False,
+            "app_mode": False,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+        },
+    )
+
+    assert args[0] == str(browser)
 
 
 def test_open_url_uses_browser_settings_when_enabled(monkeypatch) -> None:
@@ -226,7 +280,7 @@ def test_open_url_uses_browser_settings_when_enabled(monkeypatch) -> None:
 
     settings = {
         "enabled": True,
-        "browser_path": "chrome",
+        "browser_path": "custom-browser",
         "new_window": True,
         "app_mode": False,
         "x": 5,
@@ -239,7 +293,7 @@ def test_open_url_uses_browser_settings_when_enabled(monkeypatch) -> None:
     assert notifier.open_url("https://example.com", settings) is True
     assert calls == [
         [
-            "chrome",
+            "custom-browser",
             "--new-window",
             "--window-position=5,6",
             "--window-size=1024,768",
