@@ -18,6 +18,12 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     "width": 1280,
     "height": 720,
     "minimized": False,
+    # Empty = use browser's default profile (subject to Chrome master-process
+    # restrictions). Set to a folder path to force a dedicated Chrome /
+    # Firefox profile, which is the only reliable way to make
+    # --window-position / --window-size / --app= work when the browser is
+    # already running.
+    "user_data_dir": "",
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -107,6 +113,10 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
     browser_path = value.get("browser_path")
     if isinstance(browser_path, str) and browser_path.strip():
         normalized["browser_path"] = browser_path.strip()
+
+    user_data_dir = value.get("user_data_dir")
+    if isinstance(user_data_dir, str):
+        normalized["user_data_dir"] = user_data_dir.strip()
 
     for int_key in ("x", "y", "width", "height"):
         normalized[int_key] = _coerce_int(value.get(int_key), normalized[int_key])
