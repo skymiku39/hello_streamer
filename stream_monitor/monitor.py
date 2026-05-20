@@ -50,6 +50,21 @@ class ChannelStatus:
 
 StatusCallback = Callable[[ChannelEntry, StreamInfo], None]
 
+# Fired when a channel that was previously LIVE transitions back to "not live".
+# Receives the entry plus the URL and title that were last known to be live,
+# so callers can e.g. close the player window we opened on the going-live edge.
+OfflineCallback = Callable[["ChannelEntry", "OfflineInfo"], None]
+
+
+@dataclass
+class OfflineInfo:
+    url: str
+    title: str
+    platform: str
+    name: str
+    video_id: str = ""
+    display_name: str = ""
+
 
 def _video_item_to_stream_info(item: VideoItem, channel: str) -> StreamInfo:
     return StreamInfo(
@@ -101,6 +116,7 @@ class Monitor:
         on_status_change: StatusCallback | None = None,
         on_poll_complete: Callable[[], None] | None = None,
         db: SeenVideoDB | None = None,
+        on_went_offline: OfflineCallback | None = None,
     ) -> None:
         self._entries = [
             ChannelEntry(
@@ -113,6 +129,7 @@ class Monitor:
         self._interval = max(10, interval)
         self._on_status_change = on_status_change
         self._on_poll_complete = on_poll_complete
+        self._on_went_offline = on_went_offline
         self._db = db or SeenVideoDB()
 
         self._stop_event = threading.Event()
@@ -122,6 +139,13 @@ class Monitor:
         self._youtube_baselined: set[str] = set()
         self._fallback_triggered_live: dict[str, str] = {}
         self._live_started_at: dict[str, str] = {}
+        # Map of "<entry.key>|<video_id>" -> last-known url/title pair while
+        # the stream was live. Used to fire went-offline events with the
+        # exact URL/title we originally opened, even after live data is gone.
+        self._live_payload: dict[str, OfflineInfo] = {}
+        # Filled by _check_* helpers within a single poll cycle; drained by
+        # _run after went_live dispatch.
+        self._pending_offline_events: list[tuple[ChannelEntry, OfflineInfo]] = []
         self._lock = threading.Lock()
 
     @property
@@ -167,6 +191,11 @@ class Monitor:
                 for key, value in self._live_started_at.items()
                 if _entry_key_from_live_cache_key(key) in keys
             }
+            self._live_payload = {
+                key: value
+                for key, value in self._live_payload.items()
+                if _entry_key_from_live_cache_key(key) in keys
+            }
             for entry in self._entries:
                 if entry.enabled and not old_enabled.get(entry.key, True):
                     self._last_status.pop(entry.key, None)
@@ -184,6 +213,8 @@ class Monitor:
             self._youtube_baselined.clear()
             self._fallback_triggered_live = {}
             self._live_started_at.clear()
+            self._live_payload.clear()
+            self._pending_offline_events.clear()
         try:
             self._db.cleanup(days=30)
         except Exception:
@@ -202,6 +233,7 @@ class Monitor:
         while not self._stop_event.is_set():
             with self._lock:
                 entries = list(self._entries)
+                self._pending_offline_events.clear()
 
             went_live_batch: list[tuple[ChannelEntry, StreamInfo]] = []
             commits: list[Callable[[], None]] = []
@@ -234,6 +266,24 @@ class Monitor:
                     except Exception:
                         logger.exception(
                             "on_status_change callback error for %s", entry.key
+                        )
+
+            if self._stop_event.is_set():
+                break
+
+            # Dispatch went-offline events *after* went-live so the UI sees
+            # transitions in a sensible order if both occur in the same poll.
+            with self._lock:
+                offline_batch = list(self._pending_offline_events)
+            for entry, offline_info in offline_batch:
+                if self._stop_event.is_set():
+                    break
+                if self._on_went_offline:
+                    try:
+                        self._on_went_offline(entry, offline_info)
+                    except Exception:
+                        logger.exception(
+                            "on_went_offline callback error for %s", entry.key
                         )
 
             if self._stop_event.is_set():
@@ -277,8 +327,8 @@ class Monitor:
 
         with self._lock:
             prev = self._last_status.get(entry.key)
+            live_key = _live_cache_key(entry.key)
             if info.is_live:
-                live_key = _live_cache_key(entry.key)
                 started_at = info.started_at or self._live_started_at.get(live_key)
                 if not started_at:
                     started_at = _utc_now_iso()
@@ -290,14 +340,34 @@ class Monitor:
                     title=info.title,
                     started_at=started_at,
                 )
+                self._live_payload[live_key] = OfflineInfo(
+                    url=info.url,
+                    title=info.title,
+                    platform=entry.platform,
+                    name=entry.name,
+                    display_name=info.display_name or "",
+                )
             else:
-                self._live_started_at.pop(_live_cache_key(entry.key), None)
+                self._live_started_at.pop(live_key, None)
                 self._last_status[entry.key] = ChannelStatus(status=False)
             if info.display_name:
                 self._display_names[entry.key] = info.display_name
 
         prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
         went_live = info.is_live and prev_status is not True
+        went_offline = (not info.is_live) and prev_status is True
+        if went_offline:
+            with self._lock:
+                stale_payload = self._live_payload.pop(_live_cache_key(entry.key), None)
+                self._pending_offline_events.append(
+                    (entry, stale_payload or OfflineInfo(
+                        url=(prev.url if isinstance(prev, ChannelStatus) else ""),
+                        title=(prev.title if isinstance(prev, ChannelStatus) else ""),
+                        platform=entry.platform,
+                        name=entry.name,
+                        display_name=self._display_names.get(entry.key, ""),
+                    ))
+                )
         if went_live:
             info.stream_status = "live"
             return [(entry, info)]
@@ -340,6 +410,14 @@ class Monitor:
                     if not started_at:
                         started_at = _utc_now_iso()
                     self._live_started_at[live_key] = started_at
+                    self._live_payload[live_key] = OfflineInfo(
+                        url=item.url,
+                        title=item.title,
+                        platform=entry.platform,
+                        name=entry.name,
+                        video_id=item.video_id,
+                        display_name=item.display_name or "",
+                    )
                 item.started_at = started_at
                 live_items.append(item)
             elif item.style == "UPCOMING":
@@ -386,8 +464,21 @@ class Monitor:
             new_events.append((entry, info))
 
         with self._lock:
+            # Detect went-offline edges: anything in self._live_payload that
+            # belongs to this entry but is no longer in this poll's LIVE set.
+            active_live_ids = {item.video_id for item in live_items}
+            stale_keys = [
+                key
+                for key in list(self._live_payload.keys())
+                if _entry_key_from_live_cache_key(key) == entry.key
+                and key.rsplit("|", 1)[-1] not in active_live_ids
+            ]
+            for stale_key in stale_keys:
+                payload = self._live_payload.pop(stale_key, None)
+                if payload is not None:
+                    self._pending_offline_events.append((entry, payload))
+
             if has_live:
-                active_live_ids = {item.video_id for item in live_items}
                 self._live_started_at = {
                     key: value
                     for key, value in self._live_started_at.items()
@@ -458,8 +549,8 @@ class Monitor:
 
         with self._lock:
             prev = self._last_status.get(entry.key)
+            live_key = _live_cache_key(entry.key)
             if info.is_live:
-                live_key = _live_cache_key(entry.key)
                 started_at = info.started_at or self._live_started_at.get(live_key)
                 if not started_at:
                     started_at = _utc_now_iso()
@@ -470,6 +561,13 @@ class Monitor:
                     url=info.url,
                     title=info.title,
                     started_at=started_at,
+                )
+                self._live_payload[live_key] = OfflineInfo(
+                    url=info.url,
+                    title=info.title,
+                    platform=entry.platform,
+                    name=entry.name,
+                    display_name=info.display_name or "",
                 )
             else:
                 self._live_started_at = {
@@ -484,6 +582,19 @@ class Monitor:
 
         prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
         went_live = info.is_live and prev_status is not True
+        went_offline = (not info.is_live) and prev_status is True
+        if went_offline:
+            with self._lock:
+                stale_payload = self._live_payload.pop(_live_cache_key(entry.key), None)
+                self._pending_offline_events.append(
+                    (entry, stale_payload or OfflineInfo(
+                        url=(prev.url if isinstance(prev, ChannelStatus) else ""),
+                        title=(prev.title if isinstance(prev, ChannelStatus) else ""),
+                        platform=entry.platform,
+                        name=entry.name,
+                        display_name=self._display_names.get(entry.key, ""),
+                    ))
+                )
         if went_live:
             with self._lock:
                 self._fallback_triggered_live[entry.key] = info.title

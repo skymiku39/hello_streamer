@@ -195,3 +195,23 @@ def test_load_watch_monitor_mode(tmp_path, monkeypatch) -> None:
     _use_config_path(monkeypatch, path)
 
     assert config_manager.load()["monitor_mode"] == "watch"
+
+
+def test_load_normalizes_close_on_offline(tmp_path, monkeypatch) -> None:
+    import json
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"browser_settings": {"close_on_offline": True}}),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    assert config_manager.load()["browser_settings"]["close_on_offline"] is True
+
+
+def test_load_close_on_offline_defaults_to_false(tmp_path, monkeypatch) -> None:
+    _use_config_path(monkeypatch, tmp_path / "config.json")
+    assert (
+        config_manager.load()["browser_settings"]["close_on_offline"] is False
+    )

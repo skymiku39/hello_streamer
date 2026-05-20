@@ -710,3 +710,134 @@ def test_update_channels_preserves_enabled_flag(tmp_path) -> None:
         assert monitor._entries[0].enabled is True
         assert monitor._entries[1].enabled is True
     db.close()
+
+
+# ─────────────────────────────────────────────
+# Went-offline edge events
+# ─────────────────────────────────────────────
+def test_twitch_emits_went_offline_after_live(monkeypatch, tmp_path) -> None:
+    """Live → offline edge must enqueue a went-offline event with the prior URL."""
+    fetcher = FakeTwitchFetcher([True, False])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hello"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    # Poll 1: went LIVE
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+
+    # Poll 2: went offline
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert len(monitor._pending_offline_events) == 1
+        evt_entry, payload = monitor._pending_offline_events[0]
+        assert evt_entry.key == "twitch:hello"
+        assert payload.url == "https://www.twitch.tv/hello"
+        assert payload.title == "Live now"
+        assert payload.platform == "twitch"
+        assert payload.name == "hello"
+    db.close()
+
+
+def test_twitch_no_went_offline_when_never_was_live(monkeypatch, tmp_path) -> None:
+    fetcher = FakeTwitchFetcher([False, False])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    _check_and_commit(monitor, entry)
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+    db.close()
+
+
+def test_youtube_tidus_emits_went_offline_when_video_drops_out(
+    monkeypatch, tmp_path
+) -> None:
+    """Poll 1 has a LIVE video; poll 2 has no LIVE items → went-offline fires."""
+    live_item = VideoItem(
+        video_id="vid1",
+        title="Live Stream",
+        url="https://www.youtube.com/watch?v=vid1",
+        style="LIVE",
+        display_name="YT Channel",
+    )
+    fetcher = FakeYouTubeFetcher(items_batches=[[live_item], []])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._pending_offline_events == []
+
+    # Poll 2: items list returns []; this triggers the fallback path. Need
+    # to supply a non-live StreamInfo so fallback declares offline.
+    fetcher.info_batches = [
+        StreamInfo(
+            channel="yt",
+            platform="youtube",
+            is_live=False,
+            title="",
+            url="",
+        )
+    ]
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        # Fallback path emits the offline event with the prior payload.
+        assert len(monitor._pending_offline_events) >= 1
+        urls = {p.url for _, p in monitor._pending_offline_events}
+        assert "https://www.youtube.com/watch?v=vid1" in urls
+    db.close()
+
+
+def test_youtube_tidus_emits_went_offline_when_live_set_changes(
+    monkeypatch, tmp_path
+) -> None:
+    """LIVE video A in poll 1; LIVE video B (different vid) in poll 2 → A is offline."""
+    live_a = VideoItem(
+        video_id="A",
+        title="Stream A",
+        url="https://www.youtube.com/watch?v=A",
+        style="LIVE",
+    )
+    live_b = VideoItem(
+        video_id="B",
+        title="Stream B",
+        url="https://www.youtube.com/watch?v=B",
+        style="LIVE",
+    )
+    fetcher = FakeYouTubeFetcher(items_batches=[[live_a], [live_b]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    _check_and_commit(monitor, entry)
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        offline_urls = {p.url for _, p in monitor._pending_offline_events}
+        assert "https://www.youtube.com/watch?v=A" in offline_urls
+        assert "https://www.youtube.com/watch?v=B" not in offline_urls
+    db.close()
+
+
+def test_monitor_callback_signature_accepts_on_went_offline(tmp_path) -> None:
+    """Construction accepts the new callback without breaking existing kwargs."""
+    db = SeenVideoDB(tmp_path / "test.db")
+    captured: list = []
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hi"}],
+        on_went_offline=lambda entry, payload: captured.append((entry, payload)),
+        db=db,
+    )
+    assert monitor._on_went_offline is not None
+    db.close()

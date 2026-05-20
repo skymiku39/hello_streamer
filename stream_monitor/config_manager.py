@@ -33,6 +33,10 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     # because Chrome's master process drops --app= when launched against a
     # profile that already has an open window.
     "per_channel_profile": True,
+    # When True, the app closes (PostMessage WM_CLOSE) the browser window we
+    # opened on the going-live edge once the channel transitions back to
+    # offline. Default off so users opt-in deliberately.
+    "close_on_offline": False,
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -121,6 +125,7 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
         "apply_geometry",
         "minimized",
         "per_channel_profile",
+        "close_on_offline",
     ):
         raw = value.get(bool_key)
         if isinstance(raw, bool):
