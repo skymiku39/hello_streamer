@@ -1,130 +1,140 @@
-# 哈嘍主播 Hello Streamer
+# Hello Streamer
 
 [![CI](https://github.com/skymiku39/hello_streamer/actions/workflows/ci.yml/badge.svg)](https://github.com/skymiku39/hello_streamer/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/skymiku39/hello_streamer?label=release)](https://github.com/skymiku39/hello_streamer/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Hello Streamer** 是一款桌面工具，用於監控 Twitch 與 YouTube 頻道的開播狀態。
-當指定頻道開始直播或建立待機室時，程式會即時通知你，並可自動開啟直播頁面。
+Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTube 頻道的開播狀態。當追蹤的頻道開播時，它可以通知你、打開直播頁、保持監控其他頻道，或在直播結束後自動關閉由程式開啟的播放視窗。
 
-支援平台：**Windows** / **Linux**（含 Raspberry Pi）
-
-> 本專案透過 **Vibe Coding** 方式完成 —— 由 **Cursor**、**Claude**、**Codex**、**Gemini** 四個 AI 協作開發，
-> 並感謝 Discord 群友 **TIDUS** 提供寶貴的架構建議與 YouTube 偵測策略。
+支援 Windows、Linux 與 Raspberry Pi 64-bit。主要介面使用 CustomTkinter，通知支援 Windows Toast 與 Linux `notify-send`。
 
 ## 功能特色
 
-### 頻道監控
-
-- 同時監控多個 **Twitch** / **YouTube** 頻道
-- 無需任何 API Token，以公開網頁資料偵測開播狀態
-- Twitch 透過 GQL 端點查詢；YouTube 解析頁面 `ytInitialData` 取得直播與待機室資訊
-- 自動偵測 YouTube **待機室（UPCOMING）** 並顯示開播倒數計時
-- 正在直播的頻道顯示已開播時長
-
-### 頻道管理
-
-- 支援貼上頻道網址，自動辨識平台與頻道名稱
-- 新增頻道時即時驗證帳號是否存在，並自動取得顯示名稱
-- 可個別暫停 / 恢復監聽，暫停的頻道會保留在清單中但跳過輪詢
-- 頻道列左側提供 ▲▼ 按鈕快速排序
-
-### 狀態顯示
-
-- **LIVE**（綠色）：滑鼠懸停顯示直播標題與已開播時長，點擊開啟直播頁面
-- **UPCOMING**（橘色）：滑鼠懸停顯示待機室標題與倒計時，點擊開啟待機室頁面
-- **OFFLINE**：頻道目前離線
-- 平台標籤（TWITCH / YOUTUBE）可直接點擊開啟頻道首頁
-
-### 觸發行為
-
-偵測到開播時，可選擇四種處理方式：
-
-| 行為 | 說明 |
-|------|------|
-| 開啟網頁並停止監聽 | 自動開啟直播頁面，並停止所有監聽 |
-| 開啟網頁並保持監聽 | 開啟直播頁面，繼續監控其他頻道 |
-| 僅跳出系統通知 | 顯示桌面通知（Windows Toast / Linux notify-send，含「立即觀看」按鈕） |
-| 開啟網頁後關閉程式 | 開啟直播頁面後自動結束程式 |
-
-> 待機室（UPCOMING）事件固定使用「僅跳出系統通知」，不會觸發自動開啟網頁。
-
-### 系統整合
-
-- **系統匣常駐**：可從系統匣快速顯示主畫面、切換監聽狀態或完全退出
-- **縮小至系統匣開關**：決定關閉視窗時是縮小到系統匣還是直接結束程式
-- **開機自動啟動**：Windows 透過 Registry Run key，Linux 透過 XDG Autostart，開機後以 `--silent` 靜默模式背景執行
-- **單一執行個體**：重複啟動時自動喚醒已開啟的視窗，不會產生多個程式
+- 監控 Twitch 與 YouTube 頻道，不需要使用者提供 API Token。
+- 支援 YouTube 直播、預定直播與一般影片狀態判斷。
+- 支援 Twitch 開播狀態、直播標題、頻道顯示名稱與直播網址。
+- 可透過 URL 貼上新增頻道，支援 Twitch channel、YouTube handle 與 YouTube channel ID。
+- 可停用單一頻道、調整頻道順序、移除頻道。
+- 支援兩種監控模式：
+  - 觸發模式：偵測到開播時執行設定的動作。
+  - 觀察模式：只更新畫面狀態，不自動通知或開啟瀏覽器。
+- 支援系統匣最小化、單一實例、防止重複啟動。
+- 支援開機自動啟動。
+- 使用 SQLite 記錄已看過的 YouTube video ID，避免重複通知。
 
 ## 下載
 
-最新版本可從 GitHub Releases 下載：
+最新版本請到 [GitHub Releases](https://github.com/skymiku39/hello_streamer/releases/latest) 下載。
 
-**[Download latest release](https://github.com/skymiku39/hello_streamer/releases/latest)**
+| 平台 | 檔案 |
+| --- | --- |
+| Windows x64 | `HelloStreamer-v0.4.1-windows-x64.exe` |
+| Linux x64 | `HelloStreamer-v0.4.1-linux-x64.tar.gz` |
+| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v0.4.1-linux-arm64.tar.gz` |
 
-- **Windows**：下載 `HelloStreamer-vX.Y.Z-windows-x64.exe` 後可直接執行，無需安裝。
-- **Linux x64**：下載 `HelloStreamer-vX.Y.Z-linux-x64.tar.gz`，解壓縮後執行 `HelloStreamer`。
-- **Linux ARM64**：下載 `HelloStreamer-vX.Y.Z-linux-arm64.tar.gz`，適用於 Raspberry Pi 64-bit 與其他 ARM64 Linux 桌面環境。
+Windows 第一次執行時可能會顯示安全提示，請確認來源是本專案的 GitHub Release。
 
-首次執行時，Windows 可能會顯示安全提示，請確認來源為本專案的 GitHub Release。
-Linux 版本需要桌面環境與系統匣 / 通知相關套件，請參考下方 Linux 安裝說明。
+## 快速開始
 
-## 使用方式
+1. 下載並啟動 `HelloStreamer`。
+2. 按「新增頻道」。
+3. 貼上 Twitch 或 YouTube 頻道網址。
+4. 選擇偵測到開播時要執行的動作。
+5. 按「開始監聽」。
 
-1. 啟動 `HelloStreamer`
-2. 點擊「＋ 新增頻道」
-3. 貼上 Twitch 或 YouTube 頻道網址（或手動選擇平台並輸入頻道名稱）
-4. 設定檢查間隔（最低 10 秒）與觸發行為
-5. 點擊「▶ 開始監聽」
+支援的網址範例：
 
-### 網址格式
-
-| 平台 | 支援格式 |
-|------|---------|
+| 平台 | 範例 |
+| --- | --- |
 | Twitch | `https://www.twitch.tv/channel_name` |
-| YouTube | `https://www.youtube.com/@handle` 或包含 `@handle` 的任何頁面 |
+| YouTube handle | `https://www.youtube.com/@handle` |
+| YouTube channel ID | `https://www.youtube.com/channel/UCxxxxxxxx` |
+| YouTube handle 簡寫 | `@handle` |
 
-> YouTube 連結必須包含 `@handle`；不含 `@handle` 的觀看頁、Shorts 或 `/live` 連結無法自動辨識。
-> 手動輸入時可填 `@handle` 後的名稱或 `UC` 開頭的頻道 ID。
+## 開播動作
 
-## 設定
+偵測到直播開播時，可以選擇以下動作：
 
-應用程式使用本機 `config.json` 儲存所有設定，包含頻道清單、檢查間隔、觸發行為、視窗位置等。
+| 動作 | 說明 |
+| --- | --- |
+| 開啟並停止監聽 | 打開直播頁後停止監控。 |
+| 開啟並繼續監聽 | 打開直播頁後繼續監控其他頻道。 |
+| 只通知 | 只顯示系統通知，不自動開啟瀏覽器。 |
+| 開啟並結束程式 | 打開直播頁後關閉 Hello Streamer。 |
 
-- 開發模式：`config.json` 位於專案根目錄
-- 封裝版：`config.json` 位於 `HelloStreamer` 執行檔同一層目錄
-- `config.json` 屬於本機 runtime 設定，不會提交到版本控制
+YouTube 預定直播會強制走「只通知」，避免尚未開播時就自動打開播放器。
 
-### 開機自動啟動
+## 瀏覽器設定
 
-開機自動啟動只支援封裝版執行檔。啟用後：
+Hello Streamer 內建進階瀏覽器設定，可以控制直播頁要如何打開。
 
-- **Windows**：寫入 Registry Run key（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`）
-- **Linux**：建立 XDG Autostart desktop 檔案（`~/.config/autostart/stream-monitor.desktop`）
+| 設定 | 說明 |
+| --- | --- |
+| 啟用自訂瀏覽器設定 | 使用 `subprocess` 啟動指定瀏覽器，才能套用視窗參數。 |
+| 瀏覽器路徑 | 可填 `chrome`、`msedge`、`firefox`，也可填完整 `.exe` 路徑。Windows 會自動解析常見 Chrome / Edge / Firefox 安裝路徑。 |
+| 獨立視窗 | 使用瀏覽器的新視窗開啟直播頁。 |
+| App Mode | 使用 Chromium 的 `--app=URL`，開出較乾淨的播放器視窗。勾選後會自動啟用並鎖定獨立視窗。 |
+| 套用座標 / 大小 | 設定視窗 X、Y、寬、高。 |
+| 最小化開啟 | 視窗開啟後最小化。Windows 上會透過 Win32 API 補強。 |
+| 獨立 Profile | 使用獨立 `user-data-dir`，避免既有 Chrome / Edge 主程序吃掉 `--app`、視窗座標與大小參數。 |
+| 每頻道 Profile | 在 Profile 目錄下依平台與頻道建立子資料夾，讓每個直播視窗更穩定地套用 App Mode。 |
+| 直播結束自動關閉 | 當頻道從 LIVE 轉回 OFFLINE 時，關閉由 Hello Streamer 開啟的對應瀏覽器視窗。 |
+| 從工作列與 Alt+Tab 隱藏 | Windows 上將播放視窗設為 tool window，讓它不佔工作列與 Alt+Tab 位置。 |
 
-開機時以靜默模式自動啟動：
+### Chrome / Edge 注意事項
 
-```text
-"HelloStreamer" --silent
-```
+Chrome 與 Edge 會共用長駐的 master process。當瀏覽器已經開著，再次執行 `chrome.exe --app=... --window-position=...` 時，這些啟動參數可能被既有程序忽略。
 
-開發模式不會啟用開機自啟；若需要測試背景啟動，請手動執行 `uv run python -m stream_monitor --silent`。
+如果你需要 App Mode、固定座標、固定大小、離線後自動關閉或每個頻道獨立播放器，建議啟用「獨立 Profile」與「每頻道 Profile」。
 
-## 開發
+### 測試開啟
 
-本專案使用 **Python 3.11** 與 [uv](https://github.com/astral-sh/uv) 管理環境。
+瀏覽器設定中的「測試開啟」會使用本機 HTML 測試頁，不使用 `about:blank`。App Mode 測試會使用暫時的測試 Profile，避免被主瀏覽器視窗干擾。
+
+## 設定檔與資料
+
+執行時會在程式所在目錄附近使用以下檔案：
+
+| 檔案 / 資料夾 | 說明 |
+| --- | --- |
+| `config.json` | 使用者設定、頻道清單、瀏覽器設定。 |
+| `seen_videos.db` | SQLite 資料庫，記錄已看過的 YouTube 影片與直播。 |
+| `logs/stream_monitor.log` | 執行 log。 |
+| `browser_profile/` | 預設獨立瀏覽器 Profile 位置。 |
+
+打包後的版本會將設定放在執行檔旁邊。原始碼執行時會使用專案根目錄。
+
+## 從原始碼執行
+
+需求：
+
+- Python 3.11 或更新版本
+- [uv](https://github.com/astral-sh/uv)
+
+安裝依賴並啟動：
 
 ```bash
 uv sync --extra dev
 uv run python -m stream_monitor
 ```
 
-也可以透過 project script 啟動：
+也可以使用 project script：
 
 ```bash
 uv run stream-monitor
 ```
 
-### 程式碼品質檢查
+靜默啟動：
+
+```bash
+uv run python -m stream_monitor --silent
+```
+
+`--silent` 會依照上次保存的監控模式自動啟動，適合搭配開機自動啟動。
+
+## 開發與測試
+
+常用檢查指令：
 
 ```bash
 uv run ruff check .
@@ -132,52 +142,29 @@ uv run python -m compileall -f stream_monitor build.py
 uv run pytest -q
 ```
 
-GitHub Actions 會在 `main` push 與 pull request 上自動執行以上檢查。
+目前 CI 也會在 GitHub Actions 中執行檢查。
 
 ## 打包
 
-使用 PyInstaller 打包可執行檔：
+本專案使用 PyInstaller 打包：
 
 ```bash
 uv sync --extra dev
 uv run python build.py
 ```
 
-- **Windows**：輸出 `dist/HelloStreamer.exe`
-- **Linux**：輸出 `dist/HelloStreamer`（ELF 執行檔）
+輸出位置：
 
-推送 `v*` tag 時，release workflow 會自動建置並發佈：
+| 平台 | 輸出 |
+| --- | --- |
+| Windows | `dist/HelloStreamer.exe` |
+| Linux | `dist/HelloStreamer` |
 
-- **Windows x64**：`HelloStreamer-vX.Y.Z-windows-x64.exe`
-- **Linux x64**：`HelloStreamer-vX.Y.Z-linux-x64.tar.gz`
-- **Linux ARM64**：`HelloStreamer-vX.Y.Z-linux-arm64.tar.gz`
+推送 `v*` tag 後，release workflow 會建立 GitHub Release 並上傳對應平台的產物。
 
-## 專案結構
+## Linux / Raspberry Pi
 
-```text
-stream_monitor/
-├── app.py               # CustomTkinter 主視窗與 UI
-├── config_manager.py    # config.json 驗證、讀寫與 atomic save
-├── db.py                # SQLite 影片紀錄（videoId + style 去重）
-├── monitor.py           # 背景輪詢排程器（Twitch 邊緣觸發 / YouTube TIDUS 架構）
-├── notifier.py          # 開播通知與觸發行為
-├── single_instance.py   # TCP 單一執行個體鎖定
-├── startup.py           # 開機自啟動（Windows Registry / Linux XDG Autostart）
-├── tray.py              # 系統匣圖示與選單
-├── url_parser.py        # 頻道網址解析
-└── fetcher/
-    ├── base.py          # StreamFetcher 抽象介面與資料模型
-    ├── twitch.py        # Twitch GQL 狀態偵測
-    └── youtube.py       # YouTube 頁面解析（含待機室與開播時間補全）
-```
-
-## Linux / Raspberry Pi 安裝
-
-### 系統需求
-
-- Python 3.11+
-- 桌面環境（X11 或 Wayland）— 需要顯示器或 VNC 遠端桌面
-- 以下系統套件：
+Linux 桌面環境建議安裝以下套件：
 
 ```bash
 sudo apt update
@@ -192,79 +179,100 @@ sudo apt install -y \
     fonts-dejavu-core
 ```
 
-> `libnotify-bin` 提供 `notify-send` 指令（桌面通知）；`python3-gi` 與 `gir1.2-ayatanaappindicator3-0.1` 為 pystray 系統匣所需。
+說明：
 
-### 安裝與執行
+- `libnotify-bin` 提供 `notify-send`。
+- `python3-gi` 與 `gir1.2-ayatanaappindicator3-0.1` 可改善系統匣支援。
+- Raspberry Pi 請使用 64-bit Raspberry Pi OS，並下載 `linux-arm64` 版本。
 
-```bash
-# 安裝 uv（如尚未安裝）
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 複製專案
-git clone https://github.com/skymiku39/hello_streamer.git
-cd hello_streamer
-
-# 安裝依賴並從原始碼執行
-uv sync
-uv run python -m stream_monitor
-```
-
-也可以直接下載 GitHub Release 的 Linux 版本：
-
-```bash
-tar -xzf HelloStreamer-vX.Y.Z-linux-x64.tar.gz
-./HelloStreamer
-```
-
-若是 Raspberry Pi 64-bit 或其他 ARM64 Linux，請改下載並解壓縮 `HelloStreamer-vX.Y.Z-linux-arm64.tar.gz`。
-
-### Raspberry Pi 注意事項
-
-- 必須在桌面環境中執行（接螢幕、或透過 VNC），SSH 純終端機無法顯示 GUI
-- 64-bit Raspberry Pi OS 請使用 `linux-arm64` 發布檔；32-bit Raspberry Pi OS 目前請從原始碼執行
-- Raspberry Pi OS (Bookworm) 已內建所需的大多數套件，僅需補裝上述 apt 套件
-- 如果使用 Wayland（Raspberry Pi 5 預設），pystray 可能需要 `gir1.2-ayatanaappindicator3-0.1` 才能正確顯示系統匣圖示
-- 若 `notify-send` 指令不存在，桌面通知功能會靜默略過（不影響其他功能）
-
-### Raspberry Pi 排錯
-
-先確認系統架構：
+檢查 Raspberry Pi 架構：
 
 ```bash
 uname -m
 getconf LONG_BIT
 ```
 
-- `aarch64` / `64`：可使用 `linux-arm64` 發布檔。
-- `armv7l` / `32`：不能執行 `linux-arm64` 發布檔，請改用 64-bit Raspberry Pi OS，或從原始碼執行。
+結果是 `aarch64` 且 `64` 時，可以使用 ARM64 release。若是 32-bit OS，請改用 64-bit Raspberry Pi OS 或從原始碼自行調整環境。
 
-常見錯誤：
+## 專案結構
 
-- `Exec format error`：下載到錯誤架構，通常是 32-bit OS 跑了 ARM64 binary。
-- `GLIBC_x.xx not found`：系統版本太舊或 binary 建置環境太新；請使用 v0.3.2 之後的版本，Linux binary 會以 Debian Bookworm 為基準建置。
-- 沒有畫面：請確認是在桌面環境或 VNC 裡執行，SSH 純終端機無法顯示 GUI。
+```text
+stream_monitor/
+  app.py                 CustomTkinter GUI、系統匣、事件橋接
+  config_manager.py      config.json 載入、驗證、atomic save
+  db.py                  SQLite seen video database
+  monitor.py             背景監控、狀態轉換、離線事件
+  notifier.py            通知、瀏覽器啟動、Win32 視窗管理
+  single_instance.py     單一實例保護
+  startup.py             Windows Registry / Linux XDG Autostart
+  tray.py                系統匣圖示與選單
+  url_parser.py          Twitch / YouTube URL 解析
+  fetcher/
+    base.py              Fetcher 抽象類別與資料模型
+    twitch.py            Twitch 狀態擷取
+    youtube.py           YouTube 頻道頁解析
+tests/                   pytest 測試
+build.py                 PyInstaller 打包腳本
+```
 
-## 已知限制
+## 疑難排解
 
-- Twitch 與 YouTube 的狀態偵測依賴公開網頁資料與非官方端點，平台頁面結構或反爬策略變動時可能需要更新
-- Linux 桌面通知不支援內嵌「立即觀看」按鈕（受 notify-send 限制），但會正常顯示通知文字
-- 本專案目前未提供自動更新機制
+### App Mode 沒有變成無網址列視窗
 
-## 隱私
+請啟用「獨立 Profile」。如果 Chrome / Edge 已經開著，瀏覽器可能會把 `--app=URL` 交給既有程序處理，導致 App Mode 被忽略。
 
-Hello Streamer 不會將任何設定同步到外部伺服器。頻道清單與使用者設定僅儲存在本機 config.json。程式也會自動建立本機 seen_videos.db，只用來記錄已看過的 YouTube 影片/直播 ID，以避免重複通知；這不是需要手動調整的設定檔。
+### 視窗座標或大小沒有生效
+
+請確認：
+
+- 自訂瀏覽器設定已啟用。
+- 已勾選「獨立視窗」或「App Mode」。
+- 已勾選「套用座標 / 大小」。
+- Chrome / Edge 建議啟用「獨立 Profile」。
+
+Windows 上程式會在視窗出現後用 Win32 API 再補一次座標與大小，但如果瀏覽器沒有真的開出新視窗，仍然無法移動既有分頁。
+
+### 直播結束後沒有自動關閉視窗
+
+請確認：
+
+- 瀏覽器設定已啟用。
+- 已勾選「直播結束自動關閉」。
+- 該視窗是由 Hello Streamer 自動開啟，而不是手動從瀏覽器開啟。
+- 監控模式是觸發模式。
+
+### Linux 沒有通知
+
+請確認已安裝 `notify-send`：
+
+```bash
+which notify-send
+```
+
+若沒有，請安裝 `libnotify-bin`。
+
+### `Exec format error`
+
+通常代表下載到錯誤架構的 binary。Raspberry Pi 64-bit 請使用 `linux-arm64`，一般 x64 Linux 請使用 `linux-x64`。
+
+### `GLIBC_x.xx not found`
+
+代表系統版本太舊或 binary 建置環境較新。建議使用較新的 Debian / Ubuntu / Raspberry Pi OS Bookworm，或從原始碼執行。
+
+## 隱私與安全
+
+Hello Streamer 不需要 Twitch 或 YouTube API Token。它會在本機保存：
+
+- 追蹤頻道清單與設定。
+- 已看過的 YouTube video ID。
+- 瀏覽器 Profile 資料夾，僅在使用者啟用獨立 Profile 時建立。
+
+所有資料都保存在本機，不會上傳到第三方服務。
+
+## 授權
+
+本專案採用 MIT License，詳見 [LICENSE](LICENSE)。
 
 ## 致謝
 
-本專案以 **Vibe Coding** 方式開發，由以下 AI 工具協作完成：
-
-- [Cursor](https://www.cursor.com/) — AI 程式編輯器
-- [Claude](https://claude.ai/) — Anthropic 語言模型
-- [Codex](https://openai.com/codex/) — OpenAI 程式生成模型
-- [Gemini](https://gemini.google.com/) — Google 語言模型
-
-特別感謝 Discord 群友 **TIDUS** 提供 YouTube 待機室偵測策略與架構建議。
-
-## License
-
-本專案採用 MIT License。完整條款請見 [`LICENSE`](LICENSE)。
+本專案以 Vibe Coding 方式與 AI 工具共同開發，並感謝社群測試與回饋。
