@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import threading
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from stream_monitor.fetcher.base import StreamInfo
+from stream_monitor.url_parser import parse_url
 
 logger = logging.getLogger(__name__)
 
@@ -342,8 +344,62 @@ def _minimize_new_browser_windows_async(
     )
 
 
+# Filesystem-safe characters only. Anything else gets collapsed to "_" so a
+# weird channel slug can never traverse out of user_data_dir.
+_SAFE_PROFILE_RE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _slugify_channel(value: str, *, max_len: int = 64) -> str:
+    cleaned = _SAFE_PROFILE_RE.sub("_", value.strip())
+    cleaned = cleaned.strip("._") or "default"
+    return cleaned[:max_len]
+
+
+def _derive_channel_profile_subdir(url: str) -> str | None:
+    """Return a per-channel sub-folder name (e.g. ``twitch_kaicenat``) or None.
+
+    Falls back to None when the URL doesn't match a known platform pattern;
+    the caller should then keep using the base user_data_dir as-is.
+    """
+    parsed = parse_url(url)
+    if parsed is None:
+        return None
+    return f"{_slugify_channel(parsed.platform)}_{_slugify_channel(parsed.name)}"
+
+
+def _resolve_effective_user_data_dir(
+    url: str, base_dir: str, per_channel: bool
+) -> str:
+    """Pick the actual --user-data-dir path to feed the browser.
+
+    When ``per_channel`` is True and the URL parses cleanly, we append a
+    sub-folder named ``<platform>_<channel>`` so each followed channel gets
+    its own browser master process. This is the only reliable way to make
+    --app= / --window-position survive across multiple stream triggers,
+    because Chrome's master process drops those flags on every IPC-forwarded
+    launch.
+    """
+    base_dir = (base_dir or "").strip()
+    if not base_dir:
+        return ""
+    if not per_channel:
+        return base_dir
+
+    subdir = _derive_channel_profile_subdir(url)
+    if not subdir:
+        return base_dir
+    expanded = Path(os.path.expandvars(os.path.expanduser(base_dir)))
+    return str(expanded / subdir)
+
+
 def _wants_startup_only_flags(
-    *, app_mode: bool, x: int, y: int, width: int, height: int
+    *,
+    app_mode: bool,
+    apply_geometry: bool,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
 ) -> bool:
     """Return True when *any* startup-only browser flag is requested.
 
@@ -353,6 +409,8 @@ def _wants_startup_only_flags(
     """
     if app_mode:
         return True
+    if not apply_geometry:
+        return False
     if x or y:
         return True
     if width != 1280 or height != 720:
@@ -373,6 +431,7 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
 
     new_window = bool(settings.get("new_window", True))
     app_mode = bool(settings.get("app_mode", False))
+    apply_geometry = bool(settings.get("apply_geometry", True))
     width = int(settings.get("width", 1280) or 1280)
     height = int(settings.get("height", 720) or 720)
     x = int(settings.get("x", 0) or 0)
@@ -389,10 +448,16 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
         dropped: list[str] = []
         if app_mode:
             dropped.append("app_mode")
-        can_apply_geometry_after_launch = _is_windows() and (new_window or app_mode)
-        if (x or y) and not can_apply_geometry_after_launch:
+        can_apply_geometry_after_launch = (
+            apply_geometry and _is_windows() and (new_window or app_mode)
+        )
+        if apply_geometry and (x or y) and not can_apply_geometry_after_launch:
             dropped.append("window position")
-        if (width != 1280 or height != 720) and not can_apply_geometry_after_launch:
+        if (
+            apply_geometry
+            and (width != 1280 or height != 720)
+            and not can_apply_geometry_after_launch
+        ):
             dropped.append("window size")
         if dropped:
             logger.warning(
@@ -420,8 +485,16 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
     # in the cold-start case) and rely on the Win32 post-launch fix-up.
     if user_data_dir:
         args.append(f"--user-data-dir={user_data_dir}")
+        # Fresh per-channel profiles otherwise pop up Chrome's welcome /
+        # "make Chrome default" / signed-out NTP screens, which break App Mode.
+        args.extend(["--no-first-run", "--no-default-browser-check"])
     elif _wants_startup_only_flags(
-        app_mode=app_mode, x=x, y=y, width=width, height=height
+        app_mode=app_mode,
+        apply_geometry=apply_geometry,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
     ):
         logger.warning(
             "Chrome/Edge: --app= / --window-position / --window-size are "
@@ -436,15 +509,17 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
     if app_mode:
         # --app= already opens its own dedicated window; --new-window would
         # just be redundant noise (and slightly confusing in logs).
-        args.append(f"--window-position={x},{y}")
-        args.append(f"--window-size={width},{height}")
+        if apply_geometry:
+            args.append(f"--window-position={x},{y}")
+            args.append(f"--window-size={width},{height}")
         args.append(f"--app={url}")
         return args
 
     if new_window:
         args.append("--new-window")
-        args.append(f"--window-position={x},{y}")
-        args.append(f"--window-size={width},{height}")
+        if apply_geometry:
+            args.append(f"--window-position={x},{y}")
+            args.append(f"--window-size={width},{height}")
     else:
         logger.warning(
             "browser_settings.new_window is False and app_mode is False — "
@@ -465,22 +540,30 @@ def _open_with_browser_settings(url: str, settings: dict[str, Any]) -> bool:
     that appear afterwards. This is more reliable than browser CLI flags alone,
     because Chrome/Edge route requests through a long-lived master process.
     """
-    args = _build_browser_args(url, settings)
+    # Resolve the effective user_data_dir up front so both the CLI args and
+    # the mkdir below see the same per-channel path.
+    effective_settings = dict(settings)
+    base_user_data_dir = (settings.get("user_data_dir") or "").strip()
+    per_channel = bool(settings.get("per_channel_profile", True))
+    effective_user_data_dir = _resolve_effective_user_data_dir(
+        url, base_user_data_dir, per_channel
+    )
+    effective_settings["user_data_dir"] = effective_user_data_dir
+
+    args = _build_browser_args(url, effective_settings)
     family = detect_browser_family(args[0])
 
-    # When the user pointed us at a dedicated profile path, make sure the
-    # folder exists *before* Popen — Chrome will happily create it itself
-    # but failing fast here gives much nicer error messages than a silent
-    # browser launch failure.
-    user_data_dir = (settings.get("user_data_dir") or "").strip()
-    if user_data_dir:
+    # Make sure the profile folder exists *before* Popen — Chrome will happily
+    # create it itself but failing fast here gives much nicer error messages
+    # than a silent browser launch failure.
+    if effective_user_data_dir:
         try:
-            Path(os.path.expandvars(os.path.expanduser(user_data_dir))).mkdir(
-                parents=True, exist_ok=True
-            )
+            Path(
+                os.path.expandvars(os.path.expanduser(effective_user_data_dir))
+            ).mkdir(parents=True, exist_ok=True)
         except OSError:
             logger.exception(
-                "Could not create browser user_data_dir: %s", user_data_dir
+                "Could not create browser user_data_dir: %s", effective_user_data_dir
             )
 
     want_minimize = bool(settings.get("minimized")) and _is_windows()
@@ -534,8 +617,8 @@ def _open_with_browser_settings(url: str, settings: dict[str, Any]) -> bool:
         _apply_new_browser_window_settings_async(
             class_name,
             baseline,
-            settings,
-            apply_geometry=True,
+            effective_settings,
+            apply_geometry=bool(effective_settings.get("apply_geometry", True)),
         )
 
     return True

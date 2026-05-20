@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from stream_monitor import notifier
 from stream_monitor.fetcher.base import StreamInfo
 
@@ -582,7 +584,15 @@ def test_open_with_browser_settings_triggers_win32_window_management_on_windows(
 
     assert notifier._open_with_browser_settings("https://example.com", settings) is True
     assert enum_calls == ["Chrome_WidgetWin_1"]
-    assert manager_calls == [("Chrome_WidgetWin_1", {1, 2}, settings, True)]
+    assert len(manager_calls) == 1
+    class_name, baseline, fwd_settings, fwd_apply_geometry = manager_calls[0]
+    assert class_name == "Chrome_WidgetWin_1"
+    assert baseline == {1, 2}
+    assert fwd_apply_geometry is True
+    # All original settings are forwarded (effective_settings is a superset
+    # because _open_with_browser_settings injects user_data_dir).
+    for k, v in settings.items():
+        assert fwd_settings[k] == v
 
 
 def test_open_with_browser_settings_uses_firefox_class(monkeypatch) -> None:
@@ -858,6 +868,8 @@ def test_build_browser_args_chromium_user_data_dir_injected(monkeypatch) -> None
     assert args == [
         "chrome",
         "--user-data-dir=C:\\my\\profile",
+        "--no-first-run",
+        "--no-default-browser-check",
         "--new-window",
         "--window-position=0,0",
         "--window-size=1280,720",
@@ -989,6 +1001,245 @@ def test_open_with_browser_settings_creates_user_data_dir(monkeypatch, tmp_path)
 
     assert notifier._open_with_browser_settings("https://example.com", settings) is True
     assert profile_dir.is_dir()
+
+
+def test_build_browser_args_apply_geometry_false_omits_window_flags(monkeypatch) -> None:
+    """When apply_geometry is off, no --window-position / --window-size is sent."""
+    _stub_browser_resolution(monkeypatch, "chrome")
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "chrome",
+            "new_window": True,
+            "app_mode": False,
+            "apply_geometry": False,
+            "minimized": False,
+            "x": 100,
+            "y": 50,
+            "width": 1280,
+            "height": 720,
+        },
+    )
+    assert args == ["chrome", "--new-window", "https://example.com"]
+    assert not any(a.startswith("--window-") for a in args)
+
+
+def test_build_browser_args_apply_geometry_false_with_app_mode(monkeypatch) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+    args = notifier._build_browser_args(
+        "https://example.com",
+        {
+            "browser_path": "chrome",
+            "new_window": False,
+            "app_mode": True,
+            "apply_geometry": False,
+            "minimized": False,
+            "x": 999,
+            "y": 999,
+            "width": 800,
+            "height": 600,
+        },
+    )
+    assert args == ["chrome", "--app=https://example.com"]
+    assert not any(a.startswith("--window-") for a in args)
+
+
+def test_build_browser_args_apply_geometry_false_no_warning_on_non_default(
+    monkeypatch, caplog
+) -> None:
+    """Even with custom x/y/w/h, apply_geometry=False should silence the warning."""
+    _stub_browser_resolution(monkeypatch, "chrome")
+    with caplog.at_level("WARNING", logger="stream_monitor.notifier"):
+        notifier._build_browser_args(
+            "https://example.com",
+            {
+                "browser_path": "chrome",
+                "new_window": True,
+                "app_mode": False,
+                "apply_geometry": False,
+                "minimized": False,
+                "x": 500,
+                "y": 500,
+                "width": 1024,
+                "height": 768,
+                "user_data_dir": "",
+            },
+        )
+    assert not any("user_data_dir" in rec.message for rec in caplog.records)
+
+
+def test_derive_channel_profile_subdir_twitch() -> None:
+    assert (
+        notifier._derive_channel_profile_subdir("https://www.twitch.tv/Kaicenat")
+        == "twitch_kaicenat"
+    )
+
+
+def test_derive_channel_profile_subdir_youtube_handle() -> None:
+    assert (
+        notifier._derive_channel_profile_subdir(
+            "https://www.youtube.com/@SomeOne/live"
+        )
+        == "youtube_SomeOne"
+    )
+
+
+def test_derive_channel_profile_subdir_unknown_returns_none() -> None:
+    assert notifier._derive_channel_profile_subdir("https://example.com/path") is None
+
+
+def test_resolve_effective_user_data_dir_per_channel_on(tmp_path) -> None:
+    base = str(tmp_path / "browser_profile")
+    result = notifier._resolve_effective_user_data_dir(
+        "https://www.twitch.tv/abc", base, per_channel=True
+    )
+    assert result.endswith("twitch_abc")
+    assert Path(result).parent == Path(base)
+
+
+def test_resolve_effective_user_data_dir_per_channel_off(tmp_path) -> None:
+    base = str(tmp_path / "browser_profile")
+    result = notifier._resolve_effective_user_data_dir(
+        "https://www.twitch.tv/abc", base, per_channel=False
+    )
+    assert result == base
+
+
+def test_resolve_effective_user_data_dir_unknown_url_falls_back(tmp_path) -> None:
+    base = str(tmp_path / "browser_profile")
+    result = notifier._resolve_effective_user_data_dir(
+        "https://example.com/whatever", base, per_channel=True
+    )
+    assert result == base
+
+
+def test_resolve_effective_user_data_dir_empty_base_returns_empty(tmp_path) -> None:
+    assert (
+        notifier._resolve_effective_user_data_dir(
+            "https://www.twitch.tv/abc", "", per_channel=True
+        )
+        == ""
+    )
+
+
+def test_slugify_channel_strips_unsafe_characters() -> None:
+    assert notifier._slugify_channel("hello/world\\!@#") == "hello_world"
+
+
+def test_open_with_browser_settings_uses_per_channel_subdir(
+    monkeypatch, tmp_path
+) -> None:
+    """End-to-end: subprocess.Popen should see the per-channel path."""
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: False)
+
+    base = tmp_path / "browser_profile"
+    captured_args: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):  # noqa: D401
+            captured_args.append(list(args))
+
+    monkeypatch.setattr(notifier.subprocess, "Popen", FakePopen)
+
+    assert notifier._open_with_browser_settings(
+        "https://www.twitch.tv/Kaicenat",
+        {
+            "enabled": True,
+            "browser_path": "chrome",
+            "new_window": True,
+            "app_mode": True,
+            "apply_geometry": True,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+            "minimized": False,
+            "user_data_dir": str(base),
+            "per_channel_profile": True,
+        },
+    )
+
+    assert len(captured_args) == 1
+    flat = captured_args[0]
+    user_data_flag = next(a for a in flat if a.startswith("--user-data-dir="))
+    expected_subdir = str(base / "twitch_kaicenat")
+    assert user_data_flag == f"--user-data-dir={expected_subdir}"
+    assert "--app=https://www.twitch.tv/Kaicenat" in flat
+    # Chromium hygiene flags should accompany an isolated profile launch.
+    assert "--no-first-run" in flat
+    assert "--no-default-browser-check" in flat
+    # The per-channel sub-folder must be created so Chrome doesn't have to.
+    assert (base / "twitch_kaicenat").is_dir()
+
+
+def test_open_with_browser_settings_per_channel_off_uses_base_dir(
+    monkeypatch, tmp_path
+) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: False)
+
+    base = tmp_path / "browser_profile"
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        notifier.subprocess, "Popen", lambda args, **kw: captured.append(list(args))
+    )
+
+    notifier._open_with_browser_settings(
+        "https://www.twitch.tv/Kaicenat",
+        {
+            "enabled": True,
+            "browser_path": "chrome",
+            "new_window": True,
+            "user_data_dir": str(base),
+            "per_channel_profile": False,
+        },
+    )
+    flat = captured[0]
+    assert f"--user-data-dir={base}" in flat
+    assert not any("twitch_kaicenat" in a for a in flat)
+
+
+def test_build_browser_args_chromium_no_first_run_flags(monkeypatch) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+    args = notifier._build_browser_args(
+        "https://www.twitch.tv/x",
+        {
+            "browser_path": "chrome",
+            "new_window": True,
+            "app_mode": True,
+            "apply_geometry": True,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+            "user_data_dir": "/tmp/p",
+        },
+    )
+    assert "--no-first-run" in args
+    assert "--no-default-browser-check" in args
+
+
+def test_build_browser_args_chromium_no_first_run_only_with_profile(monkeypatch) -> None:
+    """Without a profile path, we should NOT add the no-first-run flags
+    (they would unnecessarily change the user's main browser behaviour)."""
+    _stub_browser_resolution(monkeypatch, "chrome")
+    args = notifier._build_browser_args(
+        "https://www.twitch.tv/x",
+        {
+            "browser_path": "chrome",
+            "new_window": True,
+            "app_mode": False,
+            "apply_geometry": True,
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 720,
+            "user_data_dir": "",
+        },
+    )
+    assert "--no-first-run" not in args
+    assert "--no-default-browser-check" not in args
 
 
 def test_configure_user32_signatures_sets_argtypes() -> None:
