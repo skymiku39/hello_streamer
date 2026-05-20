@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 from stream_monitor import base_dir
+from stream_monitor import i18n
 
 DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     "enabled": False,
@@ -51,6 +52,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "run_on_startup": False,
     "minimize_to_tray": True,
     "window_geometry": None,
+    "language": i18n.DEFAULT_LANGUAGE,
     "browser_settings": deepcopy(DEFAULT_BROWSER_SETTINGS),
 }
 
@@ -177,6 +179,12 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     window_geometry = config.get("window_geometry")
     if isinstance(window_geometry, str) and window_geometry.strip():
         normalized["window_geometry"] = window_geometry
+
+    language = config.get("language")
+    if isinstance(language, str) and language in i18n.LANGUAGE_CODES:
+        normalized["language"] = language
+    else:
+        normalized["language"] = i18n.DEFAULT_LANGUAGE
 
     normalized["browser_settings"] = _normalize_browser_settings(
         config.get("browser_settings")

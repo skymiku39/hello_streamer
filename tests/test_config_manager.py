@@ -133,6 +133,7 @@ def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
         "run_on_startup": True,
         "minimize_to_tray": False,
         "window_geometry": "720x520+10+10",
+        "language": "zh_TW",
         "browser_settings": config_manager.DEFAULT_BROWSER_SETTINGS,
     }
 

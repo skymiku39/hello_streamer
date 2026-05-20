@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from stream_monitor.fetcher.base import StreamInfo
+from stream_monitor.i18n import tr
 from stream_monitor.url_parser import parse_url
 
 logger = logging.getLogger(__name__)
@@ -957,15 +958,34 @@ def _build_toast_text(info: StreamInfo) -> tuple[str, str]:
     status = info.stream_status or "live"
 
     if status == "upcoming":
-        title = f"\U0001f4c5 {channel_name} 已建立待機室 [{platform_display}]"
+        title = tr(
+            "notify.upcoming.title",
+            channel_name=channel_name,
+            platform_display=platform_display,
+        )
         time_str = _format_scheduled_start(info.scheduled_start)
-        body = f"預計開播：{time_str}" if time_str else (info.title or "即將開播")
+        if time_str:
+            body = tr("notify.upcoming.body.scheduled", time_str=time_str)
+        else:
+            body = info.title or tr("notify.upcoming.body.default")
     elif status == "video":
-        title = f"\U0001f3ac {channel_name} 上傳了新影片 [{platform_display}]"
-        body = info.title or "新影片"
+        title = tr(
+            "notify.video.title",
+            channel_name=channel_name,
+            platform_display=platform_display,
+        )
+        body = info.title or tr("notify.video.body.default")
     else:
-        title = f"\U0001f534 {channel_name} 開播了！ [{platform_display}]"
-        body = info.title or f"{channel_name} is now live on {info.platform}"
+        title = tr(
+            "notify.live.title",
+            channel_name=channel_name,
+            platform_display=platform_display,
+        )
+        body = info.title or tr(
+            "notify.live.body.default",
+            channel_name=channel_name,
+            platform=info.platform,
+        )
 
     return title, body
 
@@ -987,7 +1007,7 @@ def _toast_windows(info: StreamInfo, with_open_button: bool = True) -> None:
         toast.set_audio("ms-winsoundevent:Notification.Default", loop=False)
 
         if with_open_button:
-            toast.add_actions(label="立即觀看", launch=info.url)
+            toast.add_actions(label=tr("notify.watch_now"), launch=info.url)
 
         toast.show()
     except Exception:

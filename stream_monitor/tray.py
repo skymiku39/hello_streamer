@@ -9,6 +9,9 @@ from typing import Callable
 
 from PIL import Image, ImageDraw, ImageFont
 
+from stream_monitor import i18n
+from stream_monitor.i18n import tr
+
 logger = logging.getLogger(__name__)
 
 _ICON_SIZE = 64
@@ -77,6 +80,10 @@ class TrayIcon:
         )
         self._icon = None
         self._thread: threading.Thread | None = None
+        # Track the *key* (not the resolved string) for the current tooltip so
+        # we can re-render it when the active language changes.
+        self._tooltip_key: str = "tray.tooltip.default"
+        self._unsub_i18n: Callable[[], None] | None = None
 
     def start(self) -> None:
         import pystray
@@ -87,21 +94,21 @@ class TrayIcon:
         def _trigger_text(_item: MenuItem) -> str:
             mode = self._get_mode()
             if mode == "trigger":
-                return "✓ 監聽+觸發中"
-            return "開始監聽+觸發"
+                return tr("tray.trigger_active")
+            return tr("tray.start_trigger")
 
         def _watch_text(_item: MenuItem) -> str:
             mode = self._get_mode()
             if mode == "watch":
-                return "✓ 只監測中"
-            return "切換為只監測"
+                return tr("tray.watch_active")
+            return tr("tray.start_watch")
 
         def _stop_text(_item: MenuItem) -> str:
             mode = self._get_mode()
-            return "已停止" if mode == "idle" else "停止監聽"
+            return tr("tray.stopped") if mode == "idle" else tr("tray.stop")
 
         menu_items = [
-            MenuItem("顯示主畫面", lambda: self._on_show(), default=True),
+            MenuItem(lambda _i: tr("tray.show"), lambda: self._on_show(), default=True),
             pystray.Menu.SEPARATOR,
             MenuItem(_trigger_text, lambda: self._on_toggle_monitor()),
         ]
@@ -121,7 +128,7 @@ class TrayIcon:
         menu_items.extend(
             [
                 pystray.Menu.SEPARATOR,
-                MenuItem("完全退出", lambda: self._on_quit()),
+                MenuItem(lambda _i: tr("tray.quit"), lambda: self._on_quit()),
             ]
         )
 
@@ -130,14 +137,35 @@ class TrayIcon:
         self._icon = pystray.Icon(
             name="HelloStreamer",
             icon=image,
-            title="哈嘍主播  Hello Streamer",
+            title=tr(self._tooltip_key),
             menu=menu,
         )
+
+        self._unsub_i18n = i18n.subscribe(self._on_language_changed)
 
         self._thread = threading.Thread(target=self._icon.run, daemon=True)
         self._thread.start()
 
+    def _on_language_changed(self) -> None:
+        """Refresh tooltip + menu when the language switches at runtime."""
+        if not self._icon:
+            return
+        try:
+            self._icon.title = tr(self._tooltip_key)
+            # pystray re-evaluates callable labels each time the menu is
+            # shown, so update_menu() forces a redraw of the static items
+            # (show / quit) and any cached label state.
+            self._icon.update_menu()
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to refresh tray icon for language change")
+
     def stop(self) -> None:
+        if self._unsub_i18n:
+            try:
+                self._unsub_i18n()
+            except Exception:  # noqa: BLE001
+                pass
+            self._unsub_i18n = None
         if self._icon:
             try:
                 self._icon.stop()
@@ -146,5 +174,13 @@ class TrayIcon:
             self._icon = None
 
     def update_tooltip(self, text: str) -> None:
+        """Set the tray tooltip to a literal (non-translated) string."""
+        self._tooltip_key = "tray.tooltip.default"  # marker: literal in use
         if self._icon:
             self._icon.title = text
+
+    def update_tooltip_key(self, key: str) -> None:
+        """Set the tray tooltip via an i18n key (auto-updates on lang change)."""
+        self._tooltip_key = key
+        if self._icon:
+            self._icon.title = tr(key)
