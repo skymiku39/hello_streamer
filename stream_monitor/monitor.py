@@ -43,6 +43,12 @@ class ChannelEntry:
     platform: str
     name: str
     enabled: bool = True
+    # monitor_only = True ⇒ the polling thread should still observe this
+    # channel (status updates, "LIVE" labels in the UI) but downstream
+    # action dispatch (notifications, opening the browser, close_on_offline)
+    # must be suppressed. The flag is carried on the entry so callbacks can
+    # easily see it without re-resolving the channel via config_manager.
+    monitor_only: bool = False
 
     @property
     def key(self) -> str:
@@ -136,6 +142,7 @@ class Monitor:
                 platform=ch["platform"],
                 name=ch["name"],
                 enabled=ch.get("enabled", True),
+                monitor_only=bool(ch.get("monitor_only", False)),
             )
             for ch in channels
         ]
@@ -186,6 +193,7 @@ class Monitor:
                     platform=ch["platform"],
                     name=ch["name"],
                     enabled=ch.get("enabled", True),
+                    monitor_only=bool(ch.get("monitor_only", False)),
                 )
                 for ch in channels
             ]

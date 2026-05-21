@@ -1684,6 +1684,29 @@ class ChannelRow(ctk.CTkFrame):
         )
         self.toggle_btn.pack(side="right", padx=(0, 4), pady=8)
 
+        # Monitor-only ("eye") button. Sits next to the pause/resume toggle.
+        # When enabled, the row keeps polling and updating the UI but the
+        # app suppresses notifications / browser open / close_on_offline for
+        # this channel. Coupled to the pause/resume toggle:
+        #   • clicking the eye while paused → unpauses straight into monitor-only
+        #   • clicking the eye while triggering → switches to monitor-only
+        #   • clicking the eye while monitor-only → switches back to triggering
+        #   • clicking pause/resume always clears monitor-only (resume = full)
+        self.monitor_only_btn = ctk.CTkButton(
+            self,
+            text="👁",
+            width=30,
+            height=30,
+            corner_radius=6,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#3c4566",
+            hover_color="#243052",
+            font=_font(13),
+            command=self._on_monitor_only_click,
+        )
+        self.monitor_only_btn.pack(side="right", padx=(0, 4), pady=8)
+
         self.link_btn = ctk.CTkButton(
             self,
             text="🔗",
@@ -1702,6 +1725,7 @@ class ChannelRow(ctk.CTkFrame):
         # plain _tooltip and are rebuilt by _retranslate_dynamic_tips below.
         self._link_tip = _tooltip(self.link_btn, tr("tooltip.row.link.default"))
         self._toggle_tip = _tooltip(self.toggle_btn, "")
+        self._monitor_only_tip = _tooltip(self.monitor_only_btn, "")
         _tooltip_tr(self.up_btn, "tooltip.row.up")
         _tooltip_tr(self.down_btn, "tooltip.row.down")
         _tooltip_tr(self.delete_btn, "tooltip.row.delete")
@@ -1728,8 +1752,10 @@ class ChannelRow(ctk.CTkFrame):
     def _retranslate_dynamic_text(self) -> None:
         # Status label (non-static rows) — _render_status_visuals rebuilds it.
         self._render_status_visuals()
-        # The toggle button text is icon-only but its tooltip needs re-text.
+        # The toggle / monitor-only buttons are icon-only but the tooltips
+        # they own are state-driven, so re-text both.
         self._refresh_toggle_tip()
+        self._refresh_monitor_only_tip()
         # Channel ID prefix ("ID: ..." / "ID：..." etc.) follows language too.
         self._refresh_name_labels()
         # If currently paused / idle, the status label string is static text
@@ -1789,14 +1815,51 @@ class ChannelRow(ctk.CTkFrame):
         else:
             self._toggle_tip.set_text(key="tooltip.row.toggle.resume")
 
+    def _refresh_monitor_only_tip(self) -> None:
+        if not hasattr(self, "_monitor_only_tip"):
+            return
+        if self.channel.get("monitor_only", False) and self.channel.get(
+            "enabled", True
+        ):
+            self._monitor_only_tip.set_text(key="tooltip.row.monitor_only.disable")
+        else:
+            self._monitor_only_tip.set_text(key="tooltip.row.monitor_only.enable")
+
     def _on_toggle_click(self) -> None:
         enabled = not self.channel.get("enabled", True)
         self.channel["enabled"] = enabled
+        # Resume always restores the "full triggering" mode — if the user
+        # wanted to come back into monitor-only, they'd click the eye instead.
+        if enabled:
+            self.channel["monitor_only"] = False
+        else:
+            # Pausing clears monitor-only too, so the next resume is clean.
+            self.channel["monitor_only"] = False
+        self._apply_enabled_visual()
+        self._on_toggle_enabled()
+
+    def _on_monitor_only_click(self) -> None:
+        # Toggling the eye always implies the channel must be enabled — if
+        # the user clicks it from a paused state, they're effectively
+        # un-pausing into monitor-only mode.
+        currently_monitor_only = (
+            self.channel.get("enabled", True)
+            and self.channel.get("monitor_only", False)
+        )
+        if currently_monitor_only:
+            # Eye-off → back to full triggering (still enabled).
+            self.channel["enabled"] = True
+            self.channel["monitor_only"] = False
+        else:
+            # Eye-on → enable monitor-only (force enabled).
+            self.channel["enabled"] = True
+            self.channel["monitor_only"] = True
         self._apply_enabled_visual()
         self._on_toggle_enabled()
 
     def _apply_enabled_visual(self) -> None:
         enabled = self.channel.get("enabled", True)
+        monitor_only = bool(self.channel.get("monitor_only", False)) and enabled
         self._active_url = ""
         self._status_title = ""
         self._status_state = None
@@ -1831,9 +1894,39 @@ class ChannelRow(ctk.CTkFrame):
             )
             self.toggle_btn.configure(text="▶")
             self._set_link_tip_key("tooltip.row.link.paused")
+        self._apply_monitor_only_visual(monitor_only, enabled)
         self._refresh_toggle_tip()
+        self._refresh_monitor_only_tip()
         if hasattr(self, "_status_tip"):
             self._status_tip.set_text("")
+
+    def _apply_monitor_only_visual(self, monitor_only: bool, enabled: bool) -> None:
+        """Color the eye button so it stands out when monitor-only is active."""
+        if not hasattr(self, "monitor_only_btn"):
+            return
+        if monitor_only:
+            self.monitor_only_btn.configure(
+                fg_color="#1565c0",
+                text_color="white",
+                border_color="#1565c0",
+                hover_color="#1976d2",
+            )
+        elif enabled:
+            self.monitor_only_btn.configure(
+                fg_color="transparent",
+                text_color=("gray14", "gray86"),
+                border_color="#3c4566",
+                hover_color="#243052",
+            )
+        else:
+            # Paused — keep the button reachable (the user can click it to
+            # jump straight into monitor-only) but visually dim.
+            self.monitor_only_btn.configure(
+                fg_color="transparent",
+                text_color=_CLR_TEXT_DISABLED,
+                border_color="#2a2a3a",
+                hover_color="#243052",
+            )
 
     def set_status(self, status: bool | str | ChannelStatus | None) -> None:
         if not self.channel.get("enabled", True):
@@ -2642,6 +2735,13 @@ class App(ctk.CTk):
             if not trigger_enabled:
                 continue
 
+            # Monitor-only channels: keep the LIVE label / status_update flow
+            # but suppress every downstream side-effect (toast, browser open,
+            # stop/exit-after-trigger). The user explicitly asked us to look
+            # but not act on this channel.
+            if getattr(entry, "monitor_only", False):
+                continue
+
             action = action_for_stream_status(configured_action, info)
             if action is None:
                 continue
@@ -2662,6 +2762,12 @@ class App(ctk.CTk):
 
         if offline_events and browser_settings.get("close_on_offline"):
             for entry, offline_info in offline_events:
+                # close_on_offline must respect monitor-only too — we never
+                # opened a window for this channel, so we shouldn't try to
+                # hunt for one to close (which could match an unrelated tab
+                # the user opened themselves).
+                if getattr(entry, "monitor_only", False):
+                    continue
                 self._handle_channel_offline(entry, offline_info)
 
         if should_stop:

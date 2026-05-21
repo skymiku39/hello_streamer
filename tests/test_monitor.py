@@ -1223,6 +1223,43 @@ def test_fallback_offline_clears_all_tidus_payloads(monkeypatch, tmp_path) -> No
 # P3: A single-poll live dropout must not flip the UI to UPCOMING (or fire
 # a phantom UPCOMING notification path's last_status side-effects).
 # ─────────────────────────────────────────────
+def test_channel_entry_carries_monitor_only_flag(tmp_path) -> None:
+    """monitor_only on the channel dict propagates onto ChannelEntry."""
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[
+            {"platform": "twitch", "name": "a", "monitor_only": True},
+            {"platform": "twitch", "name": "b"},  # default False
+            {"platform": "twitch", "name": "c", "monitor_only": False},
+        ],
+        db=db,
+    )
+    entries = {e.key: e for e in monitor._entries}
+    assert entries["twitch:a"].monitor_only is True
+    assert entries["twitch:b"].monitor_only is False
+    assert entries["twitch:c"].monitor_only is False
+    db.close()
+
+
+def test_update_channels_refreshes_monitor_only_flag(tmp_path) -> None:
+    """update_channels swaps in the new monitor_only flag, not the old one."""
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "a", "monitor_only": False}],
+        db=db,
+    )
+    assert monitor._entries[0].monitor_only is False
+
+    monitor.update_channels(
+        [{"platform": "twitch", "name": "a", "monitor_only": True}]
+    )
+    assert monitor._entries[0].monitor_only is True
+
+    monitor.update_channels([{"platform": "twitch", "name": "a"}])
+    assert monitor._entries[0].monitor_only is False
+    db.close()
+
+
 def test_youtube_single_live_dropout_with_upcoming_keeps_live_status(
     monkeypatch, tmp_path
 ) -> None:

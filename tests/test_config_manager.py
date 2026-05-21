@@ -96,6 +96,32 @@ def test_load_preserves_enabled_field(tmp_path, monkeypatch) -> None:
     assert "enabled" not in config["channels"][2]
 
 
+def test_load_preserves_monitor_only_field(tmp_path, monkeypatch) -> None:
+    """monitor_only must survive round-trip through normalize without coercion."""
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "channels": [
+                    {"platform": "twitch", "name": "a", "monitor_only": True},
+                    {"platform": "twitch", "name": "b", "monitor_only": False},
+                    {"platform": "twitch", "name": "c"},
+                    # Non-bool values must be discarded silently.
+                    {"platform": "twitch", "name": "d", "monitor_only": "yes"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    config = config_manager.load()
+    assert config["channels"][0]["monitor_only"] is True
+    assert config["channels"][1]["monitor_only"] is False
+    assert "monitor_only" not in config["channels"][2]
+    assert "monitor_only" not in config["channels"][3]
+
+
 def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
     path = tmp_path / "nested" / "config.json"
     _use_config_path(monkeypatch, path)

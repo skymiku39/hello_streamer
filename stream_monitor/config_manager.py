@@ -96,6 +96,12 @@ def _normalize_channels(value: Any) -> list[dict[str, str]]:
             enabled = item.get("enabled")
             if isinstance(enabled, bool):
                 normalized["enabled"] = enabled
+            # monitor_only = True 表示「只查詢狀態，不觸發通知/開瀏覽器/關窗」。
+            # 等於 enabled=True 的子模式；enabled=False 時這個欄位實質上無意義
+            # 但我們仍保留它，這樣使用者從暫停切回監聽時能恢復先前的偏好。
+            monitor_only = item.get("monitor_only")
+            if isinstance(monitor_only, bool):
+                normalized["monitor_only"] = monitor_only
             channels.append(normalized)
 
     return channels
