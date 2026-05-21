@@ -291,6 +291,11 @@ def test_open_url_uses_browser_settings_when_enabled(monkeypatch) -> None:
         "width": 1024,
         "height": 768,
         "minimized": False,
+        # Opt out of the auto-fallback that would otherwise inject
+        # ``--user-data-dir=<base_dir>/browser_profile`` for per-channel
+        # isolation. This test predates the fallback and wants to verify
+        # the *minimal* CLI surface without any profile-related flags.
+        "per_channel_profile": False,
     }
 
     assert notifier.open_url("https://example.com", settings) is True
@@ -1150,13 +1155,58 @@ def test_resolve_effective_user_data_dir_unknown_url_falls_back(tmp_path) -> Non
     assert result == base
 
 
-def test_resolve_effective_user_data_dir_empty_base_returns_empty(tmp_path) -> None:
+def test_resolve_effective_user_data_dir_empty_base_per_channel_off_returns_empty(
+    tmp_path,
+) -> None:
+    """No fallback when the caller explicitly disabled per-channel mode.
+
+    Without per-channel isolation the user has clearly opted out of the
+    dedicated-profile machinery, so respecting ``""`` keeps Chrome on its
+    default profile.
+    """
     assert (
         notifier._resolve_effective_user_data_dir(
-            "https://www.twitch.tv/abc", "", per_channel=True
+            "https://www.twitch.tv/abc", "", per_channel=False
         )
         == ""
     )
+
+
+def test_resolve_effective_user_data_dir_empty_base_per_channel_on_falls_back(
+    tmp_path,
+) -> None:
+    """``per_channel=True`` + empty base activates the runtime safety net.
+
+    The legacy config pitfall where ``per_channel_profile`` is enabled but
+    ``user_data_dir`` is left blank used to silently disable per-channel
+    isolation and cause Chrome's master process to merge unrelated streams
+    into the same window. The fallback should now produce a real path under
+    ``<app base_dir>/browser_profile/<platform>_<channel>``.
+    """
+    result = notifier._resolve_effective_user_data_dir(
+        "https://www.twitch.tv/abc", "", per_channel=True
+    )
+    assert result, "fallback should resolve to a non-empty path"
+    assert result.endswith("twitch_abc")
+    # The parent folder name is always ``browser_profile`` regardless of
+    # where the user installed the app.
+    assert Path(result).parent.name == "browser_profile"
+
+
+def test_resolve_effective_user_data_dir_empty_base_per_channel_on_unknown_url(
+    tmp_path,
+) -> None:
+    """Fallback path drops the channel subdir when the URL is not parseable.
+
+    Mirrors ``test_resolve_effective_user_data_dir_unknown_url_falls_back`` but
+    with the new auto-fallback in effect, the result should still be the
+    fallback base (``<app base_dir>/browser_profile``) — never an empty string.
+    """
+    result = notifier._resolve_effective_user_data_dir(
+        "https://example.com/whatever", "", per_channel=True
+    )
+    assert result, "fallback should resolve to a non-empty path"
+    assert Path(result).name == "browser_profile"
 
 
 def test_slugify_channel_strips_unsafe_characters() -> None:

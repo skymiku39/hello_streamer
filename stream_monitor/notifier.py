@@ -970,6 +970,22 @@ def _derive_channel_profile_subdir(url: str) -> str | None:
     return f"{_slugify_channel(parsed.platform)}_{_slugify_channel(parsed.name)}"
 
 
+def _default_browser_profile_root() -> str:
+    """Return ``<app base_dir>/browser_profile`` as the runtime auto-fallback.
+
+    Used by :func:`_resolve_effective_user_data_dir` when the user enabled
+    ``per_channel_profile`` but left ``user_data_dir`` empty — that combination
+    is a legacy config pitfall that silently disables every isolation flag and
+    leads to cross-window HWND contamination under Chrome's master process.
+    """
+    try:
+        from stream_monitor import base_dir as _app_base_dir
+
+        return str(_app_base_dir() / "browser_profile")
+    except Exception:  # noqa: BLE001 — defensive; never block launch on this.
+        return ""
+
+
 def _resolve_effective_user_data_dir(
     url: str, base_dir: str, per_channel: bool
 ) -> str:
@@ -981,10 +997,22 @@ def _resolve_effective_user_data_dir(
     --app= / --window-position survive across multiple stream triggers,
     because Chrome's master process drops those flags on every IPC-forwarded
     launch.
+
+    Safety net: if ``per_channel`` is True but ``base_dir`` is empty (legacy
+    config pitfall — UI prior to v0.6.x could leave that combination after a
+    manual edit), we fall back to ``<app base_dir>/browser_profile`` so each
+    channel still gets its own master process. Without this fallback the
+    user's HWND tracker silently maps multiple channels onto whatever window
+    Chrome chooses to share, and the off-topic prune pass mistakenly closes
+    live-stream windows whose visible title belongs to another channel.
     """
     base_dir = (base_dir or "").strip()
     if not base_dir:
-        return ""
+        if not per_channel:
+            return ""
+        base_dir = _default_browser_profile_root()
+        if not base_dir:
+            return ""
     if not per_channel:
         return base_dir
 
