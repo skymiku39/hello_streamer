@@ -244,6 +244,48 @@ def test_load_close_on_offline_defaults_to_false(tmp_path, monkeypatch) -> None:
     )
 
 
+def test_load_normalizes_close_on_stop(tmp_path, monkeypatch) -> None:
+    import json
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"browser_settings": {"close_on_stop": True}}),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    assert config_manager.load()["browser_settings"]["close_on_stop"] is True
+
+
+def test_load_close_on_stop_defaults_to_false(tmp_path, monkeypatch) -> None:
+    _use_config_path(monkeypatch, tmp_path / "config.json")
+    assert (
+        config_manager.load()["browser_settings"]["close_on_stop"] is False
+    )
+
+
+def test_load_normalizes_close_off_topic_pages(tmp_path, monkeypatch) -> None:
+    import json
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"browser_settings": {"close_off_topic_pages": True}}),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    assert (
+        config_manager.load()["browser_settings"]["close_off_topic_pages"] is True
+    )
+
+
+def test_load_close_off_topic_pages_defaults_to_false(tmp_path, monkeypatch) -> None:
+    _use_config_path(monkeypatch, tmp_path / "config.json")
+    assert (
+        config_manager.load()["browser_settings"]["close_off_topic_pages"] is False
+    )
+
+
 def test_load_normalizes_hide_from_taskbar(tmp_path, monkeypatch) -> None:
     import json
 

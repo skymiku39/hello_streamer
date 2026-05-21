@@ -37,6 +37,18 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     # opened on the going-live edge once the channel transitions back to
     # offline. Default off so users opt-in deliberately.
     "close_on_offline": False,
+    # When True, every browser window this app opened is closed (WM_CLOSE)
+    # when the user explicitly hits the "Stop" button. Does NOT fire on the
+    # auto-stop produced by ``open_and_stop`` — that just opened a player
+    # window the user wants to keep watching. Default off so existing users
+    # don't lose windows after upgrading.
+    "close_on_stop": False,
+    # When True, the app periodically inspects each tracked HWND's title and
+    # closes any window whose title no longer matches the channel it was
+    # opened for. Catches the "redirect to a billing page" / "user clicked
+    # back into the homepage" cases where the original stream URL is no
+    # longer being watched. Default off so users opt-in deliberately.
+    "close_off_topic_pages": False,
     # When True, the post-launch Win32 worker flips WS_EX_TOOLWINDOW on the
     # spawned browser window so it disappears from the taskbar and Alt+Tab.
     # Off by default — most users still want a taskbar slot to switch to.
@@ -137,6 +149,8 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
         "minimized",
         "per_channel_profile",
         "close_on_offline",
+        "close_on_stop",
+        "close_off_topic_pages",
         "hide_from_taskbar",
     ):
         raw = value.get(bool_key)

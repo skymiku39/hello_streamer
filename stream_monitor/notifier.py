@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import webbrowser
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,6 +31,55 @@ _WIN32_WINDOW_CLASS_BY_FAMILY = {
     "firefox": "MozillaWindowClass",
 }
 
+# Window titles that mean "this window is the browser's regular UI, not a
+# stream player we just spawned". Pure substring/equality check (lower-cased)
+# is enough — these strings are stable across browser updates and rarely
+# appear inside a real stream title. Multilingual entries cover Chrome/Edge
+# new-tab translations on Traditional Chinese / Simplified Chinese /
+# Japanese / Korean / English builds.
+_NOISE_WINDOW_TITLE_SUBSTRINGS: tuple[str, ...] = (
+    "new tab",
+    "新分頁",
+    "新分页",
+    "新しいタブ",
+    "새 탭",
+    "new window",
+)
+
+# Browser-name suffixes — used to detect "blank chrome" windows like
+# "Google Chrome" or "Microsoft Edge" with no actual page title.
+_BROWSER_NAME_TITLES: tuple[str, ...] = (
+    "google chrome",
+    "microsoft edge",
+    "brave",
+    "vivaldi",
+    "opera",
+    "firefox",
+    "mozilla firefox",
+)
+
+
+def _is_noise_window_title(title: str) -> bool:
+    """Return True if *title* looks like a stock browser/blank window.
+
+    Stops the post-launch HWND tracker (and the off-topic prune pass) from
+    mistaking the user's regular "Google Chrome" or "New Tab" window for the
+    App Mode stream window we just opened.
+    """
+    if not title:
+        # Empty title — _enum_browser_hwnds already drops these, but keep
+        # the guard so direct callers (off-topic prune) also catch them.
+        return True
+    low = title.strip().lower()
+    if not low:
+        return True
+    if low in _BROWSER_NAME_TITLES:
+        return True
+    for noise in _NOISE_WINDOW_TITLE_SUBSTRINGS:
+        if noise in low:
+            return True
+    return False
+
 _SW_HIDE = 0
 _SW_SHOW = 5
 _SW_RESTORE = 9          # un-maximise / un-minimise before repositioning
@@ -43,12 +93,33 @@ _WS_EX_APPWINDOW = 0x00040000
 _MINIMIZE_POLL_INTERVAL_S = 0.15
 _MINIMIZE_DEADLINE_S = 8.0  # generous: Chrome cold-start can take 2-3s
 
-# url -> set of HWNDs we spawned for that URL. Populated by the post-launch
-# window manager and consumed by close_browser_window_for_url so that "stream
-# went offline" events can shut the right tab without nuking unrelated
-# browser windows. Module-global on purpose: multiple App instances would
-# step on each other anyway because Windows HWNDs are process-global.
-_TRACKED_HWNDS_BY_URL: dict[str, set[int]] = {}
+@dataclass
+class _TrackedWindow:
+    """Bookkeeping for a single HWND we opened.
+
+    Attributes:
+        hwnd: The Win32 handle for the browser window.
+        opened_at: ``time.monotonic()`` snapshot of when we registered the
+            HWND. Used by the off-topic prune pass to skip windows that
+            haven't finished loading yet (title might still be "Loading…").
+        keywords: Strings the legit stream window's title is expected to
+            contain (channel display_name, channel slug, stream title…).
+            If a tracked HWND's title later loses every keyword, the prune
+            pass considers it redirected/navigated-away and closes it.
+    """
+
+    hwnd: int
+    opened_at: float = field(default_factory=time.monotonic)
+    keywords: tuple[str, ...] = ()
+
+
+# url -> list of TrackedWindow entries for that URL. Populated by the
+# post-launch window manager and consumed by close_browser_window_for_url
+# (and prune_off_topic_tracked_windows) so we close the right tabs without
+# nuking unrelated browser windows. Module-global on purpose: multiple App
+# instances would step on each other anyway because Windows HWNDs are
+# process-global.
+_TRACKED_WINDOWS_BY_URL: dict[str, list[_TrackedWindow]] = {}
 _TRACKED_HWNDS_LOCK = threading.Lock()
 
 
@@ -202,6 +273,28 @@ def _enum_browser_hwnds(class_name: str) -> set[int]:
     return hwnds
 
 
+def _get_window_title(user32: Any, hwnd: int) -> str:
+    """Return the visible title of *hwnd*, or "" if unavailable.
+
+    Wraps GetWindowTextW with the length-then-read dance so we don't truncate
+    long stream titles. Falls back to "" silently on any ctypes error.
+    """
+    import ctypes
+
+    try:
+        length = int(user32.GetWindowTextLengthW(hwnd))
+    except OSError:
+        return ""
+    if length <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(length + 1)
+    try:
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+    except OSError:
+        return ""
+    return buf.value or ""
+
+
 def _configure_user32_signatures(user32: Any) -> None:
     """Declare explicit argtypes/restype on user32 calls we use.
 
@@ -273,6 +366,7 @@ def _apply_new_browser_window_settings_async(
     apply_geometry: bool = True,
     deadline_s: float = _MINIMIZE_DEADLINE_S,
     track_for_url: str = "",
+    track_keywords: tuple[str, ...] = (),
 ) -> threading.Thread | None:
     """Spawn a daemon thread that configures any *new* HWND of *class_name*.
 
@@ -318,6 +412,28 @@ def _apply_new_browser_window_settings_async(
             current = _enum_browser_hwnds(class_name)
             new_hwnds = current - baseline - managed
             for hwnd in new_hwnds:
+                # ── B: noise-window guard ──────────────────────────────────
+                # If the user happened to open a new "Google Chrome" or
+                # "New Tab" window while we were waiting for the App Mode
+                # window to appear, that HWND would show up in `new_hwnds`
+                # too. Re-check the title here and skip anything that looks
+                # like the stock browser chrome rather than our actual
+                # stream window — better to apply geometry to nothing than
+                # to nuke the user's regular browsing session.
+                try:
+                    current_title = _get_window_title(user32, hwnd)
+                except Exception:
+                    current_title = ""
+                if _is_noise_window_title(current_title):
+                    logger.debug(
+                        "Skipping HWND=%s during post-launch tracking: "
+                        "title %r looks like the user's regular browser window",
+                        hwnd,
+                        current_title,
+                    )
+                    # Don't add to `managed` — leave room for the real window
+                    # to show up in a later poll.
+                    continue
                 try:
                     if apply_geometry:
                         # Chrome may open the new window in a "maximised" state,
@@ -345,7 +461,9 @@ def _apply_new_browser_window_settings_async(
                         user32.ShowWindow(hwnd, _SW_SHOWMINNOACTIVE)
                     managed.add(hwnd)
                     if track_for_url:
-                        _register_tracked_hwnd(track_for_url, hwnd)
+                        _register_tracked_hwnd(
+                            track_for_url, hwnd, keywords=track_keywords
+                        )
                     logger.debug(
                         "Managed new browser window HWND=%s geometry=%s minimized=%s hide_taskbar=%s url=%s",
                         hwnd,
@@ -440,23 +558,92 @@ def _hide_window_from_taskbar(user32: Any, hwnd: int) -> bool:
 # ---------------------------------------------------------------------------
 # HWND tracking: register windows we spawn so we can close them later.
 # ---------------------------------------------------------------------------
-def _register_tracked_hwnd(url: str, hwnd: int) -> None:
-    """Remember that we opened HWND for URL — keyed by URL so a later
-    ``close_browser_window_for_url(url)`` knows which window(s) to close."""
+def _normalize_keywords(keywords: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    """Lower-case + dedupe + strip empties; preserves first-seen order."""
+    if not keywords:
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for kw in keywords:
+        if not kw:
+            continue
+        low = kw.strip().lower()
+        if not low or low in seen:
+            continue
+        seen.add(low)
+        out.append(low)
+    return tuple(out)
+
+
+def _register_tracked_hwnd(
+    url: str,
+    hwnd: int,
+    keywords: tuple[str, ...] | list[str] | None = None,
+) -> None:
+    """Remember that we opened HWND for URL.
+
+    *keywords* should contain identifying strings the legit stream window's
+    title is expected to retain (channel display_name, channel slug, stream
+    title). The off-topic prune pass uses them to detect redirects.
+    """
     if not url or not hwnd:
         return
+    norm_keywords = _normalize_keywords(keywords)
     with _TRACKED_HWNDS_LOCK:
-        _TRACKED_HWNDS_BY_URL.setdefault(url, set()).add(int(hwnd))
+        bucket = _TRACKED_WINDOWS_BY_URL.setdefault(url, [])
+        # Avoid duplicate registration for the same HWND under the same URL;
+        # merge keywords if the second registration brings more identifiers.
+        for tracked in bucket:
+            if tracked.hwnd == int(hwnd):
+                if norm_keywords:
+                    merged = _normalize_keywords(
+                        tuple(tracked.keywords) + tuple(norm_keywords)
+                    )
+                    tracked.keywords = merged
+                return
+        bucket.append(
+            _TrackedWindow(
+                hwnd=int(hwnd),
+                opened_at=time.monotonic(),
+                keywords=norm_keywords,
+            )
+        )
 
 
 def _snapshot_tracked_hwnds(url: str) -> set[int]:
+    """Return the raw HWND set for *url* (legacy helper)."""
     with _TRACKED_HWNDS_LOCK:
-        return set(_TRACKED_HWNDS_BY_URL.get(url, set()))
+        return {t.hwnd for t in _TRACKED_WINDOWS_BY_URL.get(url, ())}
+
+
+def _snapshot_tracked_windows(url: str) -> list[_TrackedWindow]:
+    """Return a defensive copy of TrackedWindow entries for *url*."""
+    with _TRACKED_HWNDS_LOCK:
+        return [
+            _TrackedWindow(t.hwnd, t.opened_at, tuple(t.keywords))
+            for t in _TRACKED_WINDOWS_BY_URL.get(url, ())
+        ]
+
+
+def _all_tracked_urls() -> list[str]:
+    with _TRACKED_HWNDS_LOCK:
+        return list(_TRACKED_WINDOWS_BY_URL.keys())
 
 
 def _clear_tracked_hwnds(url: str) -> None:
     with _TRACKED_HWNDS_LOCK:
-        _TRACKED_HWNDS_BY_URL.pop(url, None)
+        _TRACKED_WINDOWS_BY_URL.pop(url, None)
+
+
+def _remove_tracked_hwnd(url: str, hwnd: int) -> None:
+    """Drop a single HWND from URL's tracking bucket (no-op if absent)."""
+    with _TRACKED_HWNDS_LOCK:
+        bucket = _TRACKED_WINDOWS_BY_URL.get(url)
+        if not bucket:
+            return
+        _TRACKED_WINDOWS_BY_URL[url] = [t for t in bucket if t.hwnd != int(hwnd)]
+        if not _TRACKED_WINDOWS_BY_URL[url]:
+            _TRACKED_WINDOWS_BY_URL.pop(url, None)
 
 
 def _enum_visible_hwnds_with_title() -> list[tuple[int, str]]:
@@ -562,6 +749,108 @@ def _find_hwnds_by_title_keyword(keywords: list[str]) -> set[int]:
     return matches
 
 
+def close_all_tracked_windows() -> int:
+    """Close every browser window this app has tracked, across all URLs.
+
+    Used by the "close on Stop" feature so the user can wipe every player
+    window in one action. Returns the count of windows that received a
+    WM_CLOSE. Safe on non-Windows (returns 0).
+
+    Sends WM_CLOSE only — same code path as the [X] button — so the browser
+    can fire ``beforeunload`` handlers and flush state cleanly.
+    """
+    if not _is_windows():
+        return 0
+    closed = 0
+    for url in _all_tracked_urls():
+        for hwnd in _snapshot_tracked_hwnds(url):
+            if _post_close_window(hwnd):
+                closed += 1
+        _clear_tracked_hwnds(url)
+    return closed
+
+
+def prune_off_topic_tracked_windows(
+    *,
+    min_age_s: float = 6.0,
+) -> int:
+    """Close (and untrack) any tracked window whose title no longer matches.
+
+    Iterates every TrackedWindow in the registry and, for each, reads the
+    *current* HWND title. If:
+
+      1. the window has lived past *min_age_s* (so we don't kill it during
+         the initial "Loading…" / "Untitled" phase), AND
+      2. the title now matches a stock browser/blank pattern OR no longer
+         contains any of the keywords we registered with it,
+
+    we send WM_CLOSE and drop it from tracking. Returns the number of
+    windows actually closed. Safe on non-Windows (returns 0).
+
+    Designed to catch the "user got redirected to a billing/login page" or
+    "user clicked Back to the homepage" cases where the window we opened
+    is no longer watching the stream we wanted to track.
+    """
+    if not _is_windows():
+        return 0
+    try:
+        import ctypes
+    except ImportError:
+        return 0
+    try:
+        user32 = ctypes.windll.user32
+    except (AttributeError, OSError):
+        return 0
+    try:
+        _configure_user32_signatures(user32)
+    except Exception:
+        logger.debug("Could not configure user32 signatures", exc_info=True)
+
+    now = time.monotonic()
+    closed = 0
+    for url in _all_tracked_urls():
+        for tracked in _snapshot_tracked_windows(url):
+            hwnd = tracked.hwnd
+            # Phase 1: drop stale HWNDs (window was already closed by the
+            # user / browser crashed / etc.).
+            try:
+                still_alive = bool(user32.IsWindow(hwnd))
+            except OSError:
+                still_alive = False
+            if not still_alive:
+                _remove_tracked_hwnd(url, hwnd)
+                continue
+            # Phase 2: respect the grace period.
+            if (now - tracked.opened_at) < min_age_s:
+                continue
+            # Phase 3: read current title and decide.
+            title = _get_window_title(user32, hwnd)
+            title_low = title.lower()
+            looks_like_browser_chrome = _is_noise_window_title(title)
+            # Off-topic iff (no keyword) OR (registered keywords all gone).
+            if tracked.keywords:
+                has_any_keyword = any(kw in title_low for kw in tracked.keywords)
+            else:
+                # No keywords registered → only browser-chrome titles count
+                # as off-topic. This keeps the feature safe for callers that
+                # never registered keywords (we won't aggressively close
+                # arbitrary tabs we opened).
+                has_any_keyword = not looks_like_browser_chrome
+            if has_any_keyword and not looks_like_browser_chrome:
+                continue
+            # Window has drifted away from the stream we opened it for.
+            if _post_close_window(hwnd):
+                closed += 1
+                logger.info(
+                    "Closed off-topic browser window HWND=%s title=%r url=%s",
+                    hwnd,
+                    title,
+                    url,
+                )
+            _remove_tracked_hwnd(url, hwnd)
+    return closed
+
+
 def close_browser_window_for_url(
     url: str, *, title_keywords: list[str] | None = None
 ) -> int:
@@ -648,23 +937,24 @@ def _resolve_effective_user_data_dir(
     return str(expanded / subdir)
 
 
-def _wants_startup_only_flags(
+def _wants_geometry_flags(
     *,
-    app_mode: bool,
     apply_geometry: bool,
     x: int,
     y: int,
     width: int,
     height: int,
 ) -> bool:
-    """Return True when *any* startup-only browser flag is requested.
+    """Return True when ``--window-position`` / ``--window-size`` would be
+    emitted but Chrome/Edge will likely *silently drop them* because their
+    master process is already running.
 
-    These flags are silently dropped by Chrome/Edge's master process if a
-    browser instance is already running. ``user_data_dir`` is the only
-    reliable escape hatch.
+    Note: ``--app=`` is **not** included here. Empirically, Chrome/Edge still
+    honour ``--app=URL`` when forwarded to an existing master process — what
+    they drop is only the per-launch *geometry* flags. The previous warning
+    that lumped ``--app=`` in with the position/size flags caused users to
+    set ``user_data_dir`` unnecessarily.
     """
-    if app_mode:
-        return True
     if not apply_geometry:
         return False
     if x or y:
@@ -744,19 +1034,24 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
         # Fresh per-channel profiles otherwise pop up Chrome's welcome /
         # "make Chrome default" / signed-out NTP screens, which break App Mode.
         args.extend(["--no-first-run", "--no-default-browser-check"])
-    elif _wants_startup_only_flags(
-        app_mode=app_mode,
+    elif _wants_geometry_flags(
         apply_geometry=apply_geometry,
         x=x,
         y=y,
         width=width,
         height=height,
     ):
-        logger.warning(
-            "Chrome/Edge: --app= / --window-position / --window-size are "
-            "ignored when the browser is already running. Set "
-            "browser_settings.user_data_dir to a folder path to force a "
-            "dedicated profile (App Mode in particular requires this)."
+        # Geometry flags (only) get IPC-dropped by Chrome's master process —
+        # ``--app=`` itself still works fine when the user wants the dedicated
+        # window without committing to a separate profile directory. The
+        # post-launch Win32 worker (_apply_new_browser_window_settings_async)
+        # will fix up window position/size after the fact.
+        logger.info(
+            "Chrome/Edge: --window-position / --window-size are dropped by "
+            "the master process when the browser is already running. "
+            "Geometry will be applied via Win32 after launch instead. "
+            "Set browser_settings.user_data_dir to a folder path if you "
+            "need the CLI flags to take effect at startup."
         )
 
     # Note: minimisation is NOT a CLI flag for Chromium (--start-minimized
@@ -787,7 +1082,12 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
     return args
 
 
-def _open_with_browser_settings(url: str, settings: dict[str, Any]) -> bool:
+def _open_with_browser_settings(
+    url: str,
+    settings: dict[str, Any],
+    *,
+    title_hints: tuple[str, ...] = (),
+) -> bool:
     """Spawn the configured browser with CLI args.
 
     Returns True if ``Popen`` succeeded. On Windows, we capture the current set
@@ -876,12 +1176,18 @@ def _open_with_browser_settings(url: str, settings: dict[str, Any]) -> bool:
             effective_settings,
             apply_geometry=bool(effective_settings.get("apply_geometry", True)),
             track_for_url=url,
+            track_keywords=tuple(title_hints),
         )
 
     return True
 
 
-def open_url(url: str, browser_settings: dict[str, Any] | None = None) -> bool:
+def open_url(
+    url: str,
+    browser_settings: dict[str, Any] | None = None,
+    *,
+    title_hints: tuple[str, ...] | list[str] | None = None,
+) -> bool:
     """Open *url* in the user's browser.
 
     If *browser_settings* is provided and ``enabled`` is true, the URL is
@@ -893,8 +1199,12 @@ def open_url(url: str, browser_settings: dict[str, Any] | None = None) -> bool:
         logger.warning("Cannot open empty URL")
         return False
 
+    hints_tuple = tuple(title_hints or ())
+
     if browser_settings and browser_settings.get("enabled"):
-        if _open_with_browser_settings(url, browser_settings):
+        if _open_with_browser_settings(
+            url, browser_settings, title_hints=hints_tuple
+        ):
             return True
 
     try:
@@ -1035,6 +1345,18 @@ def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
         _toast_linux(info, with_open_button)
 
 
+def _title_hints_from_stream_info(info: StreamInfo) -> tuple[str, ...]:
+    """Derive the keywords the prune pass will look for in window titles.
+
+    We include the channel display_name and the channel slug (so the prune
+    pass survives a re-rendered title that drops one but not the other),
+    plus the stream title itself (most reliable identifier for App Mode
+    windows, which usually show "<stream title>" as the window text).
+    """
+    raw = (info.display_name or "", info.channel or "", info.title or "")
+    return tuple(h for h in raw if h)
+
+
 def open_and_stop(
     info: StreamInfo,
     stop_fn: ActionCallback,
@@ -1042,7 +1364,7 @@ def open_and_stop(
 ) -> None:
     """Open stream URL in browser and stop monitoring."""
     _toast(info, with_open_button=False)
-    open_url(info.url, browser_settings)
+    open_url(info.url, browser_settings, title_hints=_title_hints_from_stream_info(info))
     stop_fn()
 
 
@@ -1052,7 +1374,7 @@ def open_and_keep(
 ) -> None:
     """Open stream URL in browser, keep monitoring other channels."""
     _toast(info, with_open_button=False)
-    open_url(info.url, browser_settings)
+    open_url(info.url, browser_settings, title_hints=_title_hints_from_stream_info(info))
 
 
 def notify_only(info: StreamInfo) -> None:
@@ -1067,7 +1389,7 @@ def open_and_exit(
 ) -> None:
     """Open stream URL in browser, then exit the application."""
     _toast(info, with_open_button=False)
-    open_url(info.url, browser_settings)
+    open_url(info.url, browser_settings, title_hints=_title_hints_from_stream_info(info))
     exit_fn()
 
 

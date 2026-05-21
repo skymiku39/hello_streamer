@@ -27,10 +27,12 @@ from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelEntry, ChannelStatus, Monitor
 from stream_monitor.notifier import (
     action_for_stream_status,
+    close_all_tracked_windows,
     close_browser_window_for_url,
     detect_browser_family,
     execute_action,
     open_url,
+    prune_off_topic_tracked_windows,
 )
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
@@ -816,8 +818,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent: ctk.CTk, current: dict[str, Any]) -> None:
         super().__init__(parent)
         self.title(tr("browser.title"))
-        self.geometry("600x940")
-        self.resizable(False, False)
+        screen_height = max(self.winfo_screenheight(), 640)
+        self.geometry(f"600x{min(760, screen_height - 80)}")
+        self.minsize(560, 520)
+        self.resizable(True, True)
         self.transient(parent)
         self.configure(fg_color=_CLR_BG_DARK)
 
@@ -827,6 +831,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
         self.result: dict[str, Any] | None = None
+        self.content_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.content_frame.pack(fill="both", expand=True)
 
         settings = {**DEFAULT_BROWSER_SETTINGS, **(current or {})}
         self._new_window_before_app_mode = bool(settings.get("new_window", True))
@@ -834,9 +840,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._test_profile_dir = Path(tempfile.gettempdir()) / (
             f"hello_streamer_app_mode_test_profile_{profile_stamp}"
         )
+        self._last_test_url: str | None = None
 
         self._section_open_label = ctk.CTkLabel(
-            self,
+            self.content_frame,
             text=tr("browser.section.open"),
             font=_font(13, "bold"),
             anchor="w",
@@ -844,7 +851,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._section_open_label.pack(padx=24, pady=(20, 4), fill="x")
 
         self._section_open_hint = ctk.CTkLabel(
-            self,
+            self.content_frame,
             text=tr("browser.section.open.hint"),
             font=_font(12),
             text_color="#aaaabb",
@@ -855,7 +862,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         self.enabled_var = ctk.BooleanVar(value=bool(settings.get("enabled", False)))
         self.enabled_switch = ctk.CTkSwitch(
-            self,
+            self.content_frame,
             text=tr("browser.enable"),
             variable=self.enabled_var,
             command=self._refresh_enabled_state,
@@ -864,7 +871,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.enabled_switch.pack(padx=24, anchor="w")
 
         # ── Browser path
-        path_frame = ctk.CTkFrame(self, fg_color="transparent")
+        path_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
         path_frame.pack(padx=24, pady=(12, 0), fill="x")
         path_frame.grid_columnconfigure(1, weight=1)
 
@@ -888,7 +895,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.path_entry.bind("<KeyRelease>", self._on_path_change)
 
         self._path_hint = ctk.CTkLabel(
-            self,
+            self.content_frame,
             text=tr("browser.path.hint"),
             font=_font(11),
             text_color="#888899",
@@ -898,7 +905,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._path_hint.pack(padx=24, pady=(4, 0), fill="x")
 
         self.compat_label = ctk.CTkLabel(
-            self,
+            self.content_frame,
             text="",
             font=_font(11, "bold"),
             text_color="#ffb74d",
@@ -910,7 +917,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._compat_key: tuple[str, str] | None = None
 
         # ── Window mode toggles
-        toggle_frame = ctk.CTkFrame(self, fg_color="transparent")
+        toggle_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
         toggle_frame.pack(padx=24, pady=(10, 0), fill="x")
 
         self.new_window_var = ctk.BooleanVar(
@@ -966,6 +973,48 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._close_on_offline_hint.pack(anchor="w", pady=(0, 2))
 
+        self.close_on_stop_var = ctk.BooleanVar(
+            value=bool(settings.get("close_on_stop", False))
+        )
+        self.close_on_stop_cb = ctk.CTkCheckBox(
+            toggle_frame,
+            text=tr("browser.toggle.close_on_stop"),
+            variable=self.close_on_stop_var,
+            font=_font(12),
+        )
+        self.close_on_stop_cb.pack(anchor="w", pady=(4, 0))
+        self._close_on_stop_hint = ctk.CTkLabel(
+            toggle_frame,
+            text=tr("browser.toggle.close_on_stop.hint"),
+            font=_font(10),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        )
+        self._close_on_stop_hint.pack(anchor="w", pady=(0, 2))
+
+        self.close_off_topic_var = ctk.BooleanVar(
+            value=bool(settings.get("close_off_topic_pages", False))
+        )
+        self.close_off_topic_cb = ctk.CTkCheckBox(
+            toggle_frame,
+            text=tr("browser.toggle.close_off_topic"),
+            variable=self.close_off_topic_var,
+            font=_font(12),
+        )
+        self.close_off_topic_cb.pack(anchor="w", pady=(4, 0))
+        self._close_off_topic_hint = ctk.CTkLabel(
+            toggle_frame,
+            text=tr("browser.toggle.close_off_topic.hint"),
+            font=_font(10),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        )
+        self._close_off_topic_hint.pack(anchor="w", pady=(0, 2))
+
         self.hide_from_taskbar_var = ctk.BooleanVar(
             value=bool(settings.get("hide_from_taskbar", False))
         )
@@ -989,7 +1038,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         # ── Isolated profile (forces a fresh Chrome master process so
         # --app= / --window-position actually take effect)
-        profile_frame = ctk.CTkFrame(self, fg_color=_CLR_CARD, corner_radius=10)
+        profile_frame = ctk.CTkFrame(
+            self.content_frame, fg_color=_CLR_CARD, corner_radius=10
+        )
         profile_frame.pack(padx=24, pady=(14, 0), fill="x")
         profile_frame.grid_columnconfigure(1, weight=1)
 
@@ -1067,7 +1118,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
 
         # ── Position / size
-        pos_frame = ctk.CTkFrame(self, fg_color=_CLR_CARD, corner_radius=10)
+        pos_frame = ctk.CTkFrame(
+            self.content_frame, fg_color=_CLR_CARD, corner_radius=10
+        )
         pos_frame.pack(padx=24, pady=(14, 0), fill="x")
         pos_frame.grid_columnconfigure((1, 3), weight=1)
 
@@ -1131,7 +1184,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.h_entry.grid(row=2, column=3, padx=(0, 14), pady=(4, 10), sticky="w")
 
         self.message_label = ctk.CTkLabel(
-            self, text="", font=_font(12), height=22, anchor="w", wraplength=512
+            self, text="", font=_font(12), height=24, anchor="w", wraplength=512
         )
         self.message_label.pack(padx=24, pady=(8, 0), fill="x")
         self._message_key: tuple[str, dict[str, Any]] | None = None
@@ -1169,6 +1222,20 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             command=self._on_test,
         )
         self._test_btn.pack(side="right", padx=(8, 0), pady=4)
+
+        self._test_close_btn = ctk.CTkButton(
+            btn_frame,
+            text=tr("browser.btn.test_close"),
+            width=104,
+            height=40,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#555566",
+            hover_color="#333344",
+            font=_font(13),
+            command=self._on_test_close,
+        )
+        self._test_close_btn.pack(side="right", padx=(8, 0), pady=4)
 
         self._save_btn = ctk.CTkButton(
             btn_frame,
@@ -1221,6 +1288,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.minimized_cb.configure(text=tr("browser.toggle.minimized"))
         self.close_on_offline_cb.configure(text=tr("browser.toggle.close_on_offline"))
         self._close_on_offline_hint.configure(text=tr("browser.toggle.close_on_offline.hint"))
+        self.close_on_stop_cb.configure(text=tr("browser.toggle.close_on_stop"))
+        self._close_on_stop_hint.configure(text=tr("browser.toggle.close_on_stop.hint"))
+        self.close_off_topic_cb.configure(text=tr("browser.toggle.close_off_topic"))
+        self._close_off_topic_hint.configure(text=tr("browser.toggle.close_off_topic.hint"))
         self.hide_from_taskbar_cb.configure(text=tr("browser.toggle.hide_taskbar"))
         self._hide_taskbar_hint.configure(text=tr("browser.toggle.hide_taskbar.hint"))
         self._profile_title.configure(text=tr("browser.profile.title"))
@@ -1236,6 +1307,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._h_label.configure(text=tr("browser.geometry.height"))
         self._cancel_btn.configure(text=tr("browser.btn.cancel"))
         self._test_btn.configure(text=tr("browser.btn.test"))
+        self._test_close_btn.configure(text=tr("browser.btn.test_close"))
         self._save_btn.configure(text=tr("browser.btn.save"))
         if self._compat_key is not None:
             key, color = self._compat_key
@@ -1418,6 +1490,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "user_data_dir": user_data_dir,
             "per_channel_profile": bool(self.per_channel_profile_var.get()),
             "close_on_offline": bool(self.close_on_offline_var.get()),
+            "close_on_stop": bool(self.close_on_stop_var.get()),
+            "close_off_topic_pages": bool(self.close_off_topic_var.get()),
             "hide_from_taskbar": bool(self.hide_from_taskbar_var.get()),
         }
 
@@ -1438,6 +1512,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "user_data_dir": self.user_data_dir_entry.get().strip(),
             "per_channel_profile": bool(self.per_channel_profile_var.get()),
             "close_on_offline": bool(self.close_on_offline_var.get()),
+            "close_on_stop": bool(self.close_on_stop_var.get()),
+            "close_off_topic_pages": bool(self.close_off_topic_var.get()),
             "hide_from_taskbar": bool(self.hide_from_taskbar_var.get()),
         }
 
@@ -1529,9 +1605,18 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         if data is None:
             return
         test_url = self._browser_test_url()
+        self._last_test_url = test_url
         test_settings = self._browser_test_settings(data)
         self._set_message("browser.msg.test_opened", color="#64b5f6")
         open_url(test_url, test_settings if test_settings["enabled"] else None)
+
+    def _on_test_close(self) -> None:
+        test_url = self._last_test_url or self._browser_test_url()
+        closed = close_browser_window_for_url(
+            test_url,
+            title_keywords=["Hello Streamer Browser Test"],
+        )
+        self._set_message("browser.msg.test_closed", color="#64b5f6", count=closed)
 
     def _on_save(self) -> None:
         data = self._collect()
@@ -1828,44 +1913,50 @@ class ChannelRow(ctk.CTkFrame):
     def _on_toggle_click(self) -> None:
         enabled = not self.channel.get("enabled", True)
         self.channel["enabled"] = enabled
-        # Resume always restores the "full triggering" mode — if the user
-        # wanted to come back into monitor-only, they'd click the eye instead.
-        if enabled:
-            self.channel["monitor_only"] = False
-        else:
-            # Pausing clears monitor-only too, so the next resume is clean.
-            self.channel["monitor_only"] = False
-        self._apply_enabled_visual()
+        # Pause/resume always clears monitor-only — resume goes back into
+        # "full triggering" mode and pause resets the next-resume baseline.
+        self.channel["monitor_only"] = False
+        # enabled really changed → we want a clean visual (and the polling
+        # backend is going to give us a fresh status reading anyway).
+        self._apply_enabled_visual(reset_status=True)
         self._on_toggle_enabled()
 
     def _on_monitor_only_click(self) -> None:
         # Toggling the eye always implies the channel must be enabled — if
         # the user clicks it from a paused state, they're effectively
         # un-pausing into monitor-only mode.
-        currently_monitor_only = (
-            self.channel.get("enabled", True)
-            and self.channel.get("monitor_only", False)
+        was_enabled = self.channel.get("enabled", True)
+        currently_monitor_only = was_enabled and self.channel.get(
+            "monitor_only", False
         )
         if currently_monitor_only:
-            # Eye-off → back to full triggering (still enabled).
             self.channel["enabled"] = True
             self.channel["monitor_only"] = False
         else:
-            # Eye-on → enable monitor-only (force enabled).
             self.channel["enabled"] = True
             self.channel["monitor_only"] = True
-        self._apply_enabled_visual()
+        # Crucial: when the channel was *already* enabled, we are only
+        # flipping the trigger-suppression flag — the live/upcoming/offline
+        # display the user is currently watching (and especially the
+        # "live since N min" elapsed clock) is still valid and should NOT
+        # be wiped. Only reset when we just un-paused.
+        self._apply_enabled_visual(reset_status=not was_enabled)
         self._on_toggle_enabled()
 
-    def _apply_enabled_visual(self) -> None:
-        enabled = self.channel.get("enabled", True)
-        monitor_only = bool(self.channel.get("monitor_only", False)) and enabled
+    def _reset_status_cache(self) -> None:
+        """Forget every cached status value so the next paint starts blank."""
         self._active_url = ""
         self._status_title = ""
         self._status_state = None
         self._status_countdown = ""
         self._status_elapsed = ""
         self.time_label.configure(text="")
+
+    def _apply_enabled_visual(self, reset_status: bool = True) -> None:
+        enabled = self.channel.get("enabled", True)
+        monitor_only = bool(self.channel.get("monitor_only", False)) and enabled
+        if reset_status:
+            self._reset_status_cache()
         if enabled:
             self.configure(fg_color=_CLR_CARD)
             self.platform_label.configure(
@@ -1873,13 +1964,19 @@ class ChannelRow(ctk.CTkFrame):
             )
             self.name_label.configure(text_color=("gray10", "gray90"))
             self.id_label.configure(text_color="#9aa0b4")
-            self.status_label.configure(
-                text=tr("status.row.placeholder"),
-                text_color="#666677",
-                fg_color="transparent",
-            )
-            self.toggle_btn.configure(text="⏸")
-            self._set_link_tip_key("tooltip.row.link.default")
+            if reset_status or self._status_state is None:
+                # No live data to preserve → fall back to the placeholder text.
+                self.status_label.configure(
+                    text=tr("status.row.placeholder"),
+                    text_color="#666677",
+                    fg_color="transparent",
+                )
+                self._set_link_tip_key("tooltip.row.link.default")
+            else:
+                # Preserve the existing live/upcoming/offline display so the
+                # "live since" clock and stream title don't reset when the
+                # user only flipped monitor-only on/off.
+                self._render_status_visuals()
         else:
             self.configure(fg_color=_CLR_CARD_DISABLED)
             self.platform_label.configure(
@@ -1892,12 +1989,12 @@ class ChannelRow(ctk.CTkFrame):
                 text_color=_CLR_TEXT_DISABLED,
                 fg_color="transparent",
             )
-            self.toggle_btn.configure(text="▶")
             self._set_link_tip_key("tooltip.row.link.paused")
+        self._apply_toggle_visual(enabled, monitor_only)
         self._apply_monitor_only_visual(monitor_only, enabled)
         self._refresh_toggle_tip()
         self._refresh_monitor_only_tip()
-        if hasattr(self, "_status_tip"):
+        if reset_status and hasattr(self, "_status_tip"):
             self._status_tip.set_text("")
 
     def _apply_monitor_only_visual(self, monitor_only: bool, enabled: bool) -> None:
@@ -1925,6 +2022,36 @@ class ChannelRow(ctk.CTkFrame):
                 fg_color="transparent",
                 text_color=_CLR_TEXT_DISABLED,
                 border_color="#2a2a3a",
+                hover_color="#243052",
+            )
+
+    def _apply_toggle_visual(self, enabled: bool, monitor_only: bool) -> None:
+        """Pick the pause/resume button's icon + accent so the user can see
+        at a glance that this channel is being "watched but not triggered".
+
+        We keep the regular ⏸ glyph (the channel *is* still monitored) but
+        tint the border with the same blue accent the eye uses. That makes
+        the visual association explicit: blue border on ⏸ ↔ blue eye-fill.
+        """
+        if not hasattr(self, "toggle_btn"):
+            return
+        if not enabled:
+            self.toggle_btn.configure(
+                text="▶",
+                border_color="#3c4566",
+                hover_color="#243052",
+            )
+            return
+        if monitor_only:
+            self.toggle_btn.configure(
+                text="⏸",
+                border_color="#1565c0",
+                hover_color="#1d4d80",
+            )
+        else:
+            self.toggle_btn.configure(
+                text="⏸",
+                border_color="#3c4566",
                 hover_color="#243052",
             )
 
@@ -2643,7 +2770,7 @@ class App(ctk.CTk):
         self._set_status_text("status.watching", "#64b5f6")
         self._tray.update_tooltip_key("tray.tooltip.watch")
 
-    def _on_stop(self) -> None:
+    def _on_stop(self, *, is_user_action: bool = True) -> None:
         if self._monitor:
             self._monitor.stop()
             if not self._monitor.is_running:
@@ -2657,6 +2784,22 @@ class App(ctk.CTk):
         self._apply_monitor_mode_buttons()
         self._set_status_text("status.stopped", _CLR_OFFLINE)
         self._tray.update_tooltip_key("tray.tooltip.stopped")
+
+        # close_on_stop fires only when the user explicitly hit Stop — never
+        # on the auto-stop produced by open_and_stop, because that just
+        # opened the very player window the user wants to keep watching.
+        if is_user_action:
+            browser_settings = self.config.get("browser_settings") or {}
+            if browser_settings.get("close_on_stop"):
+                try:
+                    closed = close_all_tracked_windows()
+                    if closed:
+                        logger.info(
+                            "close_on_stop: WM_CLOSEd %d tracked window(s)",
+                            closed,
+                        )
+                except Exception:
+                    logger.exception("close_on_stop sweep failed")
 
     def _apply_monitor_mode_buttons(self) -> None:
         mode = self._monitor_mode
@@ -2722,6 +2865,21 @@ class App(ctk.CTk):
             for row in self._channel_rows:
                 row.set_status(statuses.get(row.key))
 
+            # A monitor poll just completed — this is the natural cadence at
+            # which to sweep tracked browser windows for "off-topic" drift.
+            # We only run when the user opted in, and we tolerate the call
+            # being a no-op on non-Windows (the helper returns 0).
+            raw_browser_settings = self.config.get("browser_settings") or {}
+            if raw_browser_settings.get("close_off_topic_pages"):
+                try:
+                    closed = prune_off_topic_tracked_windows()
+                    if closed:
+                        logger.info(
+                            "off-topic prune closed %d window(s)", closed
+                        )
+                except Exception:
+                    logger.exception("off-topic prune failed")
+
         configured_action = self.config.get("action", "open_and_stop")
         browser_settings = self._current_browser_settings()
         should_stop = False
@@ -2771,7 +2929,10 @@ class App(ctk.CTk):
                 self._handle_channel_offline(entry, offline_info)
 
         if should_stop:
-            self._on_stop()
+            # auto-stop fired by open_and_stop — we just opened a player
+            # window the user wants to keep watching, so don't fire the
+            # close_on_stop sweep here.
+            self._on_stop(is_user_action=False)
         elif should_exit:
             self._quit_app()
 

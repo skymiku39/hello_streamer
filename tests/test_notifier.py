@@ -356,9 +356,10 @@ def test_execute_open_and_keep_passes_browser_settings(monkeypatch) -> None:
 
     captured: dict[str, object] = {}
 
-    def fake_open(url, browser_settings=None):
+    def fake_open(url, browser_settings=None, **kwargs):
         captured["url"] = url
         captured["settings"] = browser_settings
+        captured["kwargs"] = kwargs
         return True
 
     monkeypatch.setattr(notifier, "open_url", fake_open)
@@ -368,6 +369,12 @@ def test_execute_open_and_keep_passes_browser_settings(monkeypatch) -> None:
 
     assert captured["url"] == "https://www.twitch.tv/hello"
     assert captured["settings"] is settings
+    # title_hints should be threaded through so the off-topic prune feature
+    # can identify our window later. Channel slug "hello" plus stream title
+    # "Live now" are both present.
+    hints = captured["kwargs"].get("title_hints", ())
+    assert "hello" in hints
+    assert "Live now" in hints
 
 
 # ─────────────────────────────────────────────
@@ -742,6 +749,17 @@ def test_minimize_thread_actually_minimizes_new_window(monkeypatch) -> None:
             show_window_calls.append((int(hwnd), int(cmd)))
             return True
 
+        # Stub GetWindowText* so the noise-filter in the worker treats this
+        # hwnd as a legitimate stream window. Returning a plain non-empty
+        # title (anything not in the "New Tab" / browser-chrome blacklist)
+        # is enough.
+        def GetWindowTextLengthW(self, _hwnd):
+            return len("Live Stream")
+
+        def GetWindowTextW(self, _hwnd, buf, size):
+            buf.value = "Live Stream"
+            return len("Live Stream")
+
     class FakeWindll:
         user32 = FakeUser32()
 
@@ -806,6 +824,13 @@ def test_window_manager_thread_applies_geometry_and_minimize(monkeypatch) -> Non
         def ShowWindow(self, hwnd, cmd):
             show_window_calls.append((int(hwnd), int(cmd)))
             return True
+
+        def GetWindowTextLengthW(self, _hwnd):
+            return len("Live Stream")
+
+        def GetWindowTextW(self, _hwnd, buf, size):
+            buf.value = "Live Stream"
+            return len("Live Stream")
 
     class FakeWindll:
         user32 = FakeUser32()
@@ -927,12 +952,18 @@ def test_build_browser_args_firefox_user_data_dir_uses_profile(monkeypatch) -> N
     ]
 
 
-def test_build_browser_args_chromium_warns_when_user_data_dir_missing(
+def test_build_browser_args_chromium_logs_when_geometry_set_but_no_user_data_dir(
     monkeypatch, caplog
 ) -> None:
-    """If user enables custom geometry/AppMode but skips user_data_dir, warn."""
+    """Non-default position/size + no user_data_dir → log a heads-up.
+
+    We no longer raise this at WARNING level (post-launch Win32 fix-up will
+    re-apply geometry anyway), but the diagnostic is still emitted at INFO
+    so users have something to grep for when they're confused about why
+    --window-position seemed to do nothing on a hot-start browser.
+    """
     _stub_browser_resolution(monkeypatch, "chrome")
-    with caplog.at_level("WARNING", logger="stream_monitor.notifier"):
+    with caplog.at_level("INFO", logger="stream_monitor.notifier"):
         notifier._build_browser_args(
             "https://example.com",
             {
@@ -947,10 +978,15 @@ def test_build_browser_args_chromium_warns_when_user_data_dir_missing(
                 "user_data_dir": "",
             },
         )
-    assert any(
-        "user_data_dir" in rec.message and "Chrome/Edge" in rec.message
-        for rec in caplog.records
-    )
+    matching = [
+        rec for rec in caplog.records
+        if "user_data_dir" in rec.message and "Chrome/Edge" in rec.message
+    ]
+    assert matching, "expected geometry/user_data_dir diagnostic"
+    # The message must NOT claim --app= itself is dropped; that was the
+    # misleading wording before this fix.
+    for rec in matching:
+        assert "--app=" not in rec.message or "--window-position" in rec.message
 
 
 def test_build_browser_args_chromium_no_warning_when_user_data_dir_provided(
@@ -1285,7 +1321,7 @@ def test_configure_user32_signatures_sets_argtypes() -> None:
 # ─────────────────────────────────────────────
 def _reset_tracked_hwnds() -> None:
     with notifier._TRACKED_HWNDS_LOCK:
-        notifier._TRACKED_HWNDS_BY_URL.clear()
+        notifier._TRACKED_WINDOWS_BY_URL.clear()
 
 
 def test_register_and_snapshot_tracked_hwnds_roundtrip() -> None:
@@ -1306,7 +1342,7 @@ def test_register_tracked_hwnd_ignores_empty_url_and_zero_hwnd() -> None:
     try:
         notifier._register_tracked_hwnd("", 1)
         notifier._register_tracked_hwnd("https://x", 0)
-        assert not notifier._TRACKED_HWNDS_BY_URL
+        assert not notifier._TRACKED_WINDOWS_BY_URL
     finally:
         _reset_tracked_hwnds()
 
@@ -1626,6 +1662,17 @@ def test_apply_new_browser_window_settings_async_registers_tracked_url(
     user32 = MagicMock()
     user32.ShowWindow.return_value = 1
     user32.SetWindowPos.return_value = 1
+    # The noise-window filter (added when we threaded title_hints through to
+    # the prune feature) reads GetWindowText* before applying geometry, so
+    # stub them to return a legit-looking title.
+    user32.GetWindowTextLengthW.return_value = len("Live Stream")
+
+    def _get_text(_hwnd, buf, _size):
+        buf.value = "Live Stream"
+        return len("Live Stream")
+
+    user32.GetWindowTextW.side_effect = _get_text
+
     fake_ctypes = MagicMock()
     fake_ctypes.windll.user32 = user32
     monkeypatch.setitem(__import__("sys").modules, "ctypes", fake_ctypes)
@@ -1647,8 +1694,258 @@ def test_apply_new_browser_window_settings_async_registers_tracked_url(
         apply_geometry=True,
         deadline_s=1.0,
         track_for_url="https://x",
+        track_keywords=("hello", "Live Stream"),
     )
     assert thread is not None
     thread.join(timeout=2.0)
     assert notifier._snapshot_tracked_hwnds("https://x") == {1234}
+    # The TrackedWindow entry must also have stored the keywords so the
+    # off-topic prune pass can identify the window later.
+    tracked = notifier._snapshot_tracked_windows("https://x")
+    assert tracked and tracked[0].keywords == ("hello", "live stream")
     _reset_tracked_hwnds()
+
+
+# ─────────────────────────────────────────────
+# B — noise-title filter
+# ─────────────────────────────────────────────
+def test_is_noise_window_title_recognises_blank_browser_windows() -> None:
+    assert notifier._is_noise_window_title("") is True
+    assert notifier._is_noise_window_title("   ") is True
+    assert notifier._is_noise_window_title("Google Chrome") is True
+    assert notifier._is_noise_window_title("Microsoft Edge") is True
+    assert notifier._is_noise_window_title("New Tab") is True
+    # Multilingual New-Tab strings used by Chrome / Edge.
+    assert notifier._is_noise_window_title("新分頁") is True
+    assert notifier._is_noise_window_title("新分页") is True
+    assert notifier._is_noise_window_title("新しいタブ") is True
+    assert notifier._is_noise_window_title("새 탭") is True
+
+
+def test_is_noise_window_title_passes_real_stream_titles() -> None:
+    # Window titles produced by App Mode on Twitch/YouTube usually look like
+    # the stream title verbatim, or "<stream title> - YouTube".
+    assert notifier._is_noise_window_title("Kaicenat live now!!! @!@") is False
+    assert notifier._is_noise_window_title("Stream Title - YouTube") is False
+    assert notifier._is_noise_window_title("📺 LIVE: tonight's show") is False
+
+
+# ─────────────────────────────────────────────
+# D1 — close_all_tracked_windows
+# ─────────────────────────────────────────────
+def test_close_all_tracked_windows_closes_every_url(monkeypatch) -> None:
+    _reset_tracked_hwnds()
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    closed: list[int] = []
+    monkeypatch.setattr(
+        notifier,
+        "_post_close_window",
+        lambda hwnd: (closed.append(hwnd), True)[1],
+    )
+
+    notifier._register_tracked_hwnd("https://a", 1)
+    notifier._register_tracked_hwnd("https://a", 2)
+    notifier._register_tracked_hwnd("https://b", 3)
+
+    result = notifier.close_all_tracked_windows()
+    assert result == 3
+    assert set(closed) == {1, 2, 3}
+    # Registry is wiped after a successful sweep so a second invocation is
+    # cheap and won't double-close.
+    assert notifier.close_all_tracked_windows() == 0
+    _reset_tracked_hwnds()
+
+
+def test_close_all_tracked_windows_no_op_off_windows(monkeypatch) -> None:
+    _reset_tracked_hwnds()
+    monkeypatch.setattr(notifier, "_is_windows", lambda: False)
+    notifier._register_tracked_hwnd("https://a", 1)
+    assert notifier.close_all_tracked_windows() == 0
+    # Registry not cleared on non-Windows — caller still owns it.
+    assert notifier._snapshot_tracked_hwnds("https://a") == {1}
+    _reset_tracked_hwnds()
+
+
+# ─────────────────────────────────────────────
+# D2 — prune_off_topic_tracked_windows
+# ─────────────────────────────────────────────
+class _FakeUser32:
+    """Minimal user32 stub for the prune helper.
+
+    *titles* maps HWND → title string; HWNDs not in the dict are treated as
+    "no longer alive" (IsWindow returns False).
+    """
+
+    def __init__(self, titles: dict[int, str]) -> None:
+        self.titles = titles
+
+    def IsWindow(self, hwnd: int) -> int:
+        return 1 if int(hwnd) in self.titles else 0
+
+    def GetWindowTextLengthW(self, hwnd: int) -> int:
+        return len(self.titles.get(int(hwnd), ""))
+
+    def GetWindowTextW(self, hwnd: int, buf, _size: int) -> int:
+        text = self.titles.get(int(hwnd), "")
+        buf.value = text
+        return len(text)
+
+
+def _install_fake_user32(monkeypatch, titles: dict[int, str]) -> _FakeUser32:
+    import ctypes
+
+    user32 = _FakeUser32(titles)
+    fake_windll = MagicMock()
+    fake_windll.user32 = user32
+    monkeypatch.setattr(ctypes, "windll", fake_windll)
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(notifier, "_configure_user32_signatures", lambda _u: None)
+    return user32
+
+
+def test_prune_off_topic_closes_window_with_blacklisted_title(monkeypatch) -> None:
+    _reset_tracked_hwnds()
+    _install_fake_user32(monkeypatch, {111: "New Tab"})
+    closed: list[int] = []
+    monkeypatch.setattr(
+        notifier,
+        "_post_close_window",
+        lambda hwnd: (closed.append(hwnd), True)[1],
+    )
+
+    # Window was registered long enough ago to clear the grace period.
+    notifier._register_tracked_hwnd("https://stream", 111, keywords=["channelA"])
+    with notifier._TRACKED_HWNDS_LOCK:
+        for t in notifier._TRACKED_WINDOWS_BY_URL["https://stream"]:
+            t.opened_at = 0.0
+
+    result = notifier.prune_off_topic_tracked_windows(min_age_s=1.0)
+    assert result == 1
+    assert closed == [111]
+    assert notifier._snapshot_tracked_hwnds("https://stream") == set()
+    _reset_tracked_hwnds()
+
+
+def test_prune_off_topic_closes_window_that_lost_all_keywords(monkeypatch) -> None:
+    _reset_tracked_hwnds()
+    # Window title no longer contains "channelA" — user navigated away.
+    _install_fake_user32(monkeypatch, {222: "Some Unrelated Page"})
+    closed: list[int] = []
+    monkeypatch.setattr(
+        notifier,
+        "_post_close_window",
+        lambda hwnd: (closed.append(hwnd), True)[1],
+    )
+
+    notifier._register_tracked_hwnd("https://stream", 222, keywords=["channelA"])
+    with notifier._TRACKED_HWNDS_LOCK:
+        for t in notifier._TRACKED_WINDOWS_BY_URL["https://stream"]:
+            t.opened_at = 0.0
+
+    assert notifier.prune_off_topic_tracked_windows(min_age_s=1.0) == 1
+    assert closed == [222]
+    _reset_tracked_hwnds()
+
+
+def test_prune_off_topic_keeps_window_with_matching_keyword(monkeypatch) -> None:
+    _reset_tracked_hwnds()
+    _install_fake_user32(monkeypatch, {333: "channelA live right now"})
+    closed: list[int] = []
+    monkeypatch.setattr(
+        notifier,
+        "_post_close_window",
+        lambda hwnd: (closed.append(hwnd), True)[1],
+    )
+
+    notifier._register_tracked_hwnd("https://stream", 333, keywords=["channelA"])
+    with notifier._TRACKED_HWNDS_LOCK:
+        for t in notifier._TRACKED_WINDOWS_BY_URL["https://stream"]:
+            t.opened_at = 0.0
+
+    assert notifier.prune_off_topic_tracked_windows(min_age_s=1.0) == 0
+    assert closed == []
+    # Still tracked — we didn't touch it.
+    assert notifier._snapshot_tracked_hwnds("https://stream") == {333}
+    _reset_tracked_hwnds()
+
+
+def test_prune_off_topic_respects_grace_period(monkeypatch) -> None:
+    """Window with a noise title is still skipped if it's brand new."""
+    _reset_tracked_hwnds()
+    _install_fake_user32(monkeypatch, {444: "New Tab"})
+    closed: list[int] = []
+    monkeypatch.setattr(
+        notifier,
+        "_post_close_window",
+        lambda hwnd: (closed.append(hwnd), True)[1],
+    )
+
+    # opened_at is "now" → still in grace period for min_age_s=60.
+    notifier._register_tracked_hwnd("https://stream", 444, keywords=["x"])
+
+    assert notifier.prune_off_topic_tracked_windows(min_age_s=60.0) == 0
+    assert closed == []
+    # Window is still tracked — we deliberately did not close it yet.
+    assert notifier._snapshot_tracked_hwnds("https://stream") == {444}
+    _reset_tracked_hwnds()
+
+
+def test_prune_off_topic_drops_dead_hwnds_without_closing(monkeypatch) -> None:
+    """HWND that no longer exists (user already closed it) should just be
+    cleaned up — never reported as a "close" event."""
+    _reset_tracked_hwnds()
+    # No HWND in the title map → IsWindow returns 0 → stale.
+    _install_fake_user32(monkeypatch, {})
+    closed: list[int] = []
+    monkeypatch.setattr(
+        notifier,
+        "_post_close_window",
+        lambda hwnd: (closed.append(hwnd), True)[1],
+    )
+
+    notifier._register_tracked_hwnd("https://stream", 555, keywords=["x"])
+    with notifier._TRACKED_HWNDS_LOCK:
+        for t in notifier._TRACKED_WINDOWS_BY_URL["https://stream"]:
+            t.opened_at = 0.0
+
+    assert notifier.prune_off_topic_tracked_windows(min_age_s=1.0) == 0
+    assert closed == []
+    assert notifier._snapshot_tracked_hwnds("https://stream") == set()
+    _reset_tracked_hwnds()
+
+
+def test_prune_off_topic_no_op_off_windows(monkeypatch) -> None:
+    monkeypatch.setattr(notifier, "_is_windows", lambda: False)
+    assert notifier.prune_off_topic_tracked_windows() == 0
+
+
+# ─────────────────────────────────────────────
+# title_hints threaded through to action helpers
+# ─────────────────────────────────────────────
+def test_title_hints_from_stream_info_includes_display_channel_title() -> None:
+    from stream_monitor.fetcher.base import StreamInfo as _SI
+
+    info = _SI(
+        channel="kaicenat",
+        platform="twitch",
+        is_live=True,
+        title="LIVE NOW!!!",
+        url="https://www.twitch.tv/kaicenat",
+        display_name="Kai Cenat",
+    )
+    hints = notifier._title_hints_from_stream_info(info)
+    assert "Kai Cenat" in hints
+    assert "kaicenat" in hints
+    assert "LIVE NOW!!!" in hints
+
+
+def test_register_tracked_hwnd_merges_keywords_on_re_register() -> None:
+    _reset_tracked_hwnds()
+    try:
+        notifier._register_tracked_hwnd("https://x", 1, keywords=["a"])
+        notifier._register_tracked_hwnd("https://x", 1, keywords=["b", "a"])
+        tracked = notifier._snapshot_tracked_windows("https://x")
+        assert len(tracked) == 1
+        assert tracked[0].keywords == ("a", "b")
+    finally:
+        _reset_tracked_hwnds()
