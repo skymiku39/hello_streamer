@@ -87,9 +87,12 @@ _SW_SHOWMINNOACTIVE = 7  # minimize without taking focus
 _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
 _WM_CLOSE = 0x0010
+_GW_OWNER = 4
 _GWL_EXSTYLE = -20
 _WS_EX_TOOLWINDOW = 0x00000080
 _WS_EX_APPWINDOW = 0x00040000
+_MIN_BROWSER_WINDOW_WIDTH = 320
+_MIN_BROWSER_WINDOW_HEIGHT = 240
 _MINIMIZE_POLL_INTERVAL_S = 0.15
 _MINIMIZE_DEADLINE_S = 8.0  # generous: Chrome cold-start can take 2-3s
 
@@ -346,6 +349,12 @@ def _configure_user32_signatures(user32: Any) -> None:
     user32.IsWindow.argtypes = [wintypes.HWND]
     user32.IsWindow.restype = wintypes.BOOL
 
+    user32.GetWindow.argtypes = [wintypes.HWND, ctypes.c_uint]
+    user32.GetWindow.restype = wintypes.HWND
+
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowRect.restype = wintypes.BOOL
+
     # GetWindowLong/SetWindowLong (W variant). We deliberately use the *Long*
     # form (not LongPtr) because GWL_EXSTYLE is always a 32-bit DWORD on every
     # Windows ABI, and the W form exists on 64-bit Windows too for back-compat.
@@ -356,6 +365,46 @@ def _configure_user32_signatures(user32: Any) -> None:
     user32.SetWindowLongW.restype = wintypes.LONG
 
     user32._hello_streamer_signed = True  # type: ignore[attr-defined]
+
+
+def _is_browser_popup_or_tool_window(user32: Any, hwnd: int) -> bool:
+    """Return True for browser-owned popups/helpers, not real player windows."""
+    try:
+        owner = user32.GetWindow(hwnd, _GW_OWNER)
+    except (AttributeError, OSError, TypeError):
+        owner = 0
+    if isinstance(owner, int) and owner:
+        return True
+
+    try:
+        ex_style = user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+    except (AttributeError, OSError, TypeError):
+        ex_style = 0
+    if isinstance(ex_style, int):
+        is_tool = bool(ex_style & _WS_EX_TOOLWINDOW)
+        is_app = bool(ex_style & _WS_EX_APPWINDOW)
+        if is_tool and not is_app:
+            return True
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+        from types import ModuleType
+
+        if not isinstance(ctypes, ModuleType):
+            raise TypeError("ctypes module is mocked")
+
+        rect = wintypes.RECT()
+        ok = user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    except (AttributeError, ImportError, OSError, TypeError, ValueError):
+        ok = False
+    if isinstance(ok, int) and ok:
+        width = int(rect.right - rect.left)
+        height = int(rect.bottom - rect.top)
+        if width < _MIN_BROWSER_WINDOW_WIDTH or height < _MIN_BROWSER_WINDOW_HEIGHT:
+            return True
+
+    return False
 
 
 def _apply_new_browser_window_settings_async(
@@ -408,10 +457,19 @@ def _apply_new_browser_window_settings_async(
     def _worker() -> None:
         deadline = time.monotonic() + deadline_s
         managed: set[int] = set()
+        ignored: set[int] = set()
         while time.monotonic() < deadline:
             current = _enum_browser_hwnds(class_name)
-            new_hwnds = current - baseline - managed
+            new_hwnds = current - baseline - managed - ignored
             for hwnd in new_hwnds:
+                if _is_browser_popup_or_tool_window(user32, hwnd):
+                    logger.debug(
+                        "Skipping HWND=%s during post-launch tracking: "
+                        "window looks like a browser popup/tool surface",
+                        hwnd,
+                    )
+                    ignored.add(hwnd)
+                    continue
                 # ── B: noise-window guard ──────────────────────────────────
                 # If the user happened to open a new "Google Chrome" or
                 # "New Tab" window while we were waiting for the App Mode

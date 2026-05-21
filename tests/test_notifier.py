@@ -1297,6 +1297,8 @@ def test_configure_user32_signatures_sets_argtypes() -> None:
         GetWindowTextW = FakeFn()
         PostMessageW = FakeFn()
         IsWindow = FakeFn()
+        GetWindow = FakeFn()
+        GetWindowRect = FakeFn()
         GetWindowLongW = FakeFn()
         SetWindowLongW = FakeFn()
 
@@ -1635,6 +1637,8 @@ def test_configure_user32_signatures_includes_getwindowlong() -> None:
         GetWindowTextW = FakeFn()
         PostMessageW = FakeFn()
         IsWindow = FakeFn()
+        GetWindow = FakeFn()
+        GetWindowRect = FakeFn()
         GetWindowLongW = FakeFn()
         SetWindowLongW = FakeFn()
 
@@ -1644,6 +1648,14 @@ def test_configure_user32_signatures_includes_getwindowlong() -> None:
     assert user32.GetWindowLongW.argtypes[0] is wintypes.HWND
     assert user32.GetWindowLongW.argtypes[1] is ctypes.c_int
     assert user32.GetWindowLongW.restype is wintypes.LONG
+
+    assert user32.GetWindow.argtypes[0] is wintypes.HWND
+    assert user32.GetWindow.argtypes[1] is ctypes.c_uint
+    assert user32.GetWindow.restype is wintypes.HWND
+
+    assert user32.GetWindowRect.argtypes[0] is wintypes.HWND
+    assert user32.GetWindowRect.argtypes[1] == ctypes.POINTER(wintypes.RECT)
+    assert user32.GetWindowRect.restype is wintypes.BOOL
 
     assert user32.SetWindowLongW.argtypes[0] is wintypes.HWND
     assert user32.SetWindowLongW.argtypes[1] is ctypes.c_int
@@ -1709,6 +1721,90 @@ def test_apply_new_browser_window_settings_async_registers_tracked_url(
 # ─────────────────────────────────────────────
 # B — noise-title filter
 # ─────────────────────────────────────────────
+def test_browser_popup_or_tool_window_filter_detects_owned_tool_and_small_windows() -> None:
+    class FakeUser32:
+        owner = 0
+        ex_style = 0
+        rect = (0, 0, 1280, 720)
+
+        def GetWindow(self, _hwnd, _cmd):
+            return self.owner
+
+        def GetWindowLongW(self, _hwnd, _index):
+            return self.ex_style
+
+        def GetWindowRect(self, _hwnd, rect_ptr):
+            left, top, right, bottom = self.rect
+            rect = rect_ptr._obj
+            rect.left = left
+            rect.top = top
+            rect.right = right
+            rect.bottom = bottom
+            return 1
+
+    user32 = FakeUser32()
+    assert notifier._is_browser_popup_or_tool_window(user32, 100) is False
+
+    user32.owner = 99
+    assert notifier._is_browser_popup_or_tool_window(user32, 100) is True
+
+    user32.owner = 0
+    user32.ex_style = notifier._WS_EX_TOOLWINDOW
+    assert notifier._is_browser_popup_or_tool_window(user32, 100) is True
+
+    user32.ex_style = 0
+    user32.rect = (0, 0, 260, 180)
+    assert notifier._is_browser_popup_or_tool_window(user32, 100) is True
+
+
+def test_window_manager_ignores_popup_then_manages_real_window(monkeypatch) -> None:
+    _reset_tracked_hwnds()
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+
+    user32 = MagicMock()
+    user32.ShowWindow.return_value = 1
+    user32.SetWindowPos.return_value = 1
+    user32.GetWindow.side_effect = lambda hwnd, _cmd: 10 if hwnd == 111 else 0
+    user32.GetWindowLongW.return_value = 0
+    user32.GetWindowRect.return_value = 1
+    user32.GetWindowTextLengthW.return_value = len("Live Stream")
+
+    def _get_text(_hwnd, buf, _size):
+        buf.value = "Live Stream"
+        return len("Live Stream")
+
+    user32.GetWindowTextW.side_effect = _get_text
+
+    fake_ctypes = MagicMock()
+    fake_ctypes.windll.user32 = user32
+    monkeypatch.setitem(__import__("sys").modules, "ctypes", fake_ctypes)
+    monkeypatch.setattr(notifier, "_configure_user32_signatures", lambda _u: None)
+
+    enum_results = iter([
+        set(),
+        {111},
+        {111, 222},
+        {111, 222},
+    ])
+    monkeypatch.setattr(
+        notifier, "_enum_browser_hwnds", lambda _cls: next(enum_results)
+    )
+
+    thread = notifier._apply_new_browser_window_settings_async(
+        "Chrome_WidgetWin_1",
+        baseline=set(),
+        settings={"x": 0, "y": 0, "width": 1280, "height": 720},
+        deadline_s=1.0,
+        track_for_url="https://x",
+        track_keywords=("Live Stream",),
+    )
+    assert thread is not None
+    thread.join(timeout=2.0)
+    assert notifier._snapshot_tracked_hwnds("https://x") == {222}
+    assert user32.SetWindowPos.call_args.args[0] == 222
+    _reset_tracked_hwnds()
+
+
 def test_is_noise_window_title_recognises_blank_browser_windows() -> None:
     assert notifier._is_noise_window_title("") is True
     assert notifier._is_noise_window_title("   ") is True
