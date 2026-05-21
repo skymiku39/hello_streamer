@@ -67,13 +67,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "browser_settings": deepcopy(DEFAULT_BROWSER_SETTINGS),
 }
 
-ACTION_CHOICES = [
-    ("open_and_stop", "開啟網頁並停止監聽"),
-    ("open_and_keep", "開啟網頁並保持監聽"),
-    ("notify_only", "僅跳出系統通知"),
-    ("open_and_exit", "開啟網頁後關閉程式"),
-]
-ACTION_KEYS = {key for key, _label in ACTION_CHOICES}
+ACTION_KEYS: set[str] = {
+    "open_and_stop",
+    "open_and_keep",
+    "notify_only",
+    "open_and_exit",
+}
 MONITOR_MODE_KEYS = {"trigger", "watch"}
 PLATFORM_KEYS = {"twitch", "youtube"}
 MIN_CHECK_INTERVAL = 10
