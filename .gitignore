@@ -168,3 +168,6 @@ cython_debug/
 # Hello Streamer runtime data
 # Per-user browser profile created on demand by the Browser Settings dialog.
 browser_profile/
+
+# Internal translation review (reverse-translated comparison) — local only.
+TRANSLATION_REVIEW.md
