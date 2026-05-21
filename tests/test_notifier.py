@@ -1893,7 +1893,7 @@ def _install_fake_user32(monkeypatch, titles: dict[int, str]) -> _FakeUser32:
     user32 = _FakeUser32(titles)
     fake_windll = MagicMock()
     fake_windll.user32 = user32
-    monkeypatch.setattr(ctypes, "windll", fake_windll)
+    monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
     monkeypatch.setattr(notifier, "_is_windows", lambda: True)
     monkeypatch.setattr(notifier, "_configure_user32_signatures", lambda _u: None)
     return user32

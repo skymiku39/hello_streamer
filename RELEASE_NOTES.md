@@ -1,17 +1,15 @@
-# Hello Streamer v0.6.0
+# Hello Streamer v0.6.1
 
 ## 重點更新
 
-- 新增全域「只監測」模式，可只更新頻道狀態，不觸發通知、不自動開啟瀏覽器。
-- 新增單一頻道「只監測」切換，讓特定頻道保持監控但暫停觸發行為。
-- 瀏覽器設定新增「停止監聽時關閉本程式開啟的所有播放器視窗」。
-- 瀏覽器設定新增「只保留直播相關視窗」，可在追蹤視窗跳到新分頁、首頁、廣告或其他非直播頁時自動關閉。
-- 瀏覽器設定視窗改為可捲動與可調整大小，並新增測試關閉按鈕，方便驗證視窗追蹤與關閉流程。
-- Windows 視窗追蹤現在會略過瀏覽器彈窗、工具視窗與過小的輔助視窗，降低誤套用座標或誤關閉的機率。
-- README 已補齊只監測模式、每頻道只監測、瀏覽器關閉選項與下載檔名說明。
+- 新增簡體中文介面，可在語言偏好中選擇 `zh_CN`。
+- 調整多語系字串，讓英文、日文、韓文與中文介面的監控模式、系統匣與瀏覽器設定文字更一致。
+- 更新 `.gitignore`，排除本地翻譯審閱文件 `TRANSLATION_REVIEW.md`。
+- 修正 Linux CI 測試失敗：測試用的 `ctypes.windll` mock 現在可在 Linux / ARM runner 上安全建立。
+- README 已更新下載檔名與支援語言列表。
 
 ## 下載檔案
 
-- Windows 請下載 `HelloStreamer-v0.6.0-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.6.0-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.6.0-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v0.6.1-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.6.1-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.6.1-linux-arm64.tar.gz`
