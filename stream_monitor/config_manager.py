@@ -133,9 +133,54 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
+def _default_browser_profile_path() -> str:
+    """Return the default per-app browser profile root (``<base_dir>/browser_profile``).
+
+    Used by :func:`_migrate_browser_settings` to heal the legacy combination
+    ``per_channel_profile=True`` + ``user_data_dir=""``, which used to silently
+    disable per-channel isolation and cause cross-window HWND contamination
+    under Chrome's master process.
+    """
+    try:
+        return str(base_dir() / "browser_profile")
+    except Exception:  # noqa: BLE001 — never block config load on this.
+        return ""
+
+
+def _migrate_browser_settings(settings: dict[str, Any]) -> None:
+    """In-place migration of legacy/missing-parameter browser_settings.
+
+    Called from :func:`_normalize_browser_settings` *after* coercion so any
+    cross-field invariants are evaluated on real values, not raw user input.
+
+    Each migration step is idempotent — re-running on already-clean settings
+    is a no-op, so we can run it on every load without side effects.
+
+    Current migrations:
+
+    1. **Orphan per-channel profile** — historically the UI let users save
+       ``per_channel_profile=True`` while leaving ``user_data_dir`` blank.
+       The downstream resolver returned ``""`` in that case, which made
+       every channel share Chrome's master process and led to the off-topic
+       prune feature closing live windows by mistake. We now populate
+       ``user_data_dir`` with the default profile root so the per-channel
+       sub-folder logic can actually take effect.
+    """
+    # Migration #1: orphan per-channel profile.
+    if settings.get("per_channel_profile") and not (
+        settings.get("user_data_dir") or ""
+    ).strip():
+        default_root = _default_browser_profile_path()
+        if default_root:
+            settings["user_data_dir"] = default_root
+
+
 def _normalize_browser_settings(value: Any) -> dict[str, Any]:
     defaults = deepcopy(DEFAULT_BROWSER_SETTINGS)
     if not isinstance(value, dict):
+        # No saved settings yet — apply the migration to the freshly-cloned
+        # defaults so first-launch behaviour matches a post-migration config.
+        _migrate_browser_settings(defaults)
         return defaults
 
     normalized = deepcopy(defaults)
@@ -170,6 +215,7 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
     normalized["width"] = max(100, normalized["width"])
     normalized["height"] = max(100, normalized["height"])
 
+    _migrate_browser_settings(normalized)
     return normalized
 
 
@@ -212,18 +258,54 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def load() -> dict[str, Any]:
-    """Load config from disk, falling back to defaults for missing keys."""
+    """Load config from disk, falling back to defaults for missing keys.
+
+    If normalization changes the on-disk content — typically because the
+    config was written by an older version that is missing keys, or holds
+    a legacy combination cleaned up by :func:`_migrate_browser_settings` —
+    we transparently rewrite the file with the normalized form. That makes
+    upgrades self-healing: the next launch sees a clean, complete config.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
     path = _config_path()
     config = deepcopy(DEFAULT_CONFIG)
+    disk_existed = False
     if path.exists():
+        disk_existed = True
         try:
             with path.open("r", encoding="utf-8") as f:
                 stored = json.load(f)
             if isinstance(stored, dict):
                 config.update(stored)
         except (json.JSONDecodeError, OSError):
+            # Corrupt JSON or unreadable — fall through to defaults rather
+            # than crashing the app at startup. The auto-rewrite below will
+            # replace the bad file with a clean default.
             pass
-    return _normalize_config(config)
+
+    normalized = _normalize_config(config)
+
+    # Self-healing: write back when the disk content disagrees with the
+    # normalized form. We compare against the *raw* stored dict (with
+    # defaults filled in) so missing-key migrations also trigger a rewrite.
+    if disk_existed and config != normalized:
+        try:
+            save(normalized)
+            logger.info(
+                "config.json self-healed (missing keys filled in / legacy combinations migrated)"
+            )
+        except OSError:
+            # Read-only install location or transient I/O failure — keep
+            # the normalized values in memory so this session still runs
+            # correctly. The next launch will retry the migration.
+            logger.warning(
+                "config.json self-heal write failed — running with in-memory migration only",
+                exc_info=True,
+            )
+
+    return normalized
 
 
 def save(config: dict[str, Any]) -> None:

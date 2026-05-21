@@ -1269,16 +1269,6 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._refresh_app_mode_state()
         self._initial_snapshot = self._snapshot_browser_settings()
 
-        # Legacy-config rescue: ``per_channel_profile=True`` + empty
-        # ``user_data_dir`` is a silent pitfall — ``_resolve_effective_user_data_dir``
-        # returns "" and every channel ends up sharing one Chrome master
-        # process. The runtime auto-fallback in notifier.py keeps things
-        # working, but the saved config remains inconsistent and confusing.
-        # Detect the conflict here, pre-flip the "Enable Profile" checkbox
-        # (which makes the default path active), and surface a one-time
-        # notice so the user can hit Save to make it permanent.
-        self._maybe_autofix_orphan_per_channel(settings)
-
         self._unsub_i18n = i18n.subscribe(self._retranslate)
         self.bind("<Destroy>", self._on_destroy, add="+")
 
@@ -1395,34 +1385,6 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.per_channel_profile_cb.configure(
             state="normal" if profile_enabled else "disabled"
         )
-
-    def _maybe_autofix_orphan_per_channel(self, settings: dict[str, Any]) -> None:
-        """Rescue the ``per_channel_profile=True`` + empty ``user_data_dir`` combo.
-
-        Without a dedicated user_data_dir the per-channel sub-folder logic is
-        a no-op and every channel ends up in Chrome's master-process tab pool,
-        which causes the off-topic prune pass to close live-stream windows by
-        mistake. We flip the "Enable Profile" checkbox on (so the default
-        path becomes editable), surface a notice in the message area, and
-        leave the dialog in a "dirty" state so the user knows to hit Save.
-        """
-        if not settings.get("enabled"):
-            # Custom browser launch is off entirely — the conflict is moot
-            # because we hand the URL to the system default browser.
-            return
-        if not bool(settings.get("per_channel_profile", True)):
-            return
-        if (settings.get("user_data_dir") or "").strip():
-            return
-        if self.user_data_dir_enabled_var.get():
-            return  # Already enabled (default path was populated in __init__).
-
-        self.user_data_dir_enabled_var.set(True)
-        # ``user_data_dir_entry`` was initialised with ``saved or default``
-        # in __init__, so the default path is already sitting in the entry
-        # widget — flipping the checkbox alone is enough to "activate" it.
-        self._refresh_user_data_dir_state()
-        self._set_message("browser.msg.profile_autofix", color="#ffb74d")
 
     def _refresh_geometry_state(self) -> None:
         """Enable / disable X/Y/W/H entries based on the apply_geometry checkbox."""
