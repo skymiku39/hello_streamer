@@ -1,16 +1,17 @@
-# Hello Streamer v0.5.1
+# Hello Streamer v0.6.0
 
 ## 重點更新
 
-- 新增開播 / 離線防抖保護，Twitch 或 YouTube 單次查詢短暫掉線時不會立刻判定直播結束。
-- 修正 Twitch GQL 偶發回傳 `stream: null` 時，可能造成重複開播通知或誤觸發離線關閉的問題。
-- 強化 YouTube TIDUS 與 fallback 監控流程，避免 LIVE 影片短暫從清單消失時切到 UPCOMING、重複通知或產生錯誤離線事件。
-- 修正 YouTube fallback live 與 TIDUS live 互相接手時，舊 payload 可能被誤判為離線的情境。
-- 測試補齊 Twitch / YouTube 單次抖動、連續離線確認、fallback 接手與 TIDUS payload 清理情境。
-- README 已更新監控穩定性與下載檔名說明。
+- 新增全域「只監測」模式，可只更新頻道狀態，不觸發通知、不自動開啟瀏覽器。
+- 新增單一頻道「只監測」切換，讓特定頻道保持監控但暫停觸發行為。
+- 瀏覽器設定新增「停止監聽時關閉本程式開啟的所有播放器視窗」。
+- 瀏覽器設定新增「只保留直播相關視窗」，可在追蹤視窗跳到新分頁、首頁、廣告或其他非直播頁時自動關閉。
+- 瀏覽器設定視窗改為可捲動與可調整大小，並新增測試關閉按鈕，方便驗證視窗追蹤與關閉流程。
+- Windows 視窗追蹤現在會略過瀏覽器彈窗、工具視窗與過小的輔助視窗，降低誤套用座標或誤關閉的機率。
+- README 已補齊只監測模式、每頻道只監測、瀏覽器關閉選項與下載檔名說明。
 
 ## 下載檔案
 
-- Windows 請下載 `HelloStreamer-v0.5.1-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.5.1-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.5.1-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v0.6.0-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.6.0-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.6.0-linux-arm64.tar.gz`
