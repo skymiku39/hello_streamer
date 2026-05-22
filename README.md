@@ -18,6 +18,7 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 - 支援繁體中文、簡體中文、英文、日文、韓文介面，語言可在執行中切換。
 - 內建開播 / 離線防抖機制，降低平台短暫查詢異常造成的重複通知或誤關閉視窗。
 - 支援全域「只監測」與單一頻道「只監測」，可只更新狀態而不觸發通知或瀏覽器。
+- 瀏覽器設定分成「使用者設定」與「開發者設定」，日常選項與進階測試工具更容易區分。
 - 支援兩種監控模式：
   - 觸發模式：偵測到開播時執行設定的動作。
   - 觀察模式：只更新畫面狀態，不自動通知或開啟瀏覽器。
@@ -31,9 +32,9 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 | 平台 | 檔案 |
 | --- | --- |
-| Windows x64 | `HelloStreamer-v0.6.2-windows-x64.exe` |
-| Linux x64 | `HelloStreamer-v0.6.2-linux-x64.tar.gz` |
-| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v0.6.2-linux-arm64.tar.gz` |
+| Windows x64 | `HelloStreamer-v0.7.0-windows-x64.exe` |
+| Linux x64 | `HelloStreamer-v0.7.0-linux-x64.tar.gz` |
+| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v0.7.0-linux-arm64.tar.gz` |
 
 Windows 第一次執行時可能會顯示安全提示，請確認來源是本專案的 GitHub Release。
 
