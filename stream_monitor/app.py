@@ -535,7 +535,9 @@ class AddChannelDialog(ctk.CTkToplevel):
             key, kwargs = self._message_key
             self.message_label.configure(text=tr(key, **kwargs))
 
-    def _on_destroy(self, _event: Any = None) -> None:
+    def _on_destroy(self, event: Any = None) -> None:
+        if event is not None and event.widget is not self:
+            return
         if getattr(self, "_unsub_i18n", None):
             self._unsub_i18n()
             self._unsub_i18n = None
@@ -803,7 +805,9 @@ class LanguageDialog(ctk.CTkToplevel):
         self._apply_btn.configure(text=tr("lang.btn.apply"))
         self._update_row_visuals()
 
-    def _on_destroy(self, _event: Any = None) -> None:
+    def _on_destroy(self, event: Any = None) -> None:
+        if event is not None and event.widget is not self:
+            return
         if getattr(self, "_unsub_i18n", None):
             self._unsub_i18n()
             self._unsub_i18n = None
@@ -819,8 +823,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         super().__init__(parent)
         self.title(tr("browser.title"))
         screen_height = max(self.winfo_screenheight(), 640)
-        self.geometry(f"600x{min(760, screen_height - 80)}")
-        self.minsize(560, 520)
+        self.geometry(f"680x{min(780, screen_height - 80)}")
+        self.minsize(600, 540)
         self.resizable(True, True)
         self.transient(parent)
         self.configure(fg_color=_CLR_BG_DARK)
@@ -831,9 +835,6 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
         self.result: dict[str, Any] | None = None
-        self.content_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.content_frame.pack(fill="both", expand=True)
-
         settings = {**DEFAULT_BROWSER_SETTINGS, **(current or {})}
         self._new_window_before_app_mode = bool(settings.get("new_window", True))
         profile_stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
@@ -841,6 +842,24 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             f"hello_streamer_app_mode_test_profile_{profile_stamp}"
         )
         self._last_test_url: str | None = None
+
+        self._tab_user_label = tr("browser.tab.user")
+        self._tab_advanced_label = tr("browser.tab.advanced")
+        self.tabview = ctk.CTkTabview(self, fg_color="transparent")
+        self.tabview.pack(padx=16, pady=(16, 0), fill="both", expand=True)
+
+        user_tab = self.tabview.add(self._tab_user_label)
+        advanced_tab = self.tabview.add(self._tab_advanced_label)
+        # CTkTabview stores tab labels in an internal segmented button.
+        self.tabview._segmented_button.configure(font=_font(13, "bold"))
+
+        self.content_frame = ctk.CTkScrollableFrame(user_tab, fg_color="transparent")
+        self.content_frame.pack(fill="both", expand=True)
+
+        self.advanced_frame = ctk.CTkScrollableFrame(
+            advanced_tab, fg_color="transparent"
+        )
+        self.advanced_frame.pack(fill="both", expand=True)
 
         self._section_open_label = ctk.CTkLabel(
             self.content_frame,
@@ -916,9 +935,26 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.compat_label.pack(padx=24, pady=(2, 0), fill="x")
         self._compat_key: tuple[str, str] | None = None
 
-        # ── Window mode toggles
+        self._section_window_label = ctk.CTkLabel(
+            self.content_frame,
+            text=tr("browser.section.window"),
+            font=_font(13, "bold"),
+            anchor="w",
+        )
+        self._section_window_label.pack(padx=24, pady=(14, 4), fill="x")
+
+        self._section_window_hint = ctk.CTkLabel(
+            self.content_frame,
+            text=tr("browser.section.window.hint"),
+            font=_font(12),
+            text_color="#aaaabb",
+            anchor="w",
+            wraplength=560,
+        )
+        self._section_window_hint.pack(padx=24, pady=(0, 8), fill="x")
+
         toggle_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        toggle_frame.pack(padx=24, pady=(10, 0), fill="x")
+        toggle_frame.pack(padx=24, pady=(0, 0), fill="x")
 
         self.new_window_var = ctk.BooleanVar(
             value=bool(settings.get("new_window", True))
@@ -931,16 +967,6 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self.new_window_cb.pack(anchor="w", pady=(0, 4))
 
-        self.app_mode_var = ctk.BooleanVar(value=bool(settings.get("app_mode", False)))
-        self.app_mode_cb = ctk.CTkCheckBox(
-            toggle_frame,
-            text=tr("browser.toggle.app_mode"),
-            variable=self.app_mode_var,
-            command=self._on_app_mode_toggle,
-            font=_font(12),
-        )
-        self.app_mode_cb.pack(anchor="w", pady=(0, 4))
-
         self.minimized_var = ctk.BooleanVar(
             value=bool(settings.get("minimized", False))
         )
@@ -952,18 +978,39 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self.minimized_cb.pack(anchor="w")
 
+        self._section_lifecycle_label = ctk.CTkLabel(
+            self.content_frame,
+            text=tr("browser.section.lifecycle"),
+            font=_font(13, "bold"),
+            anchor="w",
+        )
+        self._section_lifecycle_label.pack(padx=24, pady=(16, 4), fill="x")
+
+        self._section_lifecycle_hint = ctk.CTkLabel(
+            self.content_frame,
+            text=tr("browser.section.lifecycle.hint"),
+            font=_font(12),
+            text_color="#aaaabb",
+            anchor="w",
+            wraplength=560,
+        )
+        self._section_lifecycle_hint.pack(padx=24, pady=(0, 8), fill="x")
+
+        close_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        close_frame.pack(padx=24, pady=(0, 0), fill="x")
+
         self.close_on_offline_var = ctk.BooleanVar(
             value=bool(settings.get("close_on_offline", False))
         )
         self.close_on_offline_cb = ctk.CTkCheckBox(
-            toggle_frame,
+            close_frame,
             text=tr("browser.toggle.close_on_offline"),
             variable=self.close_on_offline_var,
             font=_font(12),
         )
         self.close_on_offline_cb.pack(anchor="w", pady=(4, 0))
         self._close_on_offline_hint = ctk.CTkLabel(
-            toggle_frame,
+            close_frame,
             text=tr("browser.toggle.close_on_offline.hint"),
             font=_font(10),
             text_color="#9aa0b4",
@@ -977,14 +1024,14 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             value=bool(settings.get("close_on_stop", False))
         )
         self.close_on_stop_cb = ctk.CTkCheckBox(
-            toggle_frame,
+            close_frame,
             text=tr("browser.toggle.close_on_stop"),
             variable=self.close_on_stop_var,
             font=_font(12),
         )
         self.close_on_stop_cb.pack(anchor="w", pady=(4, 0))
         self._close_on_stop_hint = ctk.CTkLabel(
-            toggle_frame,
+            close_frame,
             text=tr("browser.toggle.close_on_stop.hint"),
             font=_font(10),
             text_color="#9aa0b4",
@@ -998,14 +1045,14 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             value=bool(settings.get("close_off_topic_pages", False))
         )
         self.close_off_topic_cb = ctk.CTkCheckBox(
-            toggle_frame,
+            close_frame,
             text=tr("browser.toggle.close_off_topic"),
             variable=self.close_off_topic_var,
             font=_font(12),
         )
         self.close_off_topic_cb.pack(anchor="w", pady=(4, 0))
         self._close_off_topic_hint = ctk.CTkLabel(
-            toggle_frame,
+            close_frame,
             text=tr("browser.toggle.close_off_topic.hint"),
             font=_font(10),
             text_color="#9aa0b4",
@@ -1019,14 +1066,14 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             value=bool(settings.get("hide_from_taskbar", False))
         )
         self.hide_from_taskbar_cb = ctk.CTkCheckBox(
-            toggle_frame,
+            close_frame,
             text=tr("browser.toggle.hide_taskbar"),
             variable=self.hide_from_taskbar_var,
             font=_font(12),
         )
         self.hide_from_taskbar_cb.pack(anchor="w", pady=(4, 0))
         self._hide_taskbar_hint = ctk.CTkLabel(
-            toggle_frame,
+            close_frame,
             text=tr("browser.toggle.hide_taskbar.hint"),
             font=_font(10),
             text_color="#9aa0b4",
@@ -1036,10 +1083,55 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._hide_taskbar_hint.pack(anchor="w", pady=(0, 2))
 
+        self._section_advanced_label = ctk.CTkLabel(
+            self.advanced_frame,
+            text=tr("browser.section.advanced"),
+            font=_font(13, "bold"),
+            anchor="w",
+        )
+        self._section_advanced_label.pack(padx=24, pady=(20, 4), fill="x")
+
+        self._section_advanced_hint = ctk.CTkLabel(
+            self.advanced_frame,
+            text=tr("browser.section.advanced.hint"),
+            font=_font(12),
+            text_color="#aaaabb",
+            anchor="w",
+            wraplength=560,
+            justify="left",
+        )
+        self._section_advanced_hint.pack(padx=24, pady=(0, 8), fill="x")
+
+        advanced_toggle_frame = ctk.CTkFrame(
+            self.advanced_frame, fg_color="transparent"
+        )
+        advanced_toggle_frame.pack(padx=24, pady=(0, 0), fill="x")
+
+        self.app_mode_var = ctk.BooleanVar(value=bool(settings.get("app_mode", False)))
+        self.app_mode_cb = ctk.CTkCheckBox(
+            advanced_toggle_frame,
+            text=tr("browser.toggle.app_mode"),
+            variable=self.app_mode_var,
+            command=self._on_app_mode_toggle,
+            font=_font(12),
+        )
+        self.app_mode_cb.pack(anchor="w", pady=(0, 2))
+
+        self._app_mode_hint = ctk.CTkLabel(
+            advanced_toggle_frame,
+            text=tr("browser.toggle.app_mode.hint"),
+            font=_font(11),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=560,
+            justify="left",
+        )
+        self._app_mode_hint.pack(anchor="w", pady=(0, 8))
+
         # ── Isolated profile (forces a fresh Chrome master process so
         # --app= / --window-position actually take effect)
         profile_frame = ctk.CTkFrame(
-            self.content_frame, fg_color=_CLR_CARD, corner_radius=10
+            self.advanced_frame, fg_color=_CLR_CARD, corner_radius=10
         )
         profile_frame.pack(padx=24, pady=(14, 0), fill="x")
         profile_frame.grid_columnconfigure(1, weight=1)
@@ -1116,6 +1208,63 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._profile_per_channel_hint.grid(
             row=4, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="w"
         )
+
+        tools_frame = ctk.CTkFrame(
+            self.advanced_frame, fg_color=_CLR_CARD, corner_radius=10
+        )
+        tools_frame.pack(padx=24, pady=(14, 0), fill="x")
+        tools_frame.grid_columnconfigure(0, weight=1)
+
+        self._tools_title = ctk.CTkLabel(
+            tools_frame,
+            text=tr("browser.tools.title"),
+            font=_font(12, "bold"),
+            anchor="w",
+        )
+        self._tools_title.grid(row=0, column=0, padx=12, pady=(10, 2), sticky="w")
+
+        self._tools_hint = ctk.CTkLabel(
+            tools_frame,
+            text=tr("browser.tools.hint"),
+            font=_font(11),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=560,
+            justify="left",
+        )
+        self._tools_hint.grid(row=1, column=0, padx=12, pady=(0, 8), sticky="w")
+
+        tools_button_frame = ctk.CTkFrame(tools_frame, fg_color="transparent")
+        tools_button_frame.grid(row=2, column=0, padx=12, pady=(0, 12), sticky="w")
+
+        self._test_btn = ctk.CTkButton(
+            tools_button_frame,
+            text=tr("browser.btn.test"),
+            width=112,
+            height=34,
+            fg_color="transparent",
+            border_width=1,
+            border_color=_CLR_LINK,
+            hover_color=_CLR_LINK_HOVER,
+            text_color=_CLR_LINK,
+            font=_font(12),
+            command=self._on_test,
+        )
+        self._test_btn.pack(side="left", padx=(0, 8))
+
+        self._test_close_btn = ctk.CTkButton(
+            tools_button_frame,
+            text=tr("browser.btn.test_close"),
+            width=112,
+            height=34,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#555566",
+            hover_color="#333344",
+            font=_font(12),
+            command=self._on_test_close,
+        )
+        self._test_close_btn.pack(side="left")
 
         # ── Position / size
         pos_frame = ctk.CTkFrame(
@@ -1194,6 +1343,18 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         btn_frame.pack(padx=24, pady=(8, 18), fill="x")
         btn_frame.pack_propagate(False)
 
+        self._save_btn = ctk.CTkButton(
+            btn_frame,
+            text=tr("browser.btn.save"),
+            width=104,
+            height=40,
+            fg_color=_CLR_ADD,
+            hover_color=_CLR_ADD_HOVER,
+            font=_font(13, "bold"),
+            command=self._on_save,
+        )
+        self._save_btn.pack(side="right", pady=4)
+
         self._cancel_btn = ctk.CTkButton(
             btn_frame,
             text=tr("browser.btn.cancel"),
@@ -1206,48 +1367,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(13),
             command=self._on_cancel,
         )
-        self._cancel_btn.pack(side="right", padx=(8, 0), pady=4)
-
-        self._test_btn = ctk.CTkButton(
-            btn_frame,
-            text=tr("browser.btn.test"),
-            width=104,
-            height=40,
-            fg_color="transparent",
-            border_width=1,
-            border_color=_CLR_LINK,
-            hover_color=_CLR_LINK_HOVER,
-            text_color=_CLR_LINK,
-            font=_font(13),
-            command=self._on_test,
-        )
-        self._test_btn.pack(side="right", padx=(8, 0), pady=4)
-
-        self._test_close_btn = ctk.CTkButton(
-            btn_frame,
-            text=tr("browser.btn.test_close"),
-            width=104,
-            height=40,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
-            font=_font(13),
-            command=self._on_test_close,
-        )
-        self._test_close_btn.pack(side="right", padx=(8, 0), pady=4)
-
-        self._save_btn = ctk.CTkButton(
-            btn_frame,
-            text=tr("browser.btn.save"),
-            width=104,
-            height=40,
-            fg_color=_CLR_ADD,
-            hover_color=_CLR_ADD_HOVER,
-            font=_font(13, "bold"),
-            command=self._on_save,
-        )
-        self._save_btn.pack(side="right", pady=4)
+        self._cancel_btn.pack(side="right", padx=(0, 8), pady=4)
 
         self._all_inputs: list[Any] = [
             self.path_entry,
@@ -1277,15 +1397,35 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.title(tr("browser.title"))
         except Exception:  # noqa: BLE001
             return
+        active_tab_label = self.tabview.get()
+        new_user_label = tr("browser.tab.user")
+        if new_user_label != self._tab_user_label:
+            was_active = active_tab_label == self._tab_user_label
+            self.tabview.rename(self._tab_user_label, new_user_label)
+            if was_active:
+                self.tabview.set(new_user_label)
+            self._tab_user_label = new_user_label
+        new_advanced_label = tr("browser.tab.advanced")
+        if new_advanced_label != self._tab_advanced_label:
+            was_active = active_tab_label == self._tab_advanced_label
+            self.tabview.rename(self._tab_advanced_label, new_advanced_label)
+            if was_active:
+                self.tabview.set(new_advanced_label)
+            self._tab_advanced_label = new_advanced_label
         self._section_open_label.configure(text=tr("browser.section.open"))
         self._section_open_hint.configure(text=tr("browser.section.open.hint"))
         self.enabled_switch.configure(text=tr("browser.enable"))
         self._path_label.configure(text=tr("browser.path.label"))
         self.path_entry.configure(placeholder_text=tr("browser.path.placeholder"))
         self._path_hint.configure(text=tr("browser.path.hint"))
+        self._section_window_label.configure(text=tr("browser.section.window"))
+        self._section_window_hint.configure(text=tr("browser.section.window.hint"))
         self.new_window_cb.configure(text=tr("browser.toggle.new_window"))
-        self.app_mode_cb.configure(text=tr("browser.toggle.app_mode"))
         self.minimized_cb.configure(text=tr("browser.toggle.minimized"))
+        self._section_lifecycle_label.configure(text=tr("browser.section.lifecycle"))
+        self._section_lifecycle_hint.configure(
+            text=tr("browser.section.lifecycle.hint")
+        )
         self.close_on_offline_cb.configure(text=tr("browser.toggle.close_on_offline"))
         self._close_on_offline_hint.configure(text=tr("browser.toggle.close_on_offline.hint"))
         self.close_on_stop_cb.configure(text=tr("browser.toggle.close_on_stop"))
@@ -1294,11 +1434,19 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._close_off_topic_hint.configure(text=tr("browser.toggle.close_off_topic.hint"))
         self.hide_from_taskbar_cb.configure(text=tr("browser.toggle.hide_taskbar"))
         self._hide_taskbar_hint.configure(text=tr("browser.toggle.hide_taskbar.hint"))
+        self._section_advanced_label.configure(text=tr("browser.section.advanced"))
+        self._section_advanced_hint.configure(
+            text=tr("browser.section.advanced.hint")
+        )
+        self.app_mode_cb.configure(text=tr("browser.toggle.app_mode"))
+        self._app_mode_hint.configure(text=tr("browser.toggle.app_mode.hint"))
         self._profile_title.configure(text=tr("browser.profile.title"))
         self._profile_desc.configure(text=tr("browser.profile.desc"))
         self.user_data_dir_cb.configure(text=tr("browser.profile.enable"))
         self.per_channel_profile_cb.configure(text=tr("browser.profile.per_channel"))
         self._profile_per_channel_hint.configure(text=tr("browser.profile.per_channel.hint"))
+        self._tools_title.configure(text=tr("browser.tools.title"))
+        self._tools_hint.configure(text=tr("browser.tools.hint"))
         self.apply_geometry_cb.configure(text=tr("browser.geometry.apply"))
         self.reset_geometry_btn.configure(text=tr("browser.geometry.reset"))
         self._x_label.configure(text=tr("browser.geometry.x"))
@@ -1316,7 +1464,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             key, kwargs = self._message_key
             self.message_label.configure(text=tr(key, **kwargs))
 
-    def _on_destroy(self, _event: Any = None) -> None:
+    def _on_destroy(self, event: Any = None) -> None:
+        if event is not None and event.widget is not self:
+            return
         if getattr(self, "_unsub_i18n", None):
             self._unsub_i18n()
             self._unsub_i18n = None
@@ -1344,6 +1494,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.app_mode_cb,
             self.minimized_cb,
             self.close_on_offline_cb,
+            self.close_on_stop_cb,
             self.hide_from_taskbar_cb,
             self.user_data_dir_cb,
             self.per_channel_profile_cb,
@@ -1822,7 +1973,9 @@ class ChannelRow(ctk.CTkFrame):
         self._unsub_i18n = i18n.subscribe(self._on_language_changed)
         self.bind("<Destroy>", self._on_destroy, add="+")
 
-    def _on_destroy(self, _event: Any = None) -> None:
+    def _on_destroy(self, event: Any = None) -> None:
+        if event is not None and event.widget is not self:
+            return
         if getattr(self, "_unsub_i18n", None):
             self._unsub_i18n()
             self._unsub_i18n = None
