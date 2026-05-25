@@ -1,17 +1,17 @@
-# Hello Streamer v0.7.0
+# Hello Streamer v0.8.0
 
 ## 重點更新
 
-- 瀏覽器設定對話框改為分頁式介面，分成「使用者設定」與「開發者設定」。
-- 日常選項集中在使用者設定：自訂瀏覽器、獨立視窗、最小化、座標大小、離線關閉、停止時關閉與只保留直播相關視窗。
-- 進階選項集中在開發者設定：純淨播放器視窗、獨立 Profile、每頻道 Profile 與測試工具。
-- 測試開啟 / 測試關閉移到開發者設定中的測試工具區，避免日常設定畫面過於擁擠。
-- 多語系文案同步更新，讓瀏覽器設定中的 App Mode、Profile、視窗整理與測試工具描述更清楚。
-- 修正對話框子元件銷毀時可能重複取消 i18n 訂閱的問題。
-- README 已更新瀏覽器設定分頁、使用者設定、開發者設定與下載檔名說明。
+- 新增「登入此 Profile」工具，可用獨立 Profile 開啟一般瀏覽器視窗，讓使用者先登入 Twitch / YouTube，之後自動開播視窗可沿用該 Profile 的 cookies。
+- 未設定獨立 Profile 時，程式會提示風險，並在 Windows 上停用不可靠的視窗追蹤、座標補套用與標題關閉 fallback，避免誤關使用者原本的瀏覽器視窗。
+- 關閉「使用獨立 Profile」時會明確保存為共用瀏覽器模式，不會被設定遷移自動補回 `browser_profile/`。
+- `close_on_offline`、`close_on_stop`、`close_off_topic_pages` 與視窗幾何設定現在會依 Profile 隔離狀態採取更保守的安全行為。
+- 新增完整瀏覽器設定組合矩陣測試，涵蓋 Profile 隔離、App Mode、獨立視窗、共用分頁、幾何設定與三種關閉行為的交互情境。
+- 多語系文案補齊登入 Profile、未隔離警告與登入失敗提示。
+- README 已更新 Profile 登入工具、未隔離安全降級與下載檔名說明。
 
 ## 下載檔案
 
-- Windows 請下載 `HelloStreamer-v0.7.0-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.7.0-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.7.0-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v0.8.0-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.8.0-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.8.0-linux-arm64.tar.gz`
