@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 from stream_monitor import notifier
@@ -1374,6 +1375,7 @@ def test_configure_user32_signatures_sets_argtypes() -> None:
 def _reset_tracked_hwnds() -> None:
     with notifier._TRACKED_HWNDS_LOCK:
         notifier._TRACKED_WINDOWS_BY_URL.clear()
+        notifier._TITLE_FALLBACK_BLOCKED_URLS.clear()
 
 
 def test_register_and_snapshot_tracked_hwnds_roundtrip() -> None:
@@ -2095,3 +2097,270 @@ def test_register_tracked_hwnd_merges_keywords_on_re_register() -> None:
         assert tracked[0].keywords == ("a", "b")
     finally:
         _reset_tracked_hwnds()
+
+
+# ─────────────────────────────────────────────
+# Safety degradation when no profile isolation
+# ─────────────────────────────────────────────
+def test_open_with_browser_settings_skips_win32_management_without_isolation(
+    monkeypatch,
+) -> None:
+    """When the effective user_data_dir resolves to ``""`` (no isolation),
+    the post-launch Win32 worker MUST be skipped entirely.
+
+    Otherwise the HWND-diff approach grabs whatever new top-level window
+    Chrome happens to surface — which, on a shared master process, may
+    be a completely unrelated browser window the user just opened.
+    Tracking that window would let close_on_offline / off-topic prune
+    close the wrong thing.
+    """
+    _reset_tracked_hwnds()
+    try:
+        _stub_browser_resolution(monkeypatch, "chrome")
+        monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+        monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+
+        enum_calls: list[str] = []
+        monkeypatch.setattr(
+            notifier,
+            "_enum_browser_hwnds",
+            lambda class_name: enum_calls.append(class_name) or set(),
+        )
+
+        manager_calls: list[Any] = []
+        monkeypatch.setattr(
+            notifier,
+            "_apply_new_browser_window_settings_async",
+            lambda *args, **kwargs: manager_calls.append((args, kwargs)),
+        )
+
+        # Disable per-channel and leave user_data_dir empty → no isolation.
+        settings = {
+            "enabled": True,
+            "browser_path": "chrome",
+            "new_window": True,
+            "app_mode": True,  # would normally trigger window management
+            "minimized": True,  # would normally trigger window management
+            "user_data_dir": "",
+            "per_channel_profile": False,
+            "close_on_offline": True,  # would normally trigger tracking
+            "close_off_topic_pages": True,
+        }
+
+        assert notifier._open_with_browser_settings(
+            "https://example.com", settings
+        ) is True
+        # No HWND enum, no manager invocation, no tracking.
+        assert enum_calls == []
+        assert manager_calls == []
+
+        title_lookup_calls: list[list[str]] = []
+        monkeypatch.setattr(
+            notifier,
+            "_find_hwnds_by_title_keyword",
+            lambda keywords: title_lookup_calls.append(keywords) or {999},
+        )
+        close_calls: list[int] = []
+        monkeypatch.setattr(
+            notifier,
+            "_post_close_window",
+            lambda hwnd: close_calls.append(hwnd) or True,
+        )
+
+        # The safety downgrade must also suppress the title-keyword fallback;
+        # otherwise close_on_offline could still close a user-owned tab that
+        # happens to contain the same channel name in its title.
+        assert (
+            notifier.close_browser_window_for_url(
+                "https://example.com", title_keywords=["example"]
+            )
+            == 0
+        )
+        assert title_lookup_calls == []
+        assert close_calls == []
+    finally:
+        _reset_tracked_hwnds()
+
+
+def test_open_with_browser_settings_blocks_title_fallback_without_isolation_for_tabs(
+    monkeypatch,
+) -> None:
+    """Opening as a tab in the user's main profile is also unmanaged.
+
+    close_on_offline must not fall back to title matching there, because the
+    only close target would be a normal user-owned browser window.
+    """
+    _reset_tracked_hwnds()
+    try:
+        _stub_browser_resolution(monkeypatch, "chrome")
+        monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+        monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+
+        assert notifier._open_with_browser_settings(
+            "https://example.com/tab",
+            {
+                "enabled": True,
+                "browser_path": "chrome",
+                "new_window": False,
+                "app_mode": False,
+                "user_data_dir": "",
+                "per_channel_profile": False,
+                "close_on_offline": True,
+            },
+        ) is True
+
+        title_lookup_calls: list[list[str]] = []
+        monkeypatch.setattr(
+            notifier,
+            "_find_hwnds_by_title_keyword",
+            lambda keywords: title_lookup_calls.append(keywords) or {999},
+        )
+        monkeypatch.setattr(notifier, "_post_close_window", lambda _hwnd: True)
+
+        assert (
+            notifier.close_browser_window_for_url(
+                "https://example.com/tab", title_keywords=["example"]
+            )
+            == 0
+        )
+        assert title_lookup_calls == []
+    finally:
+        _reset_tracked_hwnds()
+
+
+def test_open_with_browser_settings_keeps_win32_management_with_isolation(
+    monkeypatch, tmp_path
+) -> None:
+    """Sanity check the opposite direction: dedicated profile → Win32 manager
+    fires as expected. Regression guard so the safety degradation doesn't
+    accidentally turn into "feature is broken".
+    """
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        notifier, "_enum_browser_hwnds", lambda _class_name: set()
+    )
+
+    manager_calls: list[Any] = []
+    monkeypatch.setattr(
+        notifier,
+        "_apply_new_browser_window_settings_async",
+        lambda *args, **kwargs: manager_calls.append((args, kwargs)),
+    )
+
+    settings = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "new_window": True,
+        "app_mode": True,
+        "minimized": False,
+        "user_data_dir": str(tmp_path / "profile"),
+        "per_channel_profile": False,
+    }
+    assert notifier._open_with_browser_settings(
+        "https://example.com", settings
+    ) is True
+    assert len(manager_calls) == 1
+
+
+# ─────────────────────────────────────────────
+# open_browser_for_signin — Chromium + Firefox CLI surface
+# ─────────────────────────────────────────────
+def test_open_browser_for_signin_chromium_args(monkeypatch, tmp_path) -> None:
+    """Chromium-family launch should pass ``--user-data-dir`` + the URL plus
+    the same first-run guards we use elsewhere, but **no** ``--app=``,
+    ``--window-position``, ``--window-size`` or any tracking flag.
+    """
+    _stub_browser_resolution(monkeypatch, "chrome")
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        notifier.subprocess,
+        "Popen",
+        lambda args, **_kw: captured.append(list(args)) or object(),
+    )
+
+    profile = tmp_path / "twitch_session"
+    assert notifier.open_browser_for_signin(
+        str(profile), browser_path="chrome"
+    ) is True
+
+    assert len(captured) == 1
+    args = captured[0]
+    assert args[0] == "chrome"
+    assert f"--user-data-dir={profile}" in args
+    assert "--no-first-run" in args
+    assert "--no-default-browser-check" in args
+    assert "--new-window" in args
+    # Defaults to the Twitch landing page — sign-in flow most users want.
+    assert args[-1] == notifier.SIGNIN_DEFAULT_URL
+    # Critical negative assertions — these would re-introduce the bugs the
+    # sign-in helper is specifically designed to avoid.
+    assert not any(a.startswith("--app=") for a in args)
+    assert not any(a.startswith("--window-position=") for a in args)
+    assert not any(a.startswith("--window-size=") for a in args)
+
+
+def test_open_browser_for_signin_firefox_args(monkeypatch, tmp_path) -> None:
+    """Firefox needs ``-profile <path> -no-remote -new-instance``; without
+    these flags it forwards the request to an already-running default-profile
+    instance and our dedicated profile never opens.
+    """
+    _stub_browser_resolution(monkeypatch, "firefox")
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        notifier.subprocess,
+        "Popen",
+        lambda args, **_kw: captured.append(list(args)) or object(),
+    )
+
+    profile = tmp_path / "twitch_session"
+    assert notifier.open_browser_for_signin(
+        str(profile), browser_path="firefox"
+    ) is True
+
+    args = captured[0]
+    assert args[0] == "firefox"
+    assert "-profile" in args
+    assert str(profile) in args
+    assert "-no-remote" in args
+    assert "-new-instance" in args
+    assert args[-1] == notifier.SIGNIN_DEFAULT_URL
+
+
+def test_open_browser_for_signin_rejects_empty_path() -> None:
+    assert notifier.open_browser_for_signin("") is False
+    assert notifier.open_browser_for_signin("   ") is False
+
+
+def test_open_browser_for_signin_handles_popen_failure(monkeypatch, tmp_path) -> None:
+    """FileNotFoundError from Popen must be returned as ``False`` without
+    raising — the UI displays a localized error in that case.
+    """
+    _stub_browser_resolution(monkeypatch, "chrome")
+
+    def fail_popen(*_a, **_k):
+        raise FileNotFoundError("no chrome")
+
+    monkeypatch.setattr(notifier.subprocess, "Popen", fail_popen)
+    assert (
+        notifier.open_browser_for_signin(
+            str(tmp_path / "profile"), browser_path="chrome"
+        )
+        is False
+    )
+
+
+def test_open_browser_for_signin_creates_profile_dir(monkeypatch, tmp_path) -> None:
+    """Helper must create the profile directory before launching so Chrome
+    doesn't bail with "profile path doesn't exist" on first sign-in.
+    """
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+
+    profile = tmp_path / "new" / "nested" / "profile"
+    assert not profile.exists()
+    assert notifier.open_browser_for_signin(
+        str(profile), browser_path="chrome"
+    ) is True
+    assert profile.exists()

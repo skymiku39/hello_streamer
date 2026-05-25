@@ -368,6 +368,33 @@ def test_migrate_skips_when_per_channel_disabled() -> None:
     assert settings["user_data_dir"] == ""
 
 
+def test_save_preserves_explicit_profile_opt_out(tmp_path, monkeypatch) -> None:
+    """The settings dialog represents "Use a dedicated profile" off as
+    ``user_data_dir=""`` plus ``per_channel_profile=False``.
+
+    Saving that explicit opt-out must not be migrated back into the default
+    ``browser_profile`` folder, otherwise users cannot actually disable
+    profile isolation from the UI.
+    """
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+
+    config_manager.save(
+        {
+            "browser_settings": {
+                "enabled": True,
+                "user_data_dir": "",
+                "per_channel_profile": False,
+            }
+        }
+    )
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    settings = on_disk["browser_settings"]
+    assert settings["user_data_dir"] == ""
+    assert settings["per_channel_profile"] is False
+
+
 def test_migrate_preserves_user_supplied_path() -> None:
     """Custom ``user_data_dir`` paths must survive migration unchanged."""
     settings = {

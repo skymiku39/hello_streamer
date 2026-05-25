@@ -123,6 +123,7 @@ class _TrackedWindow:
 # instances would step on each other anyway because Windows HWNDs are
 # process-global.
 _TRACKED_WINDOWS_BY_URL: dict[str, list[_TrackedWindow]] = {}
+_TITLE_FALLBACK_BLOCKED_URLS: set[str] = set()
 _TRACKED_HWNDS_LOCK = threading.Lock()
 
 
@@ -693,6 +694,25 @@ def _clear_tracked_hwnds(url: str) -> None:
         _TRACKED_WINDOWS_BY_URL.pop(url, None)
 
 
+def _block_title_fallback_for_url(url: str) -> None:
+    if not url:
+        return
+    with _TRACKED_HWNDS_LOCK:
+        _TITLE_FALLBACK_BLOCKED_URLS.add(url)
+
+
+def _unblock_title_fallback_for_url(url: str) -> None:
+    with _TRACKED_HWNDS_LOCK:
+        _TITLE_FALLBACK_BLOCKED_URLS.discard(url)
+
+
+def _pop_title_fallback_block(url: str) -> bool:
+    with _TRACKED_HWNDS_LOCK:
+        blocked = url in _TITLE_FALLBACK_BLOCKED_URLS
+        _TITLE_FALLBACK_BLOCKED_URLS.discard(url)
+        return blocked
+
+
 def _remove_tracked_hwnd(url: str, hwnd: int) -> None:
     """Drop a single HWND from URL's tracking bucket (no-op if absent)."""
     with _TRACKED_HWNDS_LOCK:
@@ -922,6 +942,9 @@ def close_browser_window_for_url(
        ``webbrowser`` (no tracking) or the tracked HWNDs went stale
        (browser crashed, user closed manually, etc.). Each keyword is
        case-insensitively substring-matched against visible window titles.
+       This fallback is suppressed for custom-browser launches that had no
+       profile isolation, because in that mode we cannot prove the title
+       belongs to a window opened by Hello Streamer.
 
     Safe on non-Windows (returns 0 without doing anything).
     """
@@ -939,7 +962,8 @@ def close_browser_window_for_url(
     # starts fresh (otherwise a future close call could try a stale HWND).
     _clear_tracked_hwnds(url)
 
-    if closed == 0 and title_keywords:
+    title_fallback_blocked = _pop_title_fallback_block(url)
+    if closed == 0 and title_keywords and not title_fallback_blocked:
         for hwnd in _find_hwnds_by_title_keyword(title_keywords):
             if _post_close_window(hwnd):
                 closed += 1
@@ -1212,7 +1236,47 @@ def _open_with_browser_settings(
     new_window_expected = bool(settings.get("app_mode")) or bool(
         settings.get("new_window", True)
     )
-    want_window_management = _is_windows() and new_window_expected
+    # ── Safety degradation when no profile isolation ────────────────────────
+    # When the effective user_data_dir is empty we are launching against the
+    # user's main Chrome master process, which means:
+    #   1. ``--app=`` / ``--window-position`` / ``--window-size`` may be
+    #      silently dropped by Chrome's IPC handler.
+    #   2. The HWND diff (pre-launch baseline vs post-launch poll) is
+    #      ambiguous — the "new" window might be something the user opened
+    #      manually in another app, not the URL we just spawned.
+    #   3. Registering that ambiguous HWND would let off-topic prune /
+    #      close-on-offline send WM_CLOSE to the wrong window.
+    #
+    # Refuse to play the Win32 post-launch game when we can't isolate. The
+    # browser still opens (Popen below); we just don't try to manage the
+    # window or track it. This is a deliberate downgrade — the surface area
+    # of "settings cargo-culted by an unrelated browser window" is much
+    # worse than "geometry didn't apply for one launch".
+    isolation_available = bool(effective_user_data_dir)
+    want_window_management = (
+        _is_windows() and new_window_expected and isolation_available
+    )
+    if (
+        _is_windows()
+        and new_window_expected
+        and not isolation_available
+        and (
+            bool(settings.get("close_on_offline"))
+            or bool(settings.get("close_off_topic_pages"))
+            or bool(settings.get("apply_geometry", True))
+            or want_minimize
+            or bool(settings.get("hide_from_taskbar"))
+        )
+    ):
+        logger.warning(
+            "browser_settings.user_data_dir is empty — Win32 post-launch "
+            "management disabled. Window position/size, App Mode geometry, "
+            "minimize-on-launch, hide-from-taskbar, close-on-offline and "
+            "close-off-topic-pages all become unreliable in this mode. "
+            "Set browser_settings.user_data_dir to a folder path (or enable "
+            "per_channel_profile) to restore full functionality."
+        )
+
     class_name = (
         _WIN32_WINDOW_CLASS_BY_FAMILY.get(family) if want_window_management else None
     )
@@ -1256,6 +1320,7 @@ def _open_with_browser_settings(
         return False
 
     if class_name:
+        _unblock_title_fallback_for_url(url)
         _apply_new_browser_window_settings_async(
             class_name,
             baseline,
@@ -1264,6 +1329,8 @@ def _open_with_browser_settings(
             track_for_url=url,
             track_keywords=tuple(title_hints),
         )
+    elif _is_windows() and not isolation_available:
+        _block_title_fallback_for_url(url)
 
     return True
 
@@ -1321,6 +1388,95 @@ def open_url(
             logger.exception("Failed to open URL with xdg-open: %s", url)
 
     return False
+
+
+SIGNIN_DEFAULT_URL = "https://www.twitch.tv/"
+
+
+def open_browser_for_signin(
+    user_data_dir: str,
+    *,
+    browser_path: str = "chrome",
+    url: str = SIGNIN_DEFAULT_URL,
+) -> bool:
+    """Open the configured browser with ``user_data_dir`` for a sign-in session.
+
+    Dedicated browser profiles created via ``--user-data-dir=<NEW path>`` start
+    out completely empty — no cookies, no saved logins. That makes the very
+    first stream launch land on Twitch / YouTube logged out, which surprises
+    users who expected the dedicated profile to inherit from their main
+    Chrome session (Chrome's design makes that inheritance impossible).
+
+    This helper provides the manual one-time bootstrap: it launches the
+    browser pointed at ``user_data_dir`` in **plain** mode — no ``--app=``,
+    no minimisation, no geometry constraints, no HWND tracking — so the
+    user can log in normally and let the browser persist cookies inside
+    the profile folder. Subsequent stream triggers using the same
+    ``user_data_dir`` then reuse those saved credentials.
+
+    Returns True if ``Popen`` succeeded. Safe to call repeatedly.
+    """
+    cleaned = (user_data_dir or "").strip()
+    if not cleaned:
+        logger.warning("open_browser_for_signin: user_data_dir is empty")
+        return False
+
+    executable = _resolve_browser_executable(browser_path or "chrome")
+    family = detect_browser_family(executable)
+    args: list[str] = [executable]
+
+    if family == "firefox":
+        # Firefox needs ``-no-remote`` to avoid forwarding to an already-
+        # running default-profile instance; ``-new-instance`` makes it
+        # spawn its own process for the dedicated profile path.
+        args.extend(["-profile", cleaned, "-no-remote", "-new-instance", url])
+    else:
+        # Chromium family — same fresh-profile guards we use in the main
+        # launch path so the welcome / "make Chrome default" wizards don't
+        # trip the user up on first run inside the new profile.
+        args.extend(
+            [
+                f"--user-data-dir={cleaned}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--new-window",
+                url,
+            ]
+        )
+
+    try:
+        Path(os.path.expandvars(os.path.expanduser(cleaned))).mkdir(
+            parents=True, exist_ok=True
+        )
+    except OSError:
+        logger.exception(
+            "Could not create sign-in user_data_dir: %s", cleaned
+        )
+
+    try:
+        subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        logger.warning(
+            "Sign-in browser executable not found: %s", executable
+        )
+        return False
+    except OSError:
+        logger.exception(
+            "Failed to spawn sign-in browser session: %s", args
+        )
+        return False
+
+    logger.info(
+        "Opened sign-in browser session: profile=%s url=%s family=%s",
+        cleaned,
+        url,
+        family,
+    )
+    return True
 
 
 def _format_scheduled_start(iso_str: str) -> str:

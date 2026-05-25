@@ -31,6 +31,7 @@ from stream_monitor.notifier import (
     close_browser_window_for_url,
     detect_browser_family,
     execute_action,
+    open_browser_for_signin,
     open_url,
     prune_off_topic_tracked_windows,
 )
@@ -1209,6 +1210,31 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             row=4, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="w"
         )
 
+        # No-isolation warning. Surfaced when:
+        #   browser_settings.enabled = True
+        #   AND user_data_dir is effectively empty
+        # In that state the runtime intentionally disables Win32 post-launch
+        # window management and HWND tracking (notifier.py safety degradation),
+        # which means App Mode / geometry / close_on_offline /
+        # close_off_topic_pages all become best-effort no-ops to avoid
+        # corrupting unrelated browser windows. The label explains that to
+        # the user and points them at the fix.
+        self._no_isolation_label = ctk.CTkLabel(
+            profile_frame,
+            text=tr("browser.msg.no_isolation_warning"),
+            font=_font(11),
+            text_color="#ffb74d",
+            anchor="w",
+            wraplength=500,
+            justify="left",
+        )
+        # grid() / grid_remove() is the cleanest way to toggle visibility
+        # while keeping the row position stable across show/hide cycles.
+        self._no_isolation_label.grid(
+            row=5, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="w"
+        )
+        self._no_isolation_label.grid_remove()
+
         tools_frame = ctk.CTkFrame(
             self.advanced_frame, fg_color=_CLR_CARD, corner_radius=10
         )
@@ -1265,6 +1291,26 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             command=self._on_test_close,
         )
         self._test_close_btn.pack(side="left")
+
+        # Sign-in helper: bootstraps a dedicated profile by opening the
+        # browser in plain mode (no --app=, no minimisation, no tracking)
+        # so the user can log in once. Without this step, dedicated profiles
+        # start out completely fresh — no Twitch/YouTube cookies — and every
+        # auto-opened stream lands on a logged-out page.
+        self._signin_btn = ctk.CTkButton(
+            tools_button_frame,
+            text=tr("browser.btn.signin"),
+            width=160,
+            height=34,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#cda043",
+            hover_color="#3d3013",
+            text_color="#cda043",
+            font=_font(12),
+            command=self._on_signin,
+        )
+        self._signin_btn.pack(side="left", padx=(8, 0))
 
         # ── Position / size
         pos_frame = ctk.CTkFrame(
@@ -1456,7 +1502,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._cancel_btn.configure(text=tr("browser.btn.cancel"))
         self._test_btn.configure(text=tr("browser.btn.test"))
         self._test_close_btn.configure(text=tr("browser.btn.test_close"))
+        self._signin_btn.configure(text=tr("browser.btn.signin"))
         self._save_btn.configure(text=tr("browser.btn.save"))
+        self._no_isolation_label.configure(text=tr("browser.msg.no_isolation_warning"))
         if self._compat_key is not None:
             key, color = self._compat_key
             self.compat_label.configure(text=tr(key), text_color=color)
@@ -1528,6 +1576,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         if not self.enabled_var.get():
             self.user_data_dir_entry.configure(state="disabled")
             self.per_channel_profile_cb.configure(state="disabled")
+            self._signin_btn.configure(state="disabled")
+            self._no_isolation_label.grid_remove()
             return
         profile_enabled = self.user_data_dir_enabled_var.get()
         self.user_data_dir_entry.configure(
@@ -1536,6 +1586,16 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.per_channel_profile_cb.configure(
             state="normal" if profile_enabled else "disabled"
         )
+        self._signin_btn.configure(
+            state="normal" if profile_enabled else "disabled"
+        )
+        # Show the no-isolation warning only when the user actively turned off
+        # dedicated profile — that's the only state where Win32 management
+        # and HWND tracking get downgraded to silent no-ops at runtime.
+        if profile_enabled:
+            self._no_isolation_label.grid_remove()
+        else:
+            self._no_isolation_label.grid()
 
     def _refresh_geometry_state(self) -> None:
         """Enable / disable X/Y/W/H entries based on the apply_geometry checkbox."""
@@ -1616,13 +1676,17 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         browser_path = self.path_entry.get().strip() or "chrome"
 
-        if self.user_data_dir_enabled_var.get():
+        profile_enabled = bool(self.user_data_dir_enabled_var.get())
+        if profile_enabled:
             user_data_dir = self.user_data_dir_entry.get().strip()
             if not user_data_dir:
                 self._set_message("browser.msg.empty_profile", color="#ef5350")
                 return None
         else:
             user_data_dir = ""
+        per_channel_profile = (
+            bool(self.per_channel_profile_var.get()) if profile_enabled else False
+        )
 
         app_mode = bool(self.app_mode_var.get())
         new_window = True if app_mode else bool(self.new_window_var.get())
@@ -1639,7 +1703,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "height": height,
             "minimized": bool(self.minimized_var.get()),
             "user_data_dir": user_data_dir,
-            "per_channel_profile": bool(self.per_channel_profile_var.get()),
+            "per_channel_profile": per_channel_profile,
             "close_on_offline": bool(self.close_on_offline_var.get()),
             "close_on_stop": bool(self.close_on_stop_var.get()),
             "close_off_topic_pages": bool(self.close_off_topic_var.get()),
@@ -1648,6 +1712,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
     def _snapshot_browser_settings(self) -> dict[str, Any]:
         app_mode = bool(self.app_mode_var.get())
+        profile_enabled = bool(self.user_data_dir_enabled_var.get())
         return {
             "enabled": bool(self.enabled_var.get()),
             "browser_path": self.path_entry.get().strip(),
@@ -1659,9 +1724,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             "width": self.w_entry.get().strip(),
             "height": self.h_entry.get().strip(),
             "minimized": bool(self.minimized_var.get()),
-            "user_data_dir_enabled": bool(self.user_data_dir_enabled_var.get()),
+            "user_data_dir_enabled": profile_enabled,
             "user_data_dir": self.user_data_dir_entry.get().strip(),
-            "per_channel_profile": bool(self.per_channel_profile_var.get()),
+            "per_channel_profile": (
+                bool(self.per_channel_profile_var.get()) if profile_enabled else False
+            ),
             "close_on_offline": bool(self.close_on_offline_var.get()),
             "close_on_stop": bool(self.close_on_stop_var.get()),
             "close_off_topic_pages": bool(self.close_off_topic_var.get()),
@@ -1768,6 +1835,34 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             title_keywords=["Hello Streamer Browser Test"],
         )
         self._set_message("browser.msg.test_closed", color="#64b5f6", count=closed)
+
+    def _on_signin(self) -> None:
+        """Bootstrap cookies into the dedicated profile via a manual sign-in.
+
+        Reads the *currently typed* profile path (not the saved one) so the
+        user can try out a new path before committing to it. Bypasses
+        ``_collect()`` validation deliberately — sign-in is read-only with
+        respect to settings; we don't want minor geometry errors to block
+        the cookie bootstrap.
+        """
+        if not self.user_data_dir_enabled_var.get():
+            self._set_message("browser.msg.signin_no_path", color="#ef5350")
+            return
+        path = self.user_data_dir_entry.get().strip()
+        if not path:
+            self._set_message("browser.msg.signin_no_path", color="#ef5350")
+            return
+        if self.per_channel_profile_var.get():
+            self._set_message(
+                "browser.msg.signin_per_channel",
+                color="#ffb74d",
+            )
+            return
+        browser_path = self.path_entry.get().strip() or "chrome"
+        if open_browser_for_signin(path, browser_path=browser_path):
+            self._set_message("browser.msg.signin_opened", color="#64b5f6")
+        else:
+            self._set_message("browser.msg.signin_failed", color="#ef5350")
 
     def _on_save(self) -> None:
         data = self._collect()
