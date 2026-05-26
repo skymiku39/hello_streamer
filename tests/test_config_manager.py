@@ -2,6 +2,8 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
+
 from stream_monitor import config_manager
 
 
@@ -404,6 +406,163 @@ def test_migrate_preserves_user_supplied_path() -> None:
     config_manager._migrate_browser_settings(settings)
 
     assert settings["user_data_dir"] == "C:/custom/profile"
+
+
+# ---------------------------------------------------------------------------
+# Migration #2: opt-in advanced features without isolation.
+#
+# Regression: user enabled hide_from_taskbar / close_on_* / minimized via the
+# settings dialog but left user_data_dir empty (and turned per_channel off).
+# notifier's safety degradation then silently disabled every one of those
+# features, with no UI feedback. Migration #2 heals the combination by
+# filling user_data_dir + flipping per_channel back on so the worker the
+# user implicitly asked for can actually run.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "iso_flag",
+    [
+        "app_mode",
+        "hide_from_taskbar",
+        "minimized",
+        "close_on_offline",
+        "close_on_stop",
+        "close_off_topic_pages",
+    ],
+)
+def test_migrate_fills_profile_when_iso_feature_enabled(iso_flag: str) -> None:
+    """Each explicit isolation-dependent flag, on its own, must trigger the
+    auto-fill of ``user_data_dir`` plus ``per_channel_profile=True``."""
+    settings = {
+        "enabled": True,
+        "user_data_dir": "",
+        "per_channel_profile": False,
+        iso_flag: True,
+    }
+    config_manager._migrate_browser_settings(settings)
+
+    assert settings["user_data_dir"].endswith("browser_profile")
+    assert settings["per_channel_profile"] is True
+
+
+def test_migrate_iso_features_skipped_when_browser_disabled() -> None:
+    """If ``enabled=False`` we never launch a browser, so the feature flags
+    are inert — don't touch the profile state just because a stale advanced
+    flag is left over from a previous session."""
+    settings = {
+        "enabled": False,
+        "user_data_dir": "",
+        "per_channel_profile": False,
+        "hide_from_taskbar": True,
+        "close_on_offline": True,
+    }
+    config_manager._migrate_browser_settings(settings)
+
+    assert settings["user_data_dir"] == ""
+    assert settings["per_channel_profile"] is False
+
+
+def test_migrate_iso_features_skipped_without_advanced_flags() -> None:
+    """``enabled=True`` alone — with all default-off advanced flags off — is
+    the legitimate "I just want a plain browser launch in shared mode" case.
+    apply_geometry being default-True does *not* count as opt-in (otherwise
+    we'd hijack the shared-profile choice of every user who just enabled the
+    browser without touching anything else)."""
+    settings = {
+        "enabled": True,
+        "user_data_dir": "",
+        "per_channel_profile": False,
+        "apply_geometry": True,
+        "hide_from_taskbar": False,
+        "minimized": False,
+        "close_on_offline": False,
+        "close_on_stop": False,
+        "close_off_topic_pages": False,
+    }
+    config_manager._migrate_browser_settings(settings)
+
+    assert settings["user_data_dir"] == ""
+    assert settings["per_channel_profile"] is False
+
+
+def test_migrate_iso_features_preserves_user_supplied_path() -> None:
+    """If the user already chose a custom profile folder, migration #2 must
+    leave that path (and the per_channel toggle) untouched — they are
+    already in a working configuration."""
+    settings = {
+        "enabled": True,
+        "user_data_dir": "C:/custom/profile",
+        "per_channel_profile": False,
+        "hide_from_taskbar": True,
+    }
+    config_manager._migrate_browser_settings(settings)
+
+    assert settings["user_data_dir"] == "C:/custom/profile"
+    assert settings["per_channel_profile"] is False
+
+
+def test_migrate_iso_features_idempotent() -> None:
+    """Running the migration twice on the post-migration state must be a
+    no-op — otherwise self-healing would re-write the config file on every
+    launch even after the user-facing state stabilises."""
+    settings = {
+        "enabled": True,
+        "user_data_dir": "",
+        "per_channel_profile": False,
+        "hide_from_taskbar": True,
+    }
+    config_manager._migrate_browser_settings(settings)
+    first_dir = settings["user_data_dir"]
+    first_per_channel = settings["per_channel_profile"]
+
+    config_manager._migrate_browser_settings(settings)
+
+    assert settings["user_data_dir"] == first_dir
+    assert settings["per_channel_profile"] == first_per_channel
+
+
+def test_load_migrates_iso_features_on_disk(tmp_path, monkeypatch) -> None:
+    """The exact production scenario reported by users running v0.8.0 with
+    a legacy v0.7 leftover config: hide_from_taskbar / close_on_* checked
+    but the profile path got cleared somewhere along the upgrade path. The
+    loader must auto-heal the file so the very next stream trigger has the
+    Win32 worker available."""
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "browser_settings": {
+                    "enabled": True,
+                    "user_data_dir": "",
+                    "per_channel_profile": False,
+                    "hide_from_taskbar": True,
+                    "close_on_offline": True,
+                    "close_on_stop": True,
+                    "close_off_topic_pages": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    config = config_manager.load()
+
+    settings = config["browser_settings"]
+    assert settings["user_data_dir"].endswith("browser_profile")
+    assert settings["per_channel_profile"] is True
+    # The advanced flags themselves must survive — we only filled the
+    # missing precondition, not rewritten the user's intent.
+    assert settings["hide_from_taskbar"] is True
+    assert settings["close_on_offline"] is True
+    assert settings["close_on_stop"] is True
+    assert settings["close_off_topic_pages"] is True
+
+    # And the on-disk file is rewritten so future loads stay clean.
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["browser_settings"]["user_data_dir"].endswith("browser_profile")
+    assert on_disk["browser_settings"]["per_channel_profile"] is True
 
 
 def test_load_migrates_orphan_per_channel_on_disk(tmp_path, monkeypatch) -> None:

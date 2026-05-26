@@ -1773,7 +1773,7 @@ def test_apply_new_browser_window_settings_async_registers_tracked_url(
 # ─────────────────────────────────────────────
 # B — noise-title filter
 # ─────────────────────────────────────────────
-def test_browser_popup_or_tool_window_filter_detects_owned_tool_and_small_windows() -> None:
+def test_browser_popup_or_tool_window_filter_detects_owned_and_tool_windows() -> None:
     class FakeUser32:
         owner = 0
         ex_style = 0
@@ -1805,8 +1805,8 @@ def test_browser_popup_or_tool_window_filter_detects_owned_tool_and_small_window
     assert notifier._is_browser_popup_or_tool_window(user32, 100) is True
 
     user32.ex_style = 0
-    user32.rect = (0, 0, 260, 180)
-    assert notifier._is_browser_popup_or_tool_window(user32, 100) is True
+    user32.rect = (0, 0, 100, 100)
+    assert notifier._is_browser_popup_or_tool_window(user32, 100) is False
 
 
 def test_window_manager_ignores_popup_then_manages_real_window(monkeypatch) -> None:

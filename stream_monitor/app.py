@@ -604,10 +604,15 @@ class AddChannelDialog(ctk.CTkToplevel):
         self.url_entry.configure(state=state)
         self.name_entry.configure(state=state)
         self.platform_menu.configure(state=state)
+        # Keep the Cancel button always usable. The network validation call
+        # in ``_validate_channel`` has no enforced timeout, so disabling
+        # Cancel while waiting would strand the user in a modal they cannot
+        # close until the fetcher returns. The Add button still gets
+        # toggled — leaving Add disabled prevents double-submits.
         for w in self.winfo_children():
             if isinstance(w, ctk.CTkFrame):
                 for child in w.winfo_children():
-                    if isinstance(child, ctk.CTkButton):
+                    if isinstance(child, ctk.CTkButton) and child is not self._cancel_btn:
                         child.configure(state=state)
 
     def _validate_channel(self, plat: str, name: str) -> None:
@@ -870,6 +875,34 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._section_open_label.pack(padx=24, pady=(20, 4), fill="x")
 
+        # User-tab iso-feature banner. Shown ONLY in the exact state where
+        # Migration #2 would silently kick in on save — i.e. master switch
+        # on, dedicated profile off, and at least one opt-in isolation
+        # flag (app_mode / minimized / hide_from_taskbar / close_on_*).
+        # The previous version surfaced this dependency only on the
+        # Advanced tab, which left a User-tab user staring at instantly
+        # greyed-out checkboxes with no on-screen explanation. The banner
+        # both explains and offers a one-click jump to the relevant tab.
+        self._user_tab_iso_banner = ctk.CTkLabel(
+            self.content_frame,
+            text=tr("browser.banner.iso_features_auto_setup"),
+            font=_font(11, "bold"),
+            text_color="#ffb74d",
+            anchor="w",
+            wraplength=560,
+            justify="left",
+            cursor="hand2",
+        )
+        self._user_tab_iso_banner.bind(
+            "<Button-1>",
+            lambda _e: self.tabview.set(self._tab_advanced_label),
+        )
+        # Packed-then-forgotten — visibility cycles via `_refresh_user_tab_iso_banner`.
+        self._user_tab_iso_banner.pack(
+            padx=24, pady=(0, 6), fill="x", before=self._section_open_label
+        )
+        self._user_tab_iso_banner.pack_forget()
+
         self._section_open_hint = ctk.CTkLabel(
             self.content_frame,
             text=tr("browser.section.open.hint"),
@@ -975,6 +1008,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             toggle_frame,
             text=tr("browser.toggle.minimized"),
             variable=self.minimized_var,
+            command=self._refresh_user_tab_iso_banner,
             font=_font(12),
         )
         self.minimized_cb.pack(anchor="w")
@@ -1007,6 +1041,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             close_frame,
             text=tr("browser.toggle.close_on_offline"),
             variable=self.close_on_offline_var,
+            command=self._refresh_user_tab_iso_banner,
             font=_font(12),
         )
         self.close_on_offline_cb.pack(anchor="w", pady=(4, 0))
@@ -1028,6 +1063,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             close_frame,
             text=tr("browser.toggle.close_on_stop"),
             variable=self.close_on_stop_var,
+            command=self._refresh_user_tab_iso_banner,
             font=_font(12),
         )
         self.close_on_stop_cb.pack(anchor="w", pady=(4, 0))
@@ -1049,6 +1085,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             close_frame,
             text=tr("browser.toggle.close_off_topic"),
             variable=self.close_off_topic_var,
+            command=self._refresh_user_tab_iso_banner,
             font=_font(12),
         )
         self.close_off_topic_cb.pack(anchor="w", pady=(4, 0))
@@ -1070,6 +1107,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             close_frame,
             text=tr("browser.toggle.hide_taskbar"),
             variable=self.hide_from_taskbar_var,
+            command=self._refresh_user_tab_iso_banner,
             font=_font(12),
         )
         self.hide_from_taskbar_cb.pack(anchor="w", pady=(4, 0))
@@ -1235,6 +1273,30 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._no_isolation_label.grid_remove()
 
+        # Sign-in helper. Conceptually a *prerequisite* of using a dedicated
+        # profile (you need to log into Twitch/YouTube before per-channel
+        # sub-profiles inherit cookies), so it lives in the profile card —
+        # not in the "Tools" card next to the launch / close test buttons.
+        # Without this colocation users had to scroll past unrelated test
+        # actions to find the only profile-bootstrap they actually need.
+        self._signin_btn = ctk.CTkButton(
+            profile_frame,
+            text=tr("browser.btn.signin"),
+            width=160,
+            height=30,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#cda043",
+            hover_color="#3d3013",
+            text_color="#cda043",
+            font=_font(12),
+            command=self._on_signin,
+        )
+        self._signin_btn.grid(
+            row=6, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="w"
+        )
+        _tooltip_tr(self._signin_btn, "browser.btn.signin.tooltip")
+
         tools_frame = ctk.CTkFrame(
             self.advanced_frame, fg_color=_CLR_CARD, corner_radius=10
         )
@@ -1291,26 +1353,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             command=self._on_test_close,
         )
         self._test_close_btn.pack(side="left")
-
-        # Sign-in helper: bootstraps a dedicated profile by opening the
-        # browser in plain mode (no --app=, no minimisation, no tracking)
-        # so the user can log in once. Without this step, dedicated profiles
-        # start out completely fresh — no Twitch/YouTube cookies — and every
-        # auto-opened stream lands on a logged-out page.
-        self._signin_btn = ctk.CTkButton(
-            tools_button_frame,
-            text=tr("browser.btn.signin"),
-            width=160,
-            height=34,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#cda043",
-            hover_color="#3d3013",
-            text_color="#cda043",
-            font=_font(12),
-            command=self._on_signin,
-        )
-        self._signin_btn.pack(side="left", padx=(8, 0))
+        _tooltip_tr(self._test_btn, "browser.btn.test.tooltip")
+        _tooltip_tr(self._test_close_btn, "browser.btn.test_close.tooltip")
 
         # ── Position / size
         pos_frame = ctk.CTkFrame(
@@ -1505,6 +1549,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._signin_btn.configure(text=tr("browser.btn.signin"))
         self._save_btn.configure(text=tr("browser.btn.save"))
         self._no_isolation_label.configure(text=tr("browser.msg.no_isolation_warning"))
+        self._user_tab_iso_banner.configure(
+            text=tr("browser.banner.iso_features_auto_setup")
+        )
         if self._compat_key is not None:
             key, color = self._compat_key
             self.compat_label.configure(text=tr(key), text_color=color)
@@ -1543,6 +1590,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.minimized_cb,
             self.close_on_offline_cb,
             self.close_on_stop_cb,
+            self.close_off_topic_cb,
             self.hide_from_taskbar_cb,
             self.user_data_dir_cb,
             self.per_channel_profile_cb,
@@ -1550,8 +1598,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.reset_geometry_btn,
         ):
             widget.configure(state=state)
+        # _refresh_user_data_dir_state runs the isolation-dependent gating
+        # cascade (which also re-applies _refresh_geometry_state for the
+        # x/y/w/h entries), so call it before path_change / app_mode_state.
         self._refresh_user_data_dir_state()
-        self._refresh_geometry_state()
         self._on_path_change()
         self._refresh_app_mode_state()
 
@@ -1562,6 +1612,46 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         else:
             self.new_window_var.set(self._new_window_before_app_mode)
         self._refresh_app_mode_state()
+        self._refresh_user_tab_iso_banner()
+
+    def _iso_features_explicitly_enabled(self) -> bool:
+        """True iff the user has opted into any feature whose runtime
+        implementation requires the dedicated-profile precondition.
+
+        Mirrors :data:`config_manager._ISOLATION_DEPENDENT_FLAGS` so the
+        banner/preview logic and the on-disk migration agree on which set
+        of flags counts as "I want this feature to actually work".
+        """
+        return any(
+            var.get()
+            for var in (
+                self.app_mode_var,
+                self.minimized_var,
+                self.hide_from_taskbar_var,
+                self.close_on_offline_var,
+                self.close_on_stop_var,
+                self.close_off_topic_var,
+            )
+        )
+
+    def _refresh_user_tab_iso_banner(self) -> None:
+        """Show the User-tab banner exactly when Migration #2 would fire
+        on Save — master switch on, dedicated profile off, at least one
+        opt-in isolation feature ticked. ``pack(before=…)`` re-applies
+        the row ordering each time so the banner stays at the top of the
+        tab even after multiple toggle cycles.
+        """
+        show = (
+            self.enabled_var.get()
+            and not self.user_data_dir_enabled_var.get()
+            and self._iso_features_explicitly_enabled()
+        )
+        if show:
+            self._user_tab_iso_banner.pack(
+                padx=24, pady=(12, 0), fill="x", before=self._section_open_label
+            )
+        else:
+            self._user_tab_iso_banner.pack_forget()
 
     def _refresh_app_mode_state(self) -> None:
         if self.app_mode_var.get():
@@ -1572,23 +1662,67 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             state = "disabled"
         self.new_window_cb.configure(state=state)
 
+    # Widgets whose feature requires a dedicated profile to actually take
+    # effect at runtime. notifier._open_with_browser_settings deliberately
+    # skips the Win32 post-launch worker (and HWND tracking) when no
+    # isolated user_data_dir is in use, so checking these in shared-profile
+    # mode used to be a silent no-op — the exact "勾了卻沒實現" surprise
+    # the user reported for hide_from_taskbar and apply_geometry. Greying
+    # them out makes the dependency on dedicated profile visible upfront.
+    #
+    # ``app_mode_cb`` is here too because Chrome's master IPC silently
+    # downgrades ``--app=URL`` to a regular tab when no dedicated profile
+    # is in use, so the user clicking the checkbox in shared mode would
+    # get exactly the same no-op surprise even though the CLI flag is
+    # technically still sent.
+    @property
+    def _isolation_dependent_widgets(self) -> tuple[Any, ...]:
+        return (
+            self.app_mode_cb,
+            self.minimized_cb,
+            self.hide_from_taskbar_cb,
+            self.apply_geometry_cb,
+            self.close_on_offline_cb,
+            self.close_on_stop_cb,
+            self.close_off_topic_cb,
+        )
+
     def _refresh_user_data_dir_state(self) -> None:
         if not self.enabled_var.get():
             self.user_data_dir_entry.configure(state="disabled")
             self.per_channel_profile_cb.configure(state="disabled")
             self._signin_btn.configure(state="disabled")
             self._no_isolation_label.grid_remove()
+            # Master switch off already greys everything via _refresh_enabled_state.
+            self._refresh_geometry_state()
+            self._refresh_user_tab_iso_banner()
             return
         profile_enabled = self.user_data_dir_enabled_var.get()
-        self.user_data_dir_entry.configure(
-            state="normal" if profile_enabled else "disabled"
-        )
-        self.per_channel_profile_cb.configure(
-            state="normal" if profile_enabled else "disabled"
-        )
-        self._signin_btn.configure(
-            state="normal" if profile_enabled else "disabled"
-        )
+        profile_state = "normal" if profile_enabled else "disabled"
+        self.user_data_dir_entry.configure(state=profile_state)
+        self.per_channel_profile_cb.configure(state=profile_state)
+        self._signin_btn.configure(state=profile_state)
+
+        # Isolation-dependent gating: these all live or die with the Win32
+        # post-launch worker, which only fires when a dedicated profile is
+        # configured. Keep them grey in shared mode so the UI matches what
+        # the launcher will actually do.
+        for widget in self._isolation_dependent_widgets:
+            widget.configure(state=profile_state)
+        # ``app_mode_cb`` has an additional Firefox-incompatibility — the
+        # ``--app=`` flag is a Chromium feature and the post-launch worker
+        # only knows Chrome window classes. When the user has selected a
+        # Firefox path we must keep the box disabled even when profile is
+        # on, otherwise the UI would imply the feature is usable.
+        executable = self.path_entry.get().strip() or "chrome"
+        if detect_browser_family(executable) == "firefox":
+            self.app_mode_cb.configure(state="disabled")
+        # Cascade into x/y/w/h entries — they additionally depend on the
+        # apply_geometry checkbox and the browser family (Firefox forces
+        # them off because the post-launch worker only knows Chrome class
+        # names).
+        self._refresh_geometry_state()
+
         # Show the no-isolation warning only when the user actively turned off
         # dedicated profile — that's the only state where Win32 management
         # and HWND tracking get downgraded to silent no-ops at runtime.
@@ -1597,22 +1731,39 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         else:
             self._no_isolation_label.grid()
 
+        # Drive the User-tab banner from the same predicates we used above
+        # so the two surfaces never disagree about whether Migration #2
+        # would kick in on the next Save.
+        self._refresh_user_tab_iso_banner()
+
     def _refresh_geometry_state(self) -> None:
-        """Enable / disable X/Y/W/H entries based on the apply_geometry checkbox."""
+        """Enable / disable X/Y/W/H entries based on apply_geometry, the
+        dedicated-profile state, and the browser family.
+
+        Geometry application happens in two places at runtime:
+        ``--window-position`` / ``--window-size`` CLI flags (Chromium only)
+        plus a follow-up ``SetWindowPos`` from the Win32 worker (also Chromium
+        only, also gated on profile isolation). Without isolation the worker
+        is skipped and Chrome's master IPC tends to drop the CLI flags, so we
+        also drop the editability of the fields — anything else would be a
+        UI lie.
+        """
         if not self.enabled_var.get():
             for entry in (self.x_entry, self.y_entry, self.w_entry, self.h_entry):
                 entry.configure(state="disabled")
             self.reset_geometry_btn.configure(state="disabled")
             return
 
-        # Path-family override (Firefox) is applied separately in _on_path_change;
-        # don't undo that disable here when apply_geometry is on.
-        geometry_state = "normal" if self.apply_geometry_var.get() else "disabled"
-        for entry in (self.x_entry, self.y_entry, self.w_entry, self.h_entry):
-            entry.configure(state=geometry_state)
-        self.reset_geometry_btn.configure(
-            state="normal" if self.apply_geometry_var.get() else "disabled"
+        executable = self.path_entry.get().strip() or "chrome"
+        is_chromium = detect_browser_family(executable) != "firefox"
+        profile_enabled = self.user_data_dir_enabled_var.get()
+        geometry_active = (
+            is_chromium and profile_enabled and self.apply_geometry_var.get()
         )
+        entry_state = "normal" if geometry_active else "disabled"
+        for entry in (self.x_entry, self.y_entry, self.w_entry, self.h_entry):
+            entry.configure(state=entry_state)
+        self.reset_geometry_btn.configure(state=entry_state)
 
     def _on_reset_geometry(self) -> None:
         """Reset X/Y/W/H to the system-default values."""
@@ -1644,14 +1795,14 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
                 widget.configure(state="disabled")
         elif family == "chromium":
             self._set_compat("browser.compat.chromium", "#81c784")
-            # app_mode checkbox is always allowed; X/Y/W/H respect the user's
-            # apply_geometry choice — restored via _refresh_geometry_state().
-            self.app_mode_cb.configure(state="normal")
-            self._refresh_geometry_state()
+            # Chromium can run every advanced flag, but app_mode + the
+            # geometry entries still require the dedicated-profile
+            # precondition — defer that decision to the isolation gating
+            # cascade so we have exactly one source of truth.
+            self._refresh_user_data_dir_state()
         else:
             self._set_compat("browser.compat.unknown", "#90caf9")
-            self.app_mode_cb.configure(state="normal")
-            self._refresh_geometry_state()
+            self._refresh_user_data_dir_state()
         self._refresh_app_mode_state()
 
     def _collect(self) -> dict[str, Any] | None:
@@ -1739,7 +1890,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         return self._snapshot_browser_settings() != self._initial_snapshot
 
     def _on_cancel(self) -> None:
-        self.destroy()
+        # Route through the same unsaved-changes prompt the [X] button uses;
+        # without this the Cancel button silently discards edits while the
+        # close-button asks for confirmation, which violates user
+        # expectations of dialog parity.
+        self._on_window_close()
 
     def _on_window_close(self) -> None:
         if not self._has_unsaved_changes():
@@ -1868,6 +2023,42 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         data = self._collect()
         if data is None:
             return
+
+        # Pre-apply Migration #2 so the dialog round-trip is idempotent and
+        # the user sees what's about to be saved before the dialog closes.
+        # Without this preview, ticking (e.g.) ``hide_from_taskbar`` while
+        # leaving the profile disabled lets ``config_manager.save`` rewrite
+        # ``user_data_dir`` and ``per_channel_profile`` behind the user's
+        # back — they reopen the dialog and find settings they never set.
+        before_dir = (data.get("user_data_dir") or "").strip()
+        before_per_channel = bool(data.get("per_channel_profile"))
+        config_manager._migrate_browser_settings(data)
+        after_dir = (data.get("user_data_dir") or "").strip()
+        after_per_channel = bool(data.get("per_channel_profile"))
+
+        migration_auto_filled = before_dir == "" and after_dir != ""
+        if migration_auto_filled:
+            # Update the dialog vars/widgets so the user can review the
+            # auto-filled path before the second Save commits it. This is
+            # deliberately a two-click flow — auto-saving on top of an
+            # invisible config rewrite is what the audit flagged as the
+            # consistency bug we're fixing here.
+            self.user_data_dir_enabled_var.set(True)
+            self.user_data_dir_entry.configure(state="normal")
+            self.user_data_dir_entry.delete(0, "end")
+            self.user_data_dir_entry.insert(0, after_dir)
+            self.per_channel_profile_var.set(after_per_channel)
+            self._refresh_user_data_dir_state()
+            self._set_message(
+                "browser.msg.migration_applied", color="#ffb74d", path=after_dir
+            )
+            return
+
+        # No migration kicked in (or the user already saw it last click and
+        # is now confirming) — proceed with the normal save flow.
+        if before_per_channel != after_per_channel:
+            self.per_channel_profile_var.set(after_per_channel)
+
         self.result = data
         self.destroy()
 
@@ -2842,6 +3033,24 @@ class App(ctk.CTk):
         self._refresh_move_buttons()
 
     def _remove_channel(self, channel: dict[str, str]) -> None:
+        # Confirm before destructive action — a single misclick on the [×]
+        # button in a long channel list used to silently lose the channel
+        # plus all its monitor-only / pause state.
+        from tkinter import messagebox
+
+        display = (
+            (channel.get("display_name") or "").strip()
+            or channel.get("name")
+            or ""
+        )
+        confirm = messagebox.askyesno(
+            tr("confirm.delete_channel.title"),
+            tr("confirm.delete_channel.body", name=display),
+            parent=self,
+        )
+        if not confirm:
+            return
+
         for row in self._channel_rows:
             if row.channel == channel:
                 row.destroy()
@@ -3225,6 +3434,18 @@ class App(ctk.CTk):
         if not success:
             self.startup_var.set(not requested)
             logger.warning("Failed to update startup setting")
+            # Without surface-level feedback the switch silently snaps back
+            # and the user can't tell whether the click actually registered.
+            # A modal messagebox is the lowest-risk way to communicate this
+            # since the bottom status bar is dynamically overwritten by the
+            # monitor loop and may be hidden if the user already minimised.
+            from tkinter import messagebox
+
+            messagebox.showwarning(
+                tr("toolbar.startup"),
+                tr("status.startup.write_failed"),
+                parent=self,
+            )
         self.config["run_on_startup"] = self.startup_var.get()
         self._save_config()
 

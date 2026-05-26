@@ -147,6 +147,28 @@ def _default_browser_profile_path() -> str:
         return ""
 
 
+# Flags whose runtime implementation depends on the Win32 post-launch
+# worker — and therefore on a dedicated browser profile being in use.
+# Used by Migration #2 as the trigger for "user wants these to work, so
+# auto-fill the profile path they forgot to set". ``apply_geometry`` is
+# default-True so we deliberately exclude it; otherwise even a casual
+# "I just enabled browser" user would silently get a dedicated profile
+# they never asked for. Only the explicitly-opted-in flags below count.
+_ISOLATION_DEPENDENT_FLAGS: tuple[str, ...] = (
+    # App Mode's --app= CLI flag is silently downgraded by Chrome's master
+    # process when no dedicated profile is in use (master IPC turns it into
+    # a regular tab), so opting in to App Mode is, in practice, opting in
+    # to the dedicated profile too. ``app_mode`` default is ``False`` so it
+    # still counts as an "explicit opt-in" trigger for Migration #2.
+    "app_mode",
+    "hide_from_taskbar",
+    "minimized",
+    "close_on_offline",
+    "close_on_stop",
+    "close_off_topic_pages",
+)
+
+
 def _migrate_browser_settings(settings: dict[str, Any]) -> None:
     """In-place migration of legacy/missing-parameter browser_settings.
 
@@ -165,6 +187,21 @@ def _migrate_browser_settings(settings: dict[str, Any]) -> None:
        prune feature closing live windows by mistake. We now populate
        ``user_data_dir`` with the default profile root so the per-channel
        sub-folder logic can actually take effect.
+
+    2. **Opt-in advanced features without isolation** — when the user has
+       explicitly enabled any of ``hide_from_taskbar`` / ``minimized`` /
+       ``close_on_offline`` / ``close_on_stop`` / ``close_off_topic_pages``
+       (i.e. flags whose default is ``False``), they have clearly opted
+       in to runtime behaviour that only works when the launcher runs the
+       Win32 post-launch worker. ``notifier._open_with_browser_settings``
+       deliberately skips that worker when ``user_data_dir`` is blank, so
+       leaving the field empty in this configuration makes every checked
+       flag a silent no-op. We auto-fill ``user_data_dir`` with the default
+       profile root and enable ``per_channel_profile`` (the only mode where
+       Chrome's master-process IPC doesn't sabotage --app= / geometry on
+       hot launches across multiple channels). The existing per-channel
+       sub-folders from any previous run of the same install path are
+       picked up transparently, preserving saved logins.
     """
     # Migration #1: orphan per-channel profile.
     if settings.get("per_channel_profile") and not (
@@ -173,6 +210,25 @@ def _migrate_browser_settings(settings: dict[str, Any]) -> None:
         default_root = _default_browser_profile_path()
         if default_root:
             settings["user_data_dir"] = default_root
+
+    # Migration #2: opt-in advanced features without isolation.
+    iso_features_requested = any(
+        bool(settings.get(flag)) for flag in _ISOLATION_DEPENDENT_FLAGS
+    )
+    if (
+        settings.get("enabled")
+        and iso_features_requested
+        and not (settings.get("user_data_dir") or "").strip()
+    ):
+        default_root = _default_browser_profile_path()
+        if default_root:
+            settings["user_data_dir"] = default_root
+            # Per-channel sub-profiles are the only Chromium configuration
+            # where --app= and the post-launch HWND diff survive hot
+            # launches across multiple channels. Anything less and the
+            # safety degradation in notifier kicks back in again, undoing
+            # the migration we just performed.
+            settings["per_channel_profile"] = True
 
 
 def _normalize_browser_settings(value: Any) -> dict[str, Any]:

@@ -91,8 +91,6 @@ _GW_OWNER = 4
 _GWL_EXSTYLE = -20
 _WS_EX_TOOLWINDOW = 0x00000080
 _WS_EX_APPWINDOW = 0x00040000
-_MIN_BROWSER_WINDOW_WIDTH = 320
-_MIN_BROWSER_WINDOW_HEIGHT = 240
 _MINIMIZE_POLL_INTERVAL_S = 0.15
 _MINIMIZE_DEADLINE_S = 8.0  # generous: Chrome cold-start can take 2-3s
 
@@ -369,7 +367,14 @@ def _configure_user32_signatures(user32: Any) -> None:
 
 
 def _is_browser_popup_or_tool_window(user32: Any, hwnd: int) -> bool:
-    """Return True for browser-owned popups/helpers, not real player windows."""
+    """Return True for browser-owned popups/helpers, not real player windows.
+
+    Do not filter by window rectangle here. The settings UI deliberately allows
+    very small player windows (for example 100x100), and treating those as
+    browser helpers prevents close_on_offline / close_on_stop from ever seeing
+    the HWND. Size-independent noise is handled by owner/tool-window style here
+    and by the title check in the post-launch worker.
+    """
     try:
         owner = user32.GetWindow(hwnd, _GW_OWNER)
     except (AttributeError, OSError, TypeError):
@@ -385,24 +390,6 @@ def _is_browser_popup_or_tool_window(user32: Any, hwnd: int) -> bool:
         is_tool = bool(ex_style & _WS_EX_TOOLWINDOW)
         is_app = bool(ex_style & _WS_EX_APPWINDOW)
         if is_tool and not is_app:
-            return True
-
-    try:
-        import ctypes
-        from ctypes import wintypes
-        from types import ModuleType
-
-        if not isinstance(ctypes, ModuleType):
-            raise TypeError("ctypes module is mocked")
-
-        rect = wintypes.RECT()
-        ok = user32.GetWindowRect(hwnd, ctypes.byref(rect))
-    except (AttributeError, ImportError, OSError, TypeError, ValueError):
-        ok = False
-    if isinstance(ok, int) and ok:
-        width = int(rect.right - rect.left)
-        height = int(rect.bottom - rect.top)
-        if width < _MIN_BROWSER_WINDOW_WIDTH or height < _MIN_BROWSER_WINDOW_HEIGHT:
             return True
 
     return False
