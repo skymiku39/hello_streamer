@@ -743,7 +743,7 @@ class LanguageDialog(ctk.CTkToplevel):
     ) -> None:
         super().__init__(parent)
         self.title(tr("lang.title"))
-        self.geometry("420x420")
+        self.geometry("420x480")
         self.resizable(False, False)
         self.transient(parent)
         self.configure(fg_color=_CLR_BG_DARK)
@@ -920,8 +920,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         super().__init__(parent)
         self.title(tr("browser.title"))
         screen_height = max(self.winfo_screenheight(), 640)
-        self.geometry(f"680x{min(780, screen_height - 80)}")
-        self.minsize(600, 540)
+        self.geometry(f"580x{min(780, screen_height - 80)}")
+        self.minsize(500, 540)
         self.resizable(True, True)
         self.transient(parent)
         self.configure(fg_color=_CLR_BG_DARK)
@@ -943,7 +943,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._tab_user_label = tr("browser.tab.user")
         self._tab_advanced_label = tr("browser.tab.advanced")
         self.tabview = ctk.CTkTabview(self, fg_color="transparent")
-        self.tabview.pack(padx=16, pady=(16, 0), fill="both", expand=True)
+        self.tabview.pack(padx=12, pady=(8, 0), fill="both", expand=True)
 
         user_tab = self.tabview.add(self._tab_user_label)
         advanced_tab = self.tabview.add(self._tab_advanced_label)
@@ -964,7 +964,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(13, "bold"),
             anchor="w",
         )
-        self._section_open_label.pack(padx=24, pady=(20, 4), fill="x")
+        self._section_open_label.pack(padx=16, pady=(12, 4), fill="x")
 
         # User-tab iso-feature banner. Shown ONLY in the exact state where
         # Migration #2 would silently kick in on save — i.e. master switch
@@ -980,7 +980,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(11, "bold"),
             text_color="#ffb74d",
             anchor="w",
-            wraplength=560,
+            wraplength=480,
             justify="left",
             cursor="hand2",
         )
@@ -990,7 +990,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         # Packed-then-forgotten — visibility cycles via `_refresh_user_tab_iso_banner`.
         self._user_tab_iso_banner.pack(
-            padx=24, pady=(0, 6), fill="x", before=self._section_open_label
+            padx=16, pady=(0, 6), fill="x", before=self._section_open_label
         )
         self._user_tab_iso_banner.pack_forget()
 
@@ -1000,9 +1000,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(12),
             text_color="#aaaabb",
             anchor="w",
-            wraplength=512,
+            wraplength=480,
         )
-        self._section_open_hint.pack(padx=24, pady=(0, 8), fill="x")
+        self._section_open_hint.pack(padx=16, pady=(0, 8), fill="x")
 
         self.enabled_var = ctk.BooleanVar(value=bool(settings.get("enabled", False)))
         self.enabled_switch = ctk.CTkSwitch(
@@ -1012,11 +1012,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             command=self._refresh_enabled_state,
             font=_font(12),
         )
-        self.enabled_switch.pack(padx=24, anchor="w")
+        self.enabled_switch.pack(padx=16, anchor="w")
 
         # ── Browser path
         path_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        path_frame.pack(padx=24, pady=(12, 0), fill="x")
+        path_frame.pack(padx=16, pady=(8, 0), fill="x")
         path_frame.grid_columnconfigure(1, weight=1)
 
         self._path_label = ctk.CTkLabel(
@@ -1044,9 +1044,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(11),
             text_color="#888899",
             anchor="w",
-            wraplength=512,
+            wraplength=480,
         )
-        self._path_hint.pack(padx=24, pady=(4, 0), fill="x")
+        self._path_hint.pack(padx=16, pady=(4, 0), fill="x")
 
         self.compat_label = ctk.CTkLabel(
             self.content_frame,
@@ -1054,10 +1054,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(11, "bold"),
             text_color="#ffb74d",
             anchor="w",
-            wraplength=512,
+            wraplength=480,
             height=20,
         )
-        self.compat_label.pack(padx=24, pady=(2, 0), fill="x")
+        self.compat_label.pack(padx=16, pady=(2, 0), fill="x")
         self._compat_key: tuple[str, str] | None = None
 
         self._section_window_label = ctk.CTkLabel(
@@ -1066,7 +1066,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(13, "bold"),
             anchor="w",
         )
-        self._section_window_label.pack(padx=24, pady=(14, 4), fill="x")
+        self._section_window_label.pack(padx=16, pady=(10, 4), fill="x")
 
         self._section_window_hint = ctk.CTkLabel(
             self.content_frame,
@@ -1074,12 +1074,12 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(12),
             text_color="#aaaabb",
             anchor="w",
-            wraplength=560,
+            wraplength=480,
         )
-        self._section_window_hint.pack(padx=24, pady=(0, 8), fill="x")
+        self._section_window_hint.pack(padx=16, pady=(0, 8), fill="x")
 
         toggle_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        toggle_frame.pack(padx=24, pady=(0, 0), fill="x")
+        toggle_frame.pack(padx=16, pady=(0, 0), fill="x")
 
         self.new_window_var = ctk.BooleanVar(
             value=bool(settings.get("new_window", True))
@@ -1110,7 +1110,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(13, "bold"),
             anchor="w",
         )
-        self._section_lifecycle_label.pack(padx=24, pady=(16, 4), fill="x")
+        self._section_lifecycle_label.pack(padx=16, pady=(12, 4), fill="x")
 
         self._section_lifecycle_hint = ctk.CTkLabel(
             self.content_frame,
@@ -1118,12 +1118,12 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(12),
             text_color="#aaaabb",
             anchor="w",
-            wraplength=560,
+            wraplength=480,
         )
-        self._section_lifecycle_hint.pack(padx=24, pady=(0, 8), fill="x")
+        self._section_lifecycle_hint.pack(padx=16, pady=(0, 8), fill="x")
 
         close_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        close_frame.pack(padx=24, pady=(0, 0), fill="x")
+        close_frame.pack(padx=16, pady=(0, 0), fill="x")
 
         self.close_on_offline_var = ctk.BooleanVar(
             value=bool(settings.get("close_on_offline", False))
@@ -1219,7 +1219,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(13, "bold"),
             anchor="w",
         )
-        self._section_advanced_label.pack(padx=24, pady=(20, 4), fill="x")
+        self._section_advanced_label.pack(padx=16, pady=(12, 4), fill="x")
 
         self._section_advanced_hint = ctk.CTkLabel(
             self.advanced_frame,
@@ -1227,15 +1227,15 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(12),
             text_color="#aaaabb",
             anchor="w",
-            wraplength=560,
+            wraplength=480,
             justify="left",
         )
-        self._section_advanced_hint.pack(padx=24, pady=(0, 8), fill="x")
+        self._section_advanced_hint.pack(padx=16, pady=(0, 8), fill="x")
 
         advanced_toggle_frame = ctk.CTkFrame(
             self.advanced_frame, fg_color="transparent"
         )
-        advanced_toggle_frame.pack(padx=24, pady=(0, 0), fill="x")
+        advanced_toggle_frame.pack(padx=16, pady=(0, 0), fill="x")
 
         self.app_mode_var = ctk.BooleanVar(value=bool(settings.get("app_mode", False)))
         self.app_mode_cb = ctk.CTkCheckBox(
@@ -1253,7 +1253,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(11),
             text_color="#9aa0b4",
             anchor="w",
-            wraplength=560,
+            wraplength=480,
             justify="left",
         )
         self._app_mode_hint.pack(anchor="w", pady=(0, 8))
@@ -1263,7 +1263,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         profile_frame = ctk.CTkFrame(
             self.advanced_frame, fg_color=_CLR_CARD, corner_radius=10
         )
-        profile_frame.pack(padx=24, pady=(14, 0), fill="x")
+        profile_frame.pack(padx=16, pady=(10, 0), fill="x")
         profile_frame.grid_columnconfigure(1, weight=1)
 
         self._profile_title = ctk.CTkLabel(
@@ -1280,7 +1280,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(11),
             text_color="#9aa0b4",
             anchor="w",
-            wraplength=500,
+            wraplength=460,
             justify="left",
         )
         self._profile_desc.grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 6), sticky="w")
@@ -1391,7 +1391,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         tools_frame = ctk.CTkFrame(
             self.advanced_frame, fg_color=_CLR_CARD, corner_radius=10
         )
-        tools_frame.pack(padx=24, pady=(14, 0), fill="x")
+        tools_frame.pack(padx=16, pady=(10, 0), fill="x")
         tools_frame.grid_columnconfigure(0, weight=1)
 
         self._tools_title = ctk.CTkLabel(
@@ -1408,7 +1408,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             font=_font(11),
             text_color="#9aa0b4",
             anchor="w",
-            wraplength=560,
+            wraplength=480,
             justify="left",
         )
         self._tools_hint.grid(row=1, column=0, padx=12, pady=(0, 8), sticky="w")
@@ -1451,7 +1451,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         pos_frame = ctk.CTkFrame(
             self.content_frame, fg_color=_CLR_CARD, corner_radius=10
         )
-        pos_frame.pack(padx=24, pady=(14, 0), fill="x")
+        pos_frame.pack(padx=16, pady=(10, 0), fill="x")
         pos_frame.grid_columnconfigure((1, 3), weight=1)
 
         header_frame = ctk.CTkFrame(pos_frame, fg_color="transparent")
@@ -1514,14 +1514,14 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.h_entry.grid(row=2, column=3, padx=(0, 14), pady=(4, 10), sticky="w")
 
         self.message_label = ctk.CTkLabel(
-            self, text="", font=_font(12), height=24, anchor="w", wraplength=512
+            self, text="", font=_font(12), height=24, anchor="w", wraplength=480
         )
-        self.message_label.pack(padx=24, pady=(8, 0), fill="x")
+        self.message_label.pack(padx=16, pady=(8, 0), fill="x")
         self._message_key: tuple[str, dict[str, Any]] | None = None
 
         # ── Buttons
         btn_frame = ctk.CTkFrame(self, fg_color="transparent", height=52)
-        btn_frame.pack(padx=24, pady=(8, 18), fill="x")
+        btn_frame.pack(padx=16, pady=(8, 12), fill="x")
         btn_frame.pack_propagate(False)
 
         self._save_btn = ctk.CTkButton(
@@ -1748,7 +1748,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         if show:
             self._user_tab_iso_banner.pack(
-                padx=24, pady=(12, 0), fill="x", before=self._section_open_label
+                padx=16, pady=(12, 0), fill="x", before=self._section_open_label
             )
         else:
             self._user_tab_iso_banner.pack_forget()
