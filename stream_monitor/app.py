@@ -18,7 +18,7 @@ from urllib.parse import quote
 import customtkinter as ctk
 from PIL import Image, ImageDraw
 
-from stream_monitor import base_dir, config_manager, i18n
+from stream_monitor import __version__, base_dir, config_manager, i18n
 from stream_monitor.config_manager import DEFAULT_BROWSER_SETTINGS
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
@@ -55,6 +55,91 @@ if platform.system() != "Windows":
 
 def _font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
     return ctk.CTkFont(family=_FONT_FAMILY, size=size, weight=weight)
+
+
+_BTN_PAD_X = 32
+
+
+def _measure_text(text: str, *, size: int = 13, weight: str = "normal") -> int:
+    return int(_font(size, weight).measure(text))
+
+
+def _button_width(
+    text: str,
+    *,
+    min_width: int,
+    size: int = 13,
+    weight: str = "normal",
+    padding: int = _BTN_PAD_X,
+) -> int:
+    return max(min_width, _measure_text(text, size=size, weight=weight) + padding)
+
+
+def _fit_button(
+    button: ctk.CTkButton,
+    text: str,
+    *,
+    min_width: int,
+    size: int = 13,
+    weight: str = "normal",
+) -> None:
+    button.configure(
+        text=text,
+        width=_button_width(text, min_width=min_width, size=size, weight=weight),
+    )
+
+
+def _fit_option_menu(
+    menu: ctk.CTkOptionMenu,
+    values: list[str],
+    *,
+    min_width: int,
+    size: int = 12,
+) -> None:
+    if values:
+        text_w = max(_measure_text(v, size=size) for v in values)
+        menu.configure(width=max(min_width, text_w + 48))
+    else:
+        menu.configure(width=min_width)
+
+
+def _fit_label_width(
+    label: ctk.CTkLabel,
+    text: str,
+    *,
+    min_width: int,
+    size: int = 13,
+    weight: str = "normal",
+    padding: int = 14,
+) -> None:
+    label.configure(
+        text=text,
+        width=max(min_width, _measure_text(text, size=size, weight=weight) + padding),
+    )
+
+
+def _status_row_label_width() -> int:
+    keys = (
+        "status.row.placeholder",
+        "status.row.paused",
+        "status.row.upcoming",
+        "status.row.live",
+        "status.row.offline",
+    )
+    return max(
+        72,
+        max(_measure_text(tr(k), size=12, weight="bold") for k in keys) + 16,
+    )
+
+
+def _status_bar_text_width() -> int:
+    keys = (
+        "status.idle",
+        "status.trigger_running",
+        "status.watching",
+        "status.stopped",
+    )
+    return max(96, max(_measure_text(tr(k)) for k in keys) + 16)
 
 
 def _language_icon(size: int = 20) -> ctk.CTkImage:
@@ -190,7 +275,7 @@ _CLR_TEXT_DISABLED = "#3a3a4a"
 _CLR_LINK = "#2196F3"
 _CLR_LINK_HOVER = "#1769aa"
 
-_MIN_WINDOW_WIDTH = 860
+_MIN_WINDOW_WIDTH = 920
 _MIN_WINDOW_HEIGHT = 560
 _DEFAULT_WINDOW_GEOMETRY = f"{_MIN_WINDOW_WIDTH}x580"
 
@@ -487,7 +572,7 @@ class AddChannelDialog(ctk.CTkToplevel):
         self._cancel_btn = ctk.CTkButton(
             btn_frame,
             text=tr("add.btn.cancel"),
-            width=104,
+            width=_button_width(tr("add.btn.cancel"), min_width=96),
             height=40,
             fg_color="transparent",
             border_width=1,
@@ -501,7 +586,7 @@ class AddChannelDialog(ctk.CTkToplevel):
         self._add_btn = ctk.CTkButton(
             btn_frame,
             text=tr("add.btn.add"),
-            width=104,
+            width=_button_width(tr("add.btn.add"), min_width=96, weight="bold"),
             height=40,
             fg_color=_CLR_ADD,
             hover_color=_CLR_ADD_HOVER,
@@ -530,8 +615,10 @@ class AddChannelDialog(ctk.CTkToplevel):
         self._name_label.configure(text=tr("add.manual.name"))
         self.name_entry.configure(placeholder_text=tr("add.manual.name.placeholder"))
         self._manual_hint_label.configure(text=tr("add.manual.hint"))
-        self._cancel_btn.configure(text=tr("add.btn.cancel"))
-        self._add_btn.configure(text=tr("add.btn.add"))
+        _fit_button(self._cancel_btn, tr("add.btn.cancel"), min_width=96)
+        _fit_button(
+            self._add_btn, tr("add.btn.add"), min_width=96, weight="bold"
+        )
         if self._message_key is not None:
             key, kwargs = self._message_key
             self.message_label.configure(text=tr(key, **kwargs))
@@ -731,7 +818,7 @@ class LanguageDialog(ctk.CTkToplevel):
         self._close_btn = ctk.CTkButton(
             footer,
             text=tr("lang.btn.close"),
-            width=96,
+            width=_button_width(tr("lang.btn.close"), min_width=88),
             height=36,
             fg_color="transparent",
             border_width=1,
@@ -745,7 +832,9 @@ class LanguageDialog(ctk.CTkToplevel):
         self._apply_btn = ctk.CTkButton(
             footer,
             text=tr("lang.btn.apply"),
-            width=96,
+            width=_button_width(
+                tr("lang.btn.apply"), min_width=88, weight="bold"
+            ),
             height=36,
             fg_color=_CLR_ADD,
             hover_color=_CLR_ADD_HOVER,
@@ -807,8 +896,10 @@ class LanguageDialog(ctk.CTkToplevel):
             return
         self._heading_label.configure(text=tr("lang.heading"))
         self._description_label.configure(text=tr("lang.description"))
-        self._close_btn.configure(text=tr("lang.btn.close"))
-        self._apply_btn.configure(text=tr("lang.btn.apply"))
+        _fit_button(self._close_btn, tr("lang.btn.close"), min_width=88)
+        _fit_button(
+            self._apply_btn, tr("lang.btn.apply"), min_width=88, weight="bold"
+        )
         self._update_row_visuals()
 
     def _on_destroy(self, event: Any = None) -> None:
@@ -1282,7 +1373,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._signin_btn = ctk.CTkButton(
             profile_frame,
             text=tr("browser.btn.signin"),
-            width=160,
+            width=_button_width(tr("browser.btn.signin"), min_width=120),
             height=30,
             fg_color="transparent",
             border_width=1,
@@ -1328,7 +1419,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._test_btn = ctk.CTkButton(
             tools_button_frame,
             text=tr("browser.btn.test"),
-            width=112,
+            width=_button_width(tr("browser.btn.test"), min_width=100),
             height=34,
             fg_color="transparent",
             border_width=1,
@@ -1343,7 +1434,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._test_close_btn = ctk.CTkButton(
             tools_button_frame,
             text=tr("browser.btn.test_close"),
-            width=112,
+            width=_button_width(tr("browser.btn.test_close"), min_width=100),
             height=34,
             fg_color="transparent",
             border_width=1,
@@ -1382,7 +1473,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.reset_geometry_btn = ctk.CTkButton(
             header_frame,
             text=tr("browser.geometry.reset"),
-            width=82,
+            width=_button_width(tr("browser.geometry.reset"), min_width=72),
             height=26,
             corner_radius=6,
             fg_color="transparent",
@@ -1436,7 +1527,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._save_btn = ctk.CTkButton(
             btn_frame,
             text=tr("browser.btn.save"),
-            width=104,
+            width=_button_width(
+                tr("browser.btn.save"), min_width=96, weight="bold"
+            ),
             height=40,
             fg_color=_CLR_ADD,
             hover_color=_CLR_ADD_HOVER,
@@ -1448,7 +1541,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._cancel_btn = ctk.CTkButton(
             btn_frame,
             text=tr("browser.btn.cancel"),
-            width=104,
+            width=_button_width(tr("browser.btn.cancel"), min_width=96),
             height=40,
             fg_color="transparent",
             border_width=1,
@@ -1543,11 +1636,18 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._y_label.configure(text=tr("browser.geometry.y"))
         self._w_label.configure(text=tr("browser.geometry.width"))
         self._h_label.configure(text=tr("browser.geometry.height"))
-        self._cancel_btn.configure(text=tr("browser.btn.cancel"))
-        self._test_btn.configure(text=tr("browser.btn.test"))
-        self._test_close_btn.configure(text=tr("browser.btn.test_close"))
-        self._signin_btn.configure(text=tr("browser.btn.signin"))
-        self._save_btn.configure(text=tr("browser.btn.save"))
+        _fit_button(self._cancel_btn, tr("browser.btn.cancel"), min_width=96)
+        _fit_button(self._test_btn, tr("browser.btn.test"), min_width=100)
+        _fit_button(
+            self._test_close_btn, tr("browser.btn.test_close"), min_width=100
+        )
+        _fit_button(self._signin_btn, tr("browser.btn.signin"), min_width=120)
+        _fit_button(
+            self._save_btn, tr("browser.btn.save"), min_width=96, weight="bold"
+        )
+        _fit_button(
+            self.reset_geometry_btn, tr("browser.geometry.reset"), min_width=72
+        )
         self._no_isolation_label.configure(text=tr("browser.msg.no_isolation_warning"))
         self._user_tab_iso_banner.configure(
             text=tr("browser.banner.iso_features_auto_setup")
@@ -2171,7 +2271,7 @@ class ChannelRow(ctk.CTkFrame):
         self.status_label = ctk.CTkLabel(
             self,
             text=tr("status.row.placeholder"),
-            width=80,
+            width=_status_row_label_width(),
             font=_font(12, "bold"),
             corner_radius=6,
         )
@@ -2274,6 +2374,7 @@ class ChannelRow(ctk.CTkFrame):
             logger.exception("ChannelRow retranslate failed")
 
     def _retranslate_dynamic_text(self) -> None:
+        self.status_label.configure(width=_status_row_label_width())
         # Status label (non-static rows) — _render_status_visuals rebuilds it.
         self._render_status_visuals()
         # The toggle / monitor-only buttons are icon-only but the tooltips
@@ -2652,7 +2753,7 @@ class App(ctk.CTk):
         saved_language = i18n.normalize(self.config.get("language"))
         i18n.set_language(saved_language, notify=False)
 
-        self.title(tr("app.title"))
+        self.title(f"{tr('app.title')} v{__version__}")
         self.minsize(_MIN_WINDOW_WIDTH, _MIN_WINDOW_HEIGHT)
         self.geometry(_clamped_window_geometry(self.config.get("window_geometry")))
         self.configure(fg_color=_CLR_BG_DARK)
@@ -2785,7 +2886,9 @@ class App(ctk.CTk):
         self.add_btn = ctk.CTkButton(
             title_bar,
             text=tr("toolbar.add_channel"),
-            width=130,
+            width=_button_width(
+                tr("toolbar.add_channel"), min_width=110, size=14, weight="bold"
+            ),
             height=36,
             corner_radius=8,
             fg_color=_CLR_ADD,
@@ -2799,7 +2902,12 @@ class App(ctk.CTk):
         self.browser_settings_btn = ctk.CTkButton(
             title_bar,
             text=tr("toolbar.browser_settings"),
-            width=130,
+            width=_button_width(
+                tr("toolbar.browser_settings"),
+                min_width=110,
+                size=13,
+                weight="bold",
+            ),
             height=36,
             corner_radius=8,
             fg_color="transparent",
@@ -2874,7 +2982,9 @@ class App(ctk.CTk):
         self.start_btn = ctk.CTkButton(
             left,
             text=tr("toolbar.start"),
-            width=132,
+            width=_button_width(
+                tr("toolbar.start"), min_width=108, size=14, weight="bold"
+            ),
             height=38,
             corner_radius=8,
             fg_color=_CLR_START,
@@ -2888,7 +2998,9 @@ class App(ctk.CTk):
         self.watch_btn = ctk.CTkButton(
             left,
             text=tr("toolbar.watch"),
-            width=108,
+            width=_button_width(
+                tr("toolbar.watch"), min_width=88, size=14, weight="bold"
+            ),
             height=38,
             corner_radius=8,
             fg_color="#1565c0",
@@ -2902,7 +3014,9 @@ class App(ctk.CTk):
         self.stop_btn = ctk.CTkButton(
             left,
             text=tr("toolbar.stop"),
-            width=80,
+            width=_button_width(
+                tr("toolbar.stop"), min_width=72, size=14, weight="bold"
+            ),
             height=38,
             corner_radius=8,
             fg_color=_CLR_STOP,
@@ -2919,7 +3033,7 @@ class App(ctk.CTk):
             text=tr("status.idle"),
             font=_font(13),
             text_color=_CLR_OFFLINE,
-            width=86,
+            width=_status_bar_text_width(),
             anchor="w",
         )
         self.status_text.grid(row=0, column=1, sticky="w", padx=(14, 8))
@@ -2978,7 +3092,12 @@ class App(ctk.CTk):
             action_group,
             variable=self.action_var,
             values=action_displays,
-            width=218,
+            width=_button_width(
+                max(action_displays, key=len),
+                min_width=200,
+                size=12,
+                padding=48,
+            ),
             height=32,
             font=_font(12),
             dropdown_font=_font(12),
@@ -2986,6 +3105,47 @@ class App(ctk.CTk):
         self.action_menu.pack(anchor="w", pady=(2, 0))
         _tooltip_tr(self.action_menu, "tooltip.action_menu")
 
+    def _fit_main_toolbar_i18n(self) -> None:
+        """Resize toolbar widgets so localized labels are not clipped."""
+        _fit_button(
+            self.add_btn,
+            tr("toolbar.add_channel"),
+            min_width=110,
+            size=14,
+            weight="bold",
+        )
+        _fit_button(
+            self.browser_settings_btn,
+            tr("toolbar.browser_settings"),
+            min_width=110,
+            size=13,
+            weight="bold",
+        )
+        _fit_button(
+            self.start_btn,
+            tr("toolbar.start"),
+            min_width=108,
+            size=14,
+            weight="bold",
+        )
+        _fit_button(
+            self.watch_btn,
+            tr("toolbar.watch"),
+            min_width=88,
+            size=14,
+            weight="bold",
+        )
+        _fit_button(
+            self.stop_btn,
+            tr("toolbar.stop"),
+            min_width=72,
+            size=14,
+            weight="bold",
+        )
+        status_text = tr(self._status_text_key)
+        _fit_label_width(self.status_text, status_text, min_width=96)
+        self.status_text.configure(text_color=self._status_text_color)
+        _fit_option_menu(self.action_menu, _action_displays(), min_width=200)
 
     # ------------------------------------------------------------------
     # Channel list operations
@@ -3136,22 +3296,14 @@ class App(ctk.CTk):
     def _on_language_changed(self) -> None:
         """Re-translate every widget that lives directly on the main window."""
         try:
-            self.title(tr("app.title"))
+            self.title(f"{tr('app.title')} v{__version__}")
         except Exception:  # noqa: BLE001
             return
         self._title_cn_label.configure(text=tr("app.title.cn"))
         self._title_en_label.configure(text=tr("app.title.en"))
-        self.add_btn.configure(text=tr("toolbar.add_channel"))
-        self.browser_settings_btn.configure(text=tr("toolbar.browser_settings"))
         self.startup_switch.configure(text=tr("toolbar.startup"))
         self.tray_switch.configure(text=tr("toolbar.minimize_to_tray"))
-        self.start_btn.configure(text=tr("toolbar.start"))
-        self.watch_btn.configure(text=tr("toolbar.watch"))
-        self.stop_btn.configure(text=tr("toolbar.stop"))
         self.empty_label.configure(text=tr("status.empty_hint"))
-        self.status_text.configure(
-            text=tr(self._status_text_key), text_color=self._status_text_color
-        )
         self._interval_caption.configure(text=tr("toolbar.check_interval"))
         self._interval_unit.configure(text=tr("toolbar.seconds"))
         self._action_caption.configure(text=tr("toolbar.action_label"))
@@ -3164,6 +3316,7 @@ class App(ctk.CTk):
         new_values = list(labels.values())
         self.action_menu.configure(values=new_values)
         self.action_var.set(labels.get(current_key, new_values[0]))
+        self._fit_main_toolbar_i18n()
 
     # ------------------------------------------------------------------
     # Monitor control
@@ -3205,7 +3358,8 @@ class App(ctk.CTk):
         """Update the bottom-toolbar status text + cache for retranslation."""
         self._status_text_key = key
         self._status_text_color = color
-        self.status_text.configure(text=tr(key), text_color=color)
+        _fit_label_width(self.status_text, tr(key), min_width=96)
+        self.status_text.configure(text_color=color)
 
     def _on_start(self) -> None:
         if not self._ensure_monitor_running():
@@ -3316,6 +3470,15 @@ class App(ctk.CTk):
         except queue.Empty:
             pass
 
+        # 只監測 (watch) mode is observe-only: it refreshes the UI status but
+        # must never open *or* close player windows. Every window-closing side
+        # effect below — the off-topic prune and the close_on_offline sweep —
+        # is therefore gated on trigger mode, matching the documented contract
+        # that 只監測 "不執行離線關閉". Without this gate, switching to 只監測
+        # while a player window was open would still let a later offline edge
+        # close the very window the user switched modes to keep watching.
+        trigger_enabled = self._monitor_mode == "trigger"
+
         if latest_status_update is not None:
             statuses, display_names = latest_status_update
             self._apply_display_names(display_names)
@@ -3327,7 +3490,7 @@ class App(ctk.CTk):
             # We only run when the user opted in, and we tolerate the call
             # being a no-op on non-Windows (the helper returns 0).
             raw_browser_settings = self.config.get("browser_settings") or {}
-            if raw_browser_settings.get("close_off_topic_pages"):
+            if trigger_enabled and raw_browser_settings.get("close_off_topic_pages"):
                 try:
                     closed = prune_off_topic_tracked_windows()
                     if closed:
@@ -3341,7 +3504,6 @@ class App(ctk.CTk):
         browser_settings = self._current_browser_settings()
         should_stop = False
         should_exit = False
-        trigger_enabled = self._monitor_mode == "trigger"
 
         for entry, info in live_events:
             if info.display_name:
@@ -3375,7 +3537,9 @@ class App(ctk.CTk):
             elif action == "open_and_exit":
                 should_exit = True
 
-        if offline_events and browser_settings.get("close_on_offline"):
+        if trigger_enabled and offline_events and browser_settings.get(
+            "close_on_offline"
+        ):
             for entry, offline_info in offline_events:
                 # close_on_offline must respect monitor-only too — we never
                 # opened a window for this channel, so we shouldn't try to

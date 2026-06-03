@@ -480,6 +480,21 @@ def _apply_new_browser_window_settings_async(
                     # Don't add to `managed` — leave room for the real window
                     # to show up in a later poll.
                     continue
+                if track_keywords:
+                    cleaned_kws = [kw.strip().lower() for kw in track_keywords if kw and kw.strip()]
+                    if cleaned_kws:
+                        title_low = current_title.lower()
+                        if not any(kw in title_low for kw in cleaned_kws):
+                            logger.debug(
+                                "Skipping HWND=%s during post-launch tracking: "
+                                "title %r does not contain any of keywords %r",
+                                hwnd,
+                                current_title,
+                                cleaned_kws,
+                            )
+                            # Don't add to `managed` — leave room for the real window
+                            # to show up in a later poll.
+                            continue
                 try:
                     if apply_geometry:
                         # Chrome may open the new window in a "maximised" state,
