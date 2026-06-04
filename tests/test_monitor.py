@@ -1,3 +1,5 @@
+import logging
+
 from stream_monitor import monitor as monitor_module
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo, VideoItem
@@ -24,6 +26,31 @@ class FakeTwitchFetcher:
             platform="twitch",
             is_live=is_live,
             title="Live now" if is_live else "",
+            url=f"https://www.twitch.tv/{channel_name}",
+            display_name="Hello Channel",
+        )
+
+    def get_channel_items(self, channel_name: str) -> list[VideoItem]:
+        return []
+
+
+class FakeTwitchFetcherReadings:
+    """Twitch fetcher that can return ``None`` (failed fetch) per poll."""
+
+    platform = "twitch"
+
+    def __init__(self, readings: list[bool | None]) -> None:
+        self.readings = readings
+
+    def get_stream_info(self, channel_name: str) -> StreamInfo | None:
+        val = self.readings.pop(0)
+        if val is None:
+            return None
+        return StreamInfo(
+            channel=channel_name,
+            platform="twitch",
+            is_live=val,
+            title="Live now" if val else "",
             url=f"https://www.twitch.tv/{channel_name}",
             display_name="Hello Channel",
         )
@@ -753,6 +780,36 @@ def test_twitch_emits_went_offline_after_live(monkeypatch, tmp_path) -> None:
         assert payload.title == "Live now"
         assert payload.platform == "twitch"
         assert payload.name == "hello"
+        offline = monitor._last_status["twitch:hello"]
+        assert isinstance(offline, ChannelStatus)
+        assert offline.status is False
+        assert offline.title == "Live now"
+        assert offline.ended_at
+    db.close()
+
+
+def test_twitch_offline_status_sets_vod_url_from_archive(
+    monkeypatch, tmp_path
+) -> None:
+    class FetcherWithArchive(FakeTwitchFetcher):
+        def get_latest_archive_url(self, channel_name: str) -> str:
+            return "https://www.twitch.tv/videos/archive1"
+
+    fetcher = FetcherWithArchive([True, False, False])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    _check_and_commit(monitor, entry)
+    _check_and_commit(monitor, entry)
+    _check_and_commit(monitor, entry)
+
+    with monitor._lock:
+        offline = monitor._last_status["twitch:hello"]
+        assert isinstance(offline, ChannelStatus)
+        assert offline.vod_url == "https://www.twitch.tv/videos/archive1"
+        assert offline.ended_at
     db.close()
 
 
@@ -936,6 +993,70 @@ def test_twitch_strike_resets_when_channel_returns_live(monkeypatch, tmp_path) -
     _check_and_commit(monitor, entry)  # not live (strike 2 → confirmed)
     with monitor._lock:
         assert len(monitor._pending_offline_events) == 1
+    db.close()
+
+
+def test_twitch_fetch_none_increments_offline_strike_when_was_live(
+    monkeypatch, tmp_path,
+) -> None:
+    """A failed fetch while LIVE counts toward the offline strike threshold."""
+    fetcher = FakeTwitchFetcherReadings([True, None, None])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._last_status["twitch:hello"].status is True
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._last_status["twitch:hello"].status is True
+        assert monitor._offline_strikes.get("twitch:hello|_") == 1
+        assert monitor._pending_offline_events == []
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._last_status["twitch:hello"].status is False
+        assert len(monitor._pending_offline_events) == 1
+    db.close()
+
+
+def test_twitch_live_after_fetch_none_commit_fires_went_live(
+    monkeypatch, tmp_path,
+) -> None:
+    """After fetch failures clear a stale LIVE state, a new stream triggers went_live."""
+    fetcher = FakeTwitchFetcherReadings([True, None, None, True])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    went_live: list[tuple[str, str]] = []
+    for _ in range(4):
+        results = _check_and_commit(monitor, entry)
+        for evt_entry, info in results:
+            went_live.append((evt_entry.key, info.title))
+
+    assert went_live == [("twitch:hello", "Live now"), ("twitch:hello", "Live now")]
+    db.close()
+
+
+def test_twitch_went_live_suppressed_emits_log(
+    monkeypatch, tmp_path, caplog,
+) -> None:
+    fetcher = FakeTwitchFetcher([True, True])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    caplog.set_level(logging.INFO)
+    _check_and_commit(monitor, entry)
+    _check_and_commit(monitor, entry)
+
+    assert any("went_live_suppressed" in r.message for r in caplog.records)
     db.close()
 
 

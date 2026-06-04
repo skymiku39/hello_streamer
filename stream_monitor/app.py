@@ -534,10 +534,12 @@ class ChannelRow(ctk.CTkFrame):
             self._status_countdown = ""
         else:
             self._status_state = "offline"
-            self._status_title = ""
-            self._active_url = ""
+            self._status_title = detail.title if detail else ""
+            self._active_url = (detail.vod_url if detail else "") or ""
             self._status_countdown = ""
-            self._status_elapsed = ""
+            self._status_elapsed = _format_elapsed(
+                detail.ended_at if detail else ""
+            )
 
         self._render_status_visuals()
 
@@ -585,16 +587,19 @@ class ChannelRow(ctk.CTkFrame):
             self._set_link_tip_with_title("tooltip.row.link.live")
             return
 
-        # offline
-        self.time_label.configure(text="")
+        # offline — mirror live: elapsed since end + OFFLINE badge
+        self.time_label.configure(text=self._status_elapsed)
         self.status_label.configure(
             text=tr("status.row.offline"),
             text_color="#999999",
             fg_color="transparent",
             cursor="",
         )
-        self._status_tip.set_text("")
-        self._set_link_tip_key("tooltip.row.link.offline")
+        self._status_tip.set_text(self._compose_status_tip(state))
+        if self._active_url:
+            self._set_link_tip_with_title("tooltip.row.link.vod")
+        else:
+            self._set_link_tip_key("tooltip.row.link.offline")
 
     def _compose_status_tip(self, state: str) -> str:
         parts: list[str] = []
@@ -608,13 +613,20 @@ class ChannelRow(ctk.CTkFrame):
             parts.append(
                 tr("tooltip.row.status.live_elapsed", elapsed=self._status_elapsed)
             )
+        elif state == "offline" and self._status_elapsed:
+            parts.append(
+                tr(
+                    "tooltip.row.status.offline_elapsed",
+                    elapsed=self._status_elapsed,
+                )
+            )
         if parts:
             return "\n".join(parts)
-        return tr(
-            "tooltip.row.status.upcoming"
-            if state == "upcoming"
-            else "tooltip.row.status.live"
-        )
+        if state == "upcoming":
+            return tr("tooltip.row.status.upcoming")
+        if state == "offline":
+            return tr("tooltip.row.status.offline")
+        return tr("tooltip.row.status.live")
 
     @property
     def key(self) -> str:
@@ -1431,6 +1443,9 @@ class App(ctk.CTk):
             # stop/exit-after-trigger). The user explicitly asked us to look
             # but not act on this channel.
             if getattr(entry, "monitor_only", False):
+                logger.info(
+                    "Skipped action for %s (monitor_only)", entry.key
+                )
                 continue
 
             action = action_for_stream_status(configured_action, info)

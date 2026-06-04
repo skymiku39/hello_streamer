@@ -1,23 +1,23 @@
-# Hello Streamer v0.9.2
+# Hello Streamer v0.9.4
 
-## 介面佈局與尺寸優化
+## 離線列顯示優化
 
-### 語言偏好對話框高度調整
-原先語言偏好視窗高度（`420px`）不足以完整容納 5 種語言選項以及底部的「套用」與「關閉」按鈕，導致按鈕在某些情況下被裁切或看不見。已將視窗高度提升至 `480px`，按鈕現在能完全正常顯示。
+### 雙層離線狀態（對齊 LIVE 列）
+頻道離線時，左側時間欄顯示**已下播多久**（與 LIVE 的「已開播多久」相同格式），右側狀態欄仍顯示 `OFFLINE`。滑鼠提示可顯示上次直播標題與下播經過時間。
 
-### 瀏覽器設定對話框精簡化
-優化瀏覽器設定對話框以解決四周間距過寬、介面過於空曠的問題：
-- 對話框預設寬度自 `680px` 縮小至 `580px`（最小寬度自 `600px` 縮小至 `500px`）。
-- 內部元件的左右邊距（`padx`）從 `24` 調小至 `16`，Tab 分頁邊距調小至 `12`。
-- 調小部分區域標題的上下垂直間距，使其版面配置更緊湊。
-- 同步縮減提示文案的折行寬度（`wraplength`）至 `480px` / `460px`，使其完美貼合新版寬度。
+### 錄播連結按鈕
+右側 🔗 按鈕在有可用的錄播 URL 時會開啟錄播頁面：
+
+- **YouTube**：使用上一場直播的 `watch?v=` 連結（下播後即為重播）
+- **Twitch**：下播確認後查詢最新 ARCHIVE VOD；若查詢失敗則仍開啟頻道首頁
 
 ## 下載檔案
 
-- Windows 請下載 `HelloStreamer-v0.9.2-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.9.2-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.2-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v0.9.4-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.9.4-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.4-linux-arm64.tar.gz`
 
 ## 升級提醒
 
-- 從舊版本升級可直接覆蓋執行檔；`config.json` 與 Profile 資料夾無需變更。
+- 從 v0.9.3 升級可直接覆蓋執行檔；`config.json` 與 Profile 資料夾無需變更。
+- 下播時間以程式**確認下播當下**的時間為準（與 LIVE 的開播時間邏輯一致），非平台提供的精確結束時間。

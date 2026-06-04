@@ -54,6 +54,20 @@ query StreamStatus($login: String!) {
 }
 """
 
+_ARCHIVE_QUERY = """
+query LatestArchive($login: String!) {
+  user(login: $login) {
+    videos(first: 1, type: ARCHIVE) {
+      edges {
+        node {
+          id
+        }
+      }
+    }
+  }
+}
+"""
+
 _MAX_RETRIES = 2
 _RETRY_DELAY = 3
 
@@ -65,11 +79,9 @@ class TwitchFetcher(StreamFetcher):
         self._session = requests.Session()
         self._session.headers.update(_HEADERS)
 
-    def _query(self, channel_name: str) -> dict | None:
-        payload = {
-            "query": _GQL_QUERY,
-            "variables": {"login": channel_name.lower()},
-        }
+    def _gql(self, query: str, variables: dict[str, str]) -> dict | None:
+        payload = {"query": query, "variables": variables}
+        channel_name = variables.get("login", "")
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 resp = self._session.post(_GQL_URL, json=payload, timeout=10)
@@ -109,6 +121,31 @@ class TwitchFetcher(StreamFetcher):
                 logger.warning("Invalid JSON from Twitch for %s: %s", channel_name, exc)
                 return None
         return None
+
+    def _query(self, channel_name: str) -> dict | None:
+        return self._gql(_GQL_QUERY, {"login": channel_name.lower()})
+
+    def get_latest_archive_url(self, channel_name: str) -> str | None:
+        """Return the most recent VOD URL for *channel_name*, if available."""
+        data = self._gql(_ARCHIVE_QUERY, {"login": channel_name.lower()})
+        if data is None:
+            return None
+        try:
+            edges = data["data"]["user"]["videos"]["edges"]
+            if not edges:
+                return None
+            node = edges[0]["node"]
+            video_id = node.get("id")
+            if not video_id:
+                return None
+            return f"https://www.twitch.tv/videos/{video_id}"
+        except (KeyError, TypeError, IndexError) as exc:
+            logger.warning(
+                "Failed to parse Twitch archive response for %s: %s",
+                channel_name,
+                exc,
+            )
+            return None
 
     def is_live(self, channel_name: str) -> bool:
         data = self._query(channel_name)

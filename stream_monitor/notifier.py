@@ -870,6 +870,13 @@ def execute_action(
     browser_settings: dict[str, Any] | None = None,
 ) -> None:
     """Dispatch the configured action."""
+    logger.info(
+        "execute_action: action=%s platform=%s channel=%s url=%s",
+        action,
+        info.platform,
+        info.channel,
+        info.url,
+    )
     if action == "open_and_stop":
         open_and_stop(info, stop_fn or (lambda: None), browser_settings)
     elif action == "open_and_keep":
