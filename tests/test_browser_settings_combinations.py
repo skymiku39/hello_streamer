@@ -686,8 +686,8 @@ def test_stop_4a_closes_every_tracked_url(monkeypatch) -> None:
 
     assert count == 3
     assert set(closed) == {100, 101, 200}
-    assert notifier._snapshot_tracked_hwnds("https://a") == set()
-    assert notifier._snapshot_tracked_hwnds("https://b") == set()
+    assert notifier.tracked_hwnds_for_url("https://a") == set()
+    assert notifier.tracked_hwnds_for_url("https://b") == set()
 
 
 def test_stop_4b_no_op_on_non_windows(monkeypatch) -> None:
@@ -757,7 +757,7 @@ def test_prune_5a_keeps_window_when_title_still_matches(monkeypatch) -> None:
 
     assert notifier.prune_off_topic_tracked_windows() == 0
     # Tracking stays intact for later off-topic checks.
-    assert notifier._snapshot_tracked_hwnds("https://t.tv/kaicenat") == {42}
+    assert notifier.tracked_hwnds_for_url("https://t.tv/kaicenat") == {42}
 
 
 def test_prune_5b_closes_window_that_lost_all_keywords(monkeypatch) -> None:
@@ -791,7 +791,7 @@ def test_prune_5b_closes_window_that_lost_all_keywords(monkeypatch) -> None:
     assert notifier.prune_off_topic_tracked_windows() == 1
     assert closed == [42]
     # HWND was untracked after the close.
-    assert notifier._snapshot_tracked_hwnds("https://t.tv/kaicenat") == set()
+    assert notifier.tracked_hwnds_for_url("https://t.tv/kaicenat") == set()
 
 
 def test_prune_5c_respects_grace_period(monkeypatch) -> None:
@@ -822,7 +822,7 @@ def test_prune_5c_respects_grace_period(monkeypatch) -> None:
     assert notifier.prune_off_topic_tracked_windows(min_age_s=6.0) == 0
     assert closed == []
     # Still tracked — we're waiting for the loaded title.
-    assert notifier._snapshot_tracked_hwnds("https://t.tv/kaicenat") == {42}
+    assert notifier.tracked_hwnds_for_url("https://t.tv/kaicenat") == {42}
 
 
 def test_prune_5d_shared_mode_no_op(monkeypatch) -> None:
@@ -1454,9 +1454,9 @@ def test_multi_10a_three_urls_register_independently() -> None:
     notifier._register_tracked_hwnd("https://a", 11)
     notifier._register_tracked_hwnd("https://b", 22)
     notifier._register_tracked_hwnd("https://c", 33)
-    assert notifier._snapshot_tracked_hwnds("https://a") == {11}
-    assert notifier._snapshot_tracked_hwnds("https://b") == {22}
-    assert notifier._snapshot_tracked_hwnds("https://c") == {33}
+    assert notifier.tracked_hwnds_for_url("https://a") == {11}
+    assert notifier.tracked_hwnds_for_url("https://b") == {22}
+    assert notifier.tracked_hwnds_for_url("https://c") == {33}
 
 
 def test_multi_10b_close_one_url_leaves_others_intact(monkeypatch) -> None:
@@ -1474,9 +1474,9 @@ def test_multi_10b_close_one_url_leaves_others_intact(monkeypatch) -> None:
     notifier.close_browser_window_for_url("https://b")
 
     assert closed == [22]
-    assert notifier._snapshot_tracked_hwnds("https://a") == {11}
-    assert notifier._snapshot_tracked_hwnds("https://b") == set()
-    assert notifier._snapshot_tracked_hwnds("https://c") == {33}
+    assert notifier.tracked_hwnds_for_url("https://a") == {11}
+    assert notifier.tracked_hwnds_for_url("https://b") == set()
+    assert notifier.tracked_hwnds_for_url("https://c") == {33}
 
 
 def test_multi_10c_close_all_tracks_every_url(monkeypatch) -> None:
@@ -1492,7 +1492,7 @@ def test_multi_10c_close_all_tracks_every_url(monkeypatch) -> None:
     assert notifier.close_all_tracked_windows() == 3
     assert set(closed) == {11, 22, 33}
     for url in ("https://a", "https://b", "https://c"):
-        assert notifier._snapshot_tracked_hwnds(url) == set()
+        assert notifier.tracked_hwnds_for_url(url) == set()
 
 
 def test_multi_10d_per_channel_keeps_subdirs_distinct(monkeypatch, tmp_path) -> None:
@@ -1531,7 +1531,7 @@ def test_multi_10e_same_url_relaunch_dedupes_hwnd() -> None:
     would attempt WM_CLOSE twice on the same HWND."""
     notifier._register_tracked_hwnd("https://x", 99)
     notifier._register_tracked_hwnd("https://x", 99)
-    assert notifier._snapshot_tracked_hwnds("https://x") == {99}
+    assert notifier.tracked_hwnds_for_url("https://x") == {99}
     tracked = notifier._snapshot_tracked_windows("https://x")
     assert len(tracked) == 1
 
@@ -2055,7 +2055,7 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
             assert launched == []
             assert opened == [(url, 2)]
             assert worker_calls == []
-            assert notifier._snapshot_tracked_hwnds(url) == set()
+            assert notifier.tracked_hwnds_for_url(url) == set()
             assert url not in notifier._TITLE_FALLBACK_BLOCKED_URLS
             return url, hwnd
 
@@ -2099,11 +2099,11 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
             assert worker_calls[0]["track_for_url"] == url
             assert worker_calls[0]["track_keywords"] == (channel,)
             assert worker_calls[0]["apply_geometry"] is apply_geometry
-            assert notifier._snapshot_tracked_hwnds(url) == {hwnd}
+            assert notifier.tracked_hwnds_for_url(url) == {hwnd}
             assert url not in notifier._TITLE_FALLBACK_BLOCKED_URLS
         else:
             assert worker_calls == []
-            assert notifier._snapshot_tracked_hwnds(url) == set()
+            assert notifier.tracked_hwnds_for_url(url) == set()
             if profile_mode == "shared":
                 assert url in notifier._TITLE_FALLBACK_BLOCKED_URLS
             else:
@@ -2142,7 +2142,7 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
         count = notifier.close_all_tracked_windows()
         assert count == (1 if expects_tracking else 0)
         assert closed == ([hwnd] if expects_tracking else [])
-        assert notifier._snapshot_tracked_hwnds(url) == set()
+        assert notifier.tracked_hwnds_for_url(url) == set()
     else:
         assert closed == []
 
@@ -2152,6 +2152,6 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
         count = notifier.prune_off_topic_tracked_windows(min_age_s=0.0)
         assert count == (1 if expects_tracking else 0)
         assert closed == ([hwnd] if expects_tracking else [])
-        assert notifier._snapshot_tracked_hwnds(url) == set()
+        assert notifier.tracked_hwnds_for_url(url) == set()
     else:
         assert closed == []

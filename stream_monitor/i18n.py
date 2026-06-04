@@ -1055,14 +1055,6 @@ def current_language() -> str:
     return _current_lang
 
 
-def label_for(code: str) -> str:
-    """Return the native label of a language code (falls back to the code)."""
-    for c, native, _ in LANGUAGES:
-        if c == code:
-            return native
-    return code
-
-
 def normalize(code: Any) -> str:
     """Coerce an arbitrary value into a known language code."""
     if isinstance(code, str) and code in LANGUAGE_CODES:

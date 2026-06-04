@@ -13,3 +13,11 @@ def base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent.parent
+
+
+def default_browser_profile_dir() -> str:
+    """Return ``<base_dir>/browser_profile`` as a string, or ``""`` on failure."""
+    try:
+        return str(base_dir() / "browser_profile")
+    except Exception:  # noqa: BLE001 — never block callers on path resolution.
+        return ""

@@ -6,7 +6,7 @@ import json
 from copy import deepcopy
 from typing import Any
 
-from stream_monitor import base_dir, i18n
+from stream_monitor import base_dir, default_browser_profile_dir, i18n
 
 DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     "enabled": False,
@@ -141,10 +141,7 @@ def _default_browser_profile_path() -> str:
     disable per-channel isolation and cause cross-window HWND contamination
     under Chrome's master process.
     """
-    try:
-        return str(base_dir() / "browser_profile")
-    except Exception:  # noqa: BLE001 — never block config load on this.
-        return ""
+    return default_browser_profile_dir()
 
 
 # Flags whose runtime implementation depends on the Win32 post-launch

@@ -708,10 +708,15 @@ def test_open_with_browser_settings_skips_minimize_on_non_windows(monkeypatch) -
     assert manager_calls == []
 
 
-def test_minimize_new_browser_windows_async_returns_none_off_windows(monkeypatch) -> None:
+def test_apply_new_browser_window_settings_async_returns_none_off_windows(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(notifier, "_is_windows", lambda: False)
     assert (
-        notifier._minimize_new_browser_windows_async("Chrome_WidgetWin_1", set()) is None
+        notifier._apply_new_browser_window_settings_async(
+            "Chrome_WidgetWin_1", set(), {"minimized": True}, apply_geometry=False
+        )
+        is None
     )
 
 
@@ -771,8 +776,12 @@ def test_minimize_thread_actually_minimizes_new_window(monkeypatch) -> None:
 
     monkeypatch.setattr(ctypes, "windll", FakeWindll())
 
-    thread = notifier._minimize_new_browser_windows_async(
-        "Chrome_WidgetWin_1", baseline={1, 2, 3}, deadline_s=2.0
+    thread = notifier._apply_new_browser_window_settings_async(
+        "Chrome_WidgetWin_1",
+        {1, 2, 3},
+        {"minimized": True},
+        apply_geometry=False,
+        deadline_s=2.0,
     )
     assert thread is not None
     thread.join(timeout=3.0)
@@ -1384,9 +1393,9 @@ def test_register_and_snapshot_tracked_hwnds_roundtrip() -> None:
         notifier._register_tracked_hwnd("https://x", 1234)
         notifier._register_tracked_hwnd("https://x", 5678)
         notifier._register_tracked_hwnd("https://y", 99)
-        assert notifier._snapshot_tracked_hwnds("https://x") == {1234, 5678}
-        assert notifier._snapshot_tracked_hwnds("https://y") == {99}
-        assert notifier._snapshot_tracked_hwnds("https://missing") == set()
+        assert notifier.tracked_hwnds_for_url("https://x") == {1234, 5678}
+        assert notifier.tracked_hwnds_for_url("https://y") == {99}
+        assert notifier.tracked_hwnds_for_url("https://missing") == set()
     finally:
         _reset_tracked_hwnds()
 
@@ -1406,7 +1415,7 @@ def test_clear_tracked_hwnds_removes_the_entry() -> None:
     try:
         notifier._register_tracked_hwnd("https://x", 42)
         notifier._clear_tracked_hwnds("https://x")
-        assert notifier._snapshot_tracked_hwnds("https://x") == set()
+        assert notifier.tracked_hwnds_for_url("https://x") == set()
     finally:
         _reset_tracked_hwnds()
 
@@ -1441,7 +1450,7 @@ def test_close_browser_window_for_url_uses_tracked_hwnds(monkeypatch) -> None:
     assert result == 2
     assert set(closed_hwnds) == {11, 22}
     # Registry is cleared after the close call.
-    assert notifier._snapshot_tracked_hwnds("https://stream") == set()
+    assert notifier.tracked_hwnds_for_url("https://stream") == set()
 
 
 def test_close_browser_window_for_url_falls_back_to_title_keyword(monkeypatch) -> None:
@@ -1762,7 +1771,7 @@ def test_apply_new_browser_window_settings_async_registers_tracked_url(
     )
     assert thread is not None
     thread.join(timeout=2.0)
-    assert notifier._snapshot_tracked_hwnds("https://x") == {1234}
+    assert notifier.tracked_hwnds_for_url("https://x") == {1234}
     # The TrackedWindow entry must also have stored the keywords so the
     # off-topic prune pass can identify the window later.
     tracked = notifier._snapshot_tracked_windows("https://x")
@@ -1852,7 +1861,7 @@ def test_window_manager_ignores_popup_then_manages_real_window(monkeypatch) -> N
     )
     assert thread is not None
     thread.join(timeout=2.0)
-    assert notifier._snapshot_tracked_hwnds("https://x") == {222}
+    assert notifier.tracked_hwnds_for_url("https://x") == {222}
     assert user32.SetWindowPos.call_args.args[0] == 222
     _reset_tracked_hwnds()
 
@@ -1910,7 +1919,7 @@ def test_close_all_tracked_windows_no_op_off_windows(monkeypatch) -> None:
     notifier._register_tracked_hwnd("https://a", 1)
     assert notifier.close_all_tracked_windows() == 0
     # Registry not cleared on non-Windows — caller still owns it.
-    assert notifier._snapshot_tracked_hwnds("https://a") == {1}
+    assert notifier.tracked_hwnds_for_url("https://a") == {1}
     _reset_tracked_hwnds()
 
 
@@ -1970,7 +1979,7 @@ def test_prune_off_topic_closes_window_with_blacklisted_title(monkeypatch) -> No
     result = notifier.prune_off_topic_tracked_windows(min_age_s=1.0)
     assert result == 1
     assert closed == [111]
-    assert notifier._snapshot_tracked_hwnds("https://stream") == set()
+    assert notifier.tracked_hwnds_for_url("https://stream") == set()
     _reset_tracked_hwnds()
 
 
@@ -2013,7 +2022,7 @@ def test_prune_off_topic_keeps_window_with_matching_keyword(monkeypatch) -> None
     assert notifier.prune_off_topic_tracked_windows(min_age_s=1.0) == 0
     assert closed == []
     # Still tracked — we didn't touch it.
-    assert notifier._snapshot_tracked_hwnds("https://stream") == {333}
+    assert notifier.tracked_hwnds_for_url("https://stream") == {333}
     _reset_tracked_hwnds()
 
 
@@ -2034,7 +2043,7 @@ def test_prune_off_topic_respects_grace_period(monkeypatch) -> None:
     assert notifier.prune_off_topic_tracked_windows(min_age_s=60.0) == 0
     assert closed == []
     # Window is still tracked — we deliberately did not close it yet.
-    assert notifier._snapshot_tracked_hwnds("https://stream") == {444}
+    assert notifier.tracked_hwnds_for_url("https://stream") == {444}
     _reset_tracked_hwnds()
 
 
@@ -2058,7 +2067,7 @@ def test_prune_off_topic_drops_dead_hwnds_without_closing(monkeypatch) -> None:
 
     assert notifier.prune_off_topic_tracked_windows(min_age_s=1.0) == 0
     assert closed == []
-    assert notifier._snapshot_tracked_hwnds("https://stream") == set()
+    assert notifier.tracked_hwnds_for_url("https://stream") == set()
     _reset_tracked_hwnds()
 
 

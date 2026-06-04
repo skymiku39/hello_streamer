@@ -15,6 +15,7 @@ from typing import Any, Callable
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo, VideoItem
+from stream_monitor.util import parse_iso_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -100,15 +101,6 @@ def _video_item_to_stream_info(item: VideoItem, channel: str) -> StreamInfo:
     )
 
 
-def _parse_iso_datetime(value: str) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -122,7 +114,7 @@ def _entry_key_from_live_cache_key(key: str) -> str:
 
 
 def _sort_datetime(value: str, fallback: datetime) -> datetime:
-    return _parse_iso_datetime(value) or fallback
+    return parse_iso_datetime(value) or fallback
 
 
 class Monitor:
