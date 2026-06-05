@@ -1178,8 +1178,6 @@ class Monitor:
             return self._probe_youtube_fallback_live(entry, fetcher, snap)
 
         new_events: list[tuple[ChannelEntry, StreamInfo]] = []
-        has_live = False
-        has_upcoming = False
         live_items: list[VideoItem] = []
         upcoming_items: list[VideoItem] = []
         with self._lock:
@@ -1191,7 +1189,6 @@ class Monitor:
 
         for item in items:
             if item.style == "LIVE":
-                has_live = True
                 live_key = _live_cache_key(entry.key, item.video_id)
                 with self._lock:
                     started_at = item.started_at or self._live_started_at.get(live_key)
@@ -1210,7 +1207,6 @@ class Monitor:
                 live_items.append(item)
             elif item.style == "UPCOMING":
                 if _youtube_upcoming_is_usable(item.scheduled_start):
-                    has_upcoming = True
                     upcoming_items.append(item)
 
             if item.display_name:

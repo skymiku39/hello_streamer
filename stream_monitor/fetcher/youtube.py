@@ -22,7 +22,12 @@ from typing import NamedTuple
 
 import requests
 
-from stream_monitor.fetcher.base import FinishedVod, StreamFetcher, StreamInfo, VideoItem
+from stream_monitor.fetcher.base import (
+    FinishedVod,
+    StreamFetcher,
+    StreamInfo,
+    VideoItem,
+)
 from stream_monitor.util import parse_iso_datetime
 
 logger = logging.getLogger(__name__)

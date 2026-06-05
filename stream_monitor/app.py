@@ -68,9 +68,9 @@ from stream_monitor.notifier import (
     prune_off_topic_tracked_windows,
 )
 from stream_monitor.single_instance import SingleInstance
-from stream_monitor.util import channel_key
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
 from stream_monitor.tray import TrayIcon
+from stream_monitor.util import channel_key
 
 logger = logging.getLogger(__name__)
 
