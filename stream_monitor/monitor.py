@@ -1,6 +1,6 @@
 """背景輪詢排程器 — 定期檢查頻道清單並透過 callback 回報狀態變化。
 
-Twitch: 布林邊緣觸發 (get_stream_info)
+Twitch: 布林邊緣觸發 (get_stream_info) + ARCHIVE VOD；無待機室
 YouTube: TIDUS 架構 — videoId + style 事件追蹤 (get_channel_items + SQLite)
 """
 
@@ -42,6 +42,8 @@ _OFFLINE_STRIKE_THRESHOLD = 2
 _STABLE_STATUS_LOG_EVERY = 20
 _CONFIRMED_FUTURE_SLACK = timedelta(minutes=5)
 _VOD_MAX_AGE_BEFORE_CONFIRM = timedelta(hours=48)
+_UPCOMING_EXPIRY_GRACE = timedelta(minutes=30)
+_UPCOMING_MAX_FUTURE = timedelta(days=7)
 
 
 @dataclass
@@ -73,6 +75,7 @@ class ChannelStatus:
     started_at: str = ""
     ended_at: str = ""  # ISO8601 when offline was confirmed
     vod_url: str = ""  # archive / replay link for the link button
+    upcoming_url: str = ""  # waiting-room link when offline but scheduled
     ended_at_source: str = ""  # "vod" | "confirmed"
 
     def __eq__(self, other: object) -> bool:
@@ -158,6 +161,21 @@ def _sort_datetime(value: str, fallback: datetime) -> datetime:
     return parse_iso_datetime(value) or fallback
 
 
+def _youtube_upcoming_is_usable(scheduled_start: str) -> bool:
+    """True when a YouTube waiting-room schedule is worth surfacing."""
+    if not scheduled_start:
+        return True
+    start_dt = parse_iso_datetime(scheduled_start)
+    if start_dt is None:
+        return True
+    now = datetime.now(timezone.utc)
+    if now > start_dt + _UPCOMING_EXPIRY_GRACE:
+        return False
+    if start_dt > now + _UPCOMING_MAX_FUTURE:
+        return False
+    return True
+
+
 class Monitor:
     """Polls a list of channels in a background thread."""
 
@@ -196,6 +214,9 @@ class Monitor:
         # the stream was live. Used to fire went-offline events with the
         # exact URL/title we originally opened, even after live data is gone.
         self._live_payload: dict[str, OfflineInfo] = {}
+        # Twitch channels we have seen live this session — offline UI only after
+        # a confirmed live→offline edge, not on cold-start "already offline".
+        self._twitch_seen_live: set[str] = set()
         # Consecutive-miss counter per live_cache_key. Incremented every poll a
         # previously-live entry/video appears "not live"; reset when it comes
         # back. Only when the counter reaches _OFFLINE_STRIKE_THRESHOLD do we
@@ -262,9 +283,13 @@ class Monitor:
                 for key, value in self._offline_strikes.items()
                 if _entry_key_from_live_cache_key(key) in keys
             }
+            self._twitch_seen_live = {
+                key for key in self._twitch_seen_live if key in keys
+            }
             for entry in self._entries:
                 if entry.enabled and not old_enabled.get(entry.key, True):
                     self._last_status.pop(entry.key, None)
+                    self._twitch_seen_live.discard(entry.key)
                     # Re-enabling a channel restarts its lifecycle, so any
                     # stale strikes from the last time it was watched would
                     # otherwise short-circuit the first real offline edge.
@@ -290,6 +315,7 @@ class Monitor:
             self._live_payload.clear()
             self._offline_strikes.clear()
             self._pending_offline_events.clear()
+            self._twitch_seen_live.clear()
         try:
             self._db.cleanup(days=30)
         except Exception:
@@ -423,6 +449,36 @@ class Monitor:
         self._offline_strikes.pop(live_key, None)
         return "commit"
 
+    def _find_youtube_upcoming_item(
+        self, entry: ChannelEntry, fetcher: Any | None
+    ) -> VideoItem | None:
+        """Return the nearest YouTube UPCOMING (waiting-room) item, if any."""
+        if fetcher is None:
+            try:
+                fetcher = get_fetcher("youtube")
+            except Exception:
+                logger.exception("No YouTube fetcher for %s", entry.key)
+                return None
+        try:
+            items = fetcher.get_channel_items(entry.name)
+        except Exception:
+            logger.exception("Failed to fetch YouTube channel items for %s", entry.key)
+            return None
+        upcoming = [
+            item
+            for item in items
+            if item.style == "UPCOMING"
+            and _youtube_upcoming_is_usable(item.scheduled_start)
+        ]
+        if not upcoming:
+            return None
+        return min(
+            upcoming,
+            key=lambda item: _sort_datetime(
+                item.scheduled_start, datetime.max.replace(tzinfo=timezone.utc)
+            ),
+        )
+
     def _fetch_finished_vod(
         self, entry: ChannelEntry, fetcher: Any | None
     ) -> FinishedVod | None:
@@ -452,7 +508,26 @@ class Monitor:
             return prev_cs.title
         return ""
 
-    def _build_offline_channel_status(
+    def _resolve_offline_vod(
+        self,
+        entry: ChannelEntry,
+        *,
+        fetcher: Any | None,
+        payload: OfflineInfo | None,
+        prev_cs: ChannelStatus | None,
+        extra_vod_url: str = "",
+    ) -> tuple[str, str | None, FinishedVod | None]:
+        """Shared VOD URL + platform end time for offline rows."""
+        vod = self._fetch_finished_vod(entry, fetcher)
+        vod_url = vod.url if vod else ""
+        if not vod_url and payload and payload.url and entry.platform == "youtube":
+            vod_url = payload.url
+        if not vod_url:
+            vod_url = extra_vod_url or (prev_cs.vod_url if prev_cs else "")
+        platform_end = vod.ended_at if vod and vod.ended_at else None
+        return vod_url, platform_end, vod
+
+    def _build_youtube_offline_channel_status(
         self,
         entry: ChannelEntry,
         confirmed_iso: str,
@@ -462,26 +537,69 @@ class Monitor:
         prev_cs: ChannelStatus | None,
         extra_vod_url: str = "",
     ) -> ChannelStatus:
-        """Merge confirmed offline time with platform VOD end when available."""
+        """YouTube offline: waiting room + VOD + hybrid ended_at."""
         home = _channel_home_url(entry)
-        vod = self._fetch_finished_vod(entry, fetcher)
-        vod_url = vod.url if vod else ""
-        if not vod_url and payload and payload.url and entry.platform == "youtube":
-            vod_url = payload.url
-        if not vod_url:
-            vod_url = extra_vod_url or (prev_cs.vod_url if prev_cs else "")
-        platform_end = vod.ended_at if vod and vod.ended_at else None
+        vod_url, platform_end, vod = self._resolve_offline_vod(
+            entry,
+            fetcher=fetcher,
+            payload=payload,
+            prev_cs=prev_cs,
+            extra_vod_url=extra_vod_url,
+        )
         ended_at, source = _merge_offline_ended_at(confirmed_iso, platform_end)
+        upcoming_item = self._find_youtube_upcoming_item(entry, fetcher)
+        upcoming_url = upcoming_item.url if upcoming_item else ""
+        scheduled_start = upcoming_item.scheduled_start if upcoming_item else ""
+        if not upcoming_url and prev_cs and prev_cs.upcoming_url:
+            if _youtube_upcoming_is_usable(prev_cs.scheduled_start):
+                upcoming_url = prev_cs.upcoming_url
+                if not scheduled_start:
+                    scheduled_start = prev_cs.scheduled_start
+        title = self._offline_title(prev_cs, payload, vod)
+        if upcoming_item and upcoming_item.title:
+            title = upcoming_item.title
         return ChannelStatus(
             status=False,
-            title=self._offline_title(prev_cs, payload, vod),
+            title=title,
             ended_at=ended_at,
             vod_url=vod_url,
+            upcoming_url=upcoming_url,
             url=home,
             ended_at_source=source,
+            scheduled_start=scheduled_start,
         )
 
-    def _try_upgrade_offline_vod(
+    def _build_twitch_offline_channel_status(
+        self,
+        entry: ChannelEntry,
+        confirmed_iso: str,
+        *,
+        fetcher: Any | None,
+        payload: OfflineInfo | None,
+        prev_cs: ChannelStatus | None,
+    ) -> ChannelStatus:
+        """Twitch offline: ARCHIVE VOD only (no waiting-room concept)."""
+        home = _channel_home_url(entry)
+        vod_url, platform_end, vod = self._resolve_offline_vod(
+            entry,
+            fetcher=fetcher,
+            payload=payload,
+            prev_cs=prev_cs,
+        )
+        ended_at, source = _merge_offline_ended_at(confirmed_iso, platform_end)
+        title = self._offline_title(prev_cs, payload, vod)
+        return ChannelStatus(
+            status=False,
+            title=title,
+            ended_at=ended_at,
+            vod_url=vod_url,
+            upcoming_url="",
+            url=home,
+            ended_at_source=source,
+            scheduled_start="",
+        )
+
+    def _try_upgrade_youtube_offline_vod(
         self,
         entry: ChannelEntry,
         prev_cs: ChannelStatus,
@@ -489,13 +607,49 @@ class Monitor:
         fetcher: Any | None,
         payload: OfflineInfo | None,
     ) -> ChannelStatus | None:
-        """Fill in vod_url / vod-based ended_at on stable offline polls."""
+        """Retry YouTube waiting-room + VOD links on stable offline polls."""
+        if (
+            prev_cs.ended_at_source == "vod"
+            and prev_cs.vod_url
+            and prev_cs.upcoming_url
+        ):
+            return None
+        if prev_cs.vod_url and prev_cs.upcoming_url and not fetcher:
+            return None
+        confirmed = prev_cs.ended_at or _utc_now_iso()
+        upgraded = self._build_youtube_offline_channel_status(
+            entry,
+            confirmed,
+            fetcher=fetcher,
+            payload=payload,
+            prev_cs=prev_cs,
+        )
+        if not upgraded.vod_url and not upgraded.upcoming_url:
+            return None
+        if (
+            upgraded.ended_at == prev_cs.ended_at
+            and upgraded.vod_url == prev_cs.vod_url
+            and upgraded.upcoming_url == prev_cs.upcoming_url
+            and upgraded.ended_at_source == prev_cs.ended_at_source
+        ):
+            return None
+        return upgraded
+
+    def _try_upgrade_twitch_offline_vod(
+        self,
+        entry: ChannelEntry,
+        prev_cs: ChannelStatus,
+        *,
+        fetcher: Any | None,
+        payload: OfflineInfo | None,
+    ) -> ChannelStatus | None:
+        """Retry Twitch ARCHIVE VOD link on stable offline polls."""
         if prev_cs.ended_at_source == "vod" and prev_cs.vod_url:
             return None
         if prev_cs.vod_url and not fetcher:
             return None
         confirmed = prev_cs.ended_at or _utc_now_iso()
-        upgraded = self._build_offline_channel_status(
+        upgraded = self._build_twitch_offline_channel_status(
             entry,
             confirmed,
             fetcher=fetcher,
@@ -512,7 +666,7 @@ class Monitor:
             return None
         return upgraded
 
-    def _offline_status_for(
+    def _youtube_offline_status_for(
         self,
         entry: ChannelEntry,
         prev: Any,
@@ -522,11 +676,51 @@ class Monitor:
         fetcher: Any | None = None,
         extra_vod_url: str = "",
     ) -> ChannelStatus:
-        """Build or preserve offline row state for the channel list UI."""
+        """Build or preserve YouTube offline row state."""
         prev_cs = prev if isinstance(prev, ChannelStatus) else None
         if prev_cs and prev_cs.status is False:
             confirmed = prev_cs.ended_at or _utc_now_iso()
-            upgraded = self._try_upgrade_offline_vod(
+            upgraded = self._try_upgrade_youtube_offline_vod(
+                entry, prev_cs, fetcher=fetcher, payload=payload
+            )
+            if upgraded is not None:
+                return upgraded
+            keep_upcoming = _youtube_upcoming_is_usable(prev_cs.scheduled_start)
+            return ChannelStatus(
+                status=False,
+                title=prev_cs.title or (payload.title if payload else ""),
+                ended_at=confirmed,
+                vod_url=prev_cs.vod_url or extra_vod_url,
+                upcoming_url=prev_cs.upcoming_url if keep_upcoming else "",
+                url=_channel_home_url(entry),
+                ended_at_source=prev_cs.ended_at_source or "confirmed",
+                scheduled_start=prev_cs.scheduled_start if keep_upcoming else "",
+            )
+
+        confirmed = _utc_now_iso()
+        return self._build_youtube_offline_channel_status(
+            entry,
+            confirmed,
+            fetcher=fetcher,
+            payload=payload,
+            prev_cs=prev_cs,
+            extra_vod_url=extra_vod_url,
+        )
+
+    def _twitch_offline_status_for(
+        self,
+        entry: ChannelEntry,
+        prev: Any,
+        payload: OfflineInfo | None = None,
+        *,
+        newly_offline: bool,
+        fetcher: Any | None = None,
+    ) -> ChannelStatus:
+        """Build or preserve Twitch offline row state (VOD link only)."""
+        prev_cs = prev if isinstance(prev, ChannelStatus) else None
+        if prev_cs and prev_cs.status is False:
+            confirmed = prev_cs.ended_at or _utc_now_iso()
+            upgraded = self._try_upgrade_twitch_offline_vod(
                 entry, prev_cs, fetcher=fetcher, payload=payload
             )
             if upgraded is not None:
@@ -535,19 +729,20 @@ class Monitor:
                 status=False,
                 title=prev_cs.title or (payload.title if payload else ""),
                 ended_at=confirmed,
-                vod_url=prev_cs.vod_url or extra_vod_url,
+                vod_url=prev_cs.vod_url,
+                upcoming_url="",
                 url=_channel_home_url(entry),
                 ended_at_source=prev_cs.ended_at_source or "confirmed",
+                scheduled_start="",
             )
 
         confirmed = _utc_now_iso()
-        return self._build_offline_channel_status(
+        return self._build_twitch_offline_channel_status(
             entry,
             confirmed,
             fetcher=fetcher,
             payload=payload,
             prev_cs=prev_cs,
-            extra_vod_url=extra_vod_url,
         )
 
     def _maybe_log_stable_twitch_status(
@@ -576,7 +771,9 @@ class Monitor:
         )
         if not api_live and isinstance(last, ChannelStatus) and last.status is False:
             fetcher = get_fetcher(entry.platform)
-            upgraded = self._try_upgrade_offline_vod(entry, last, fetcher=fetcher, payload=None)
+            upgraded = self._try_upgrade_twitch_offline_vod(
+                entry, last, fetcher=fetcher, payload=None
+            )
             if upgraded is not None:
                 self._last_status[entry.key] = upgraded
                 logger.info(
@@ -614,7 +811,8 @@ class Monitor:
             entry, live_key, prev
         )
         self._live_started_at.pop(live_key, None)
-        self._last_status[entry.key] = self._offline_status_for(
+        self._twitch_seen_live.add(entry.key)
+        self._last_status[entry.key] = self._twitch_offline_status_for(
             entry, prev, payload, newly_offline=True, fetcher=fetcher
         )
         self._pending_offline_events.append((entry, payload))
@@ -645,7 +843,7 @@ class Monitor:
         self._fallback_triggered_live.pop(entry.key, None)
         primary = payloads_to_emit[0] if payloads_to_emit else None
         yt_fetcher = get_fetcher(entry.platform)
-        self._last_status[entry.key] = self._offline_status_for(
+        self._last_status[entry.key] = self._youtube_offline_status_for(
             entry, prev, primary, newly_offline=True, fetcher=yt_fetcher
         )
         for payload in payloads_to_emit:
@@ -754,6 +952,7 @@ class Monitor:
                 self._offline_strikes.pop(live_key, None)
 
             if info.is_live:
+                self._twitch_seen_live.add(entry.key)
                 started_at = info.started_at or self._live_started_at.get(live_key)
                 if not started_at:
                     started_at = _utc_now_iso()
@@ -774,8 +973,8 @@ class Monitor:
                 )
             else:
                 self._live_started_at.pop(live_key, None)
-                if prev_status is not True:
-                    self._last_status[entry.key] = self._offline_status_for(
+                if entry.key in self._twitch_seen_live and prev_status is not True:
+                    self._last_status[entry.key] = self._twitch_offline_status_for(
                         entry, prev, newly_offline=False, fetcher=fetcher
                     )
             if info.display_name:
@@ -858,8 +1057,9 @@ class Monitor:
                 item.started_at = started_at
                 live_items.append(item)
             elif item.style == "UPCOMING":
-                has_upcoming = True
-                upcoming_items.append(item)
+                if _youtube_upcoming_is_usable(item.scheduled_start):
+                    has_upcoming = True
+                    upcoming_items.append(item)
 
             if item.display_name:
                 with self._lock:
@@ -1031,7 +1231,7 @@ class Monitor:
                     "",
                 )
                 prev_offline = self._last_status.get(entry.key)
-                self._last_status[entry.key] = self._offline_status_for(
+                self._last_status[entry.key] = self._youtube_offline_status_for(
                     entry,
                     prev_offline,
                     newly_offline=False,
@@ -1103,6 +1303,22 @@ class Monitor:
                     name=entry.name,
                     display_name=info.display_name or "",
                 )
+            elif (
+                info.stream_status == "upcoming"
+                and _youtube_upcoming_is_usable(info.scheduled_start)
+            ):
+                self._live_started_at = {
+                    key: value
+                    for key, value in self._live_started_at.items()
+                    if _entry_key_from_live_cache_key(key) != entry.key
+                }
+                self._fallback_triggered_live.pop(entry.key, None)
+                self._last_status[entry.key] = ChannelStatus(
+                    status="upcoming",
+                    url=info.url,
+                    title=info.title,
+                    scheduled_start=info.scheduled_start,
+                )
             else:
                 self._live_started_at = {
                     key: value
@@ -1110,7 +1326,7 @@ class Monitor:
                     if _entry_key_from_live_cache_key(key) != entry.key
                 }
                 self._fallback_triggered_live.pop(entry.key, None)
-                self._last_status[entry.key] = self._offline_status_for(
+                self._last_status[entry.key] = self._youtube_offline_status_for(
                     entry, prev, newly_offline=False, fetcher=fetcher
                 )
             if info.display_name:

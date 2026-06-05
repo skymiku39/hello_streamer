@@ -1,6 +1,6 @@
 import json
 
-from stream_monitor.fetcher.youtube import YouTubeFetcher
+from stream_monitor.fetcher.youtube import YouTubeFetcher, _WatchDetails
 
 
 def _html_with_player(player_json: str, extra: str = "") -> str:
@@ -283,6 +283,26 @@ class TestGetStreamInfo:
         assert info is not None
         assert info.is_live is True
         assert info.display_name == "Streamer"
+        assert info.url == "https://www.youtube.com/watch?v=v1"
+        assert info.stream_status == "live"
+        assert info.video_id == "v1"
+
+    def test_reports_upcoming_from_channel_items(self, monkeypatch) -> None:
+        fetcher = YouTubeFetcher()
+        vr = _make_video_renderer(
+            "v_up", "Waiting Room", "UPCOMING", "4102444800"
+        )
+        data = _make_initial_data([vr], "Streamer")
+        html = _html_with_initial_data(data)
+
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+        info = fetcher.get_stream_info("streamer")
+
+        assert info is not None
+        assert info.is_live is False
+        assert info.stream_status == "upcoming"
+        assert info.url == "https://www.youtube.com/watch?v=v_up"
+        assert info.scheduled_start != ""
 
     def test_reports_offline_from_default_items(self, monkeypatch) -> None:
         fetcher = YouTubeFetcher()
@@ -312,12 +332,16 @@ class TestGetStreamInfo:
               "playabilityStatus": {"status": "OK"},
               "videoDetails": {
                 "author": "Streamer",
+                "videoId": "live123",
                 "isLive": true,
                 "title": "Now Live"
               },
               "microformat": {
                 "playerMicroformatRenderer": {
-                  "liveBroadcastDetails": {"isLiveNow": true}
+                  "liveBroadcastDetails": {
+                    "isLiveNow": true,
+                    "startTimestamp": "2026-06-05T10:00:00Z"
+                  }
                 }
               }
             }
@@ -335,6 +359,48 @@ class TestGetStreamInfo:
         assert info is not None
         assert info.is_live is True
         assert info.title == "Now Live"
+        assert info.url == "https://www.youtube.com/watch?v=live123"
+        assert info.video_id == "live123"
+
+    def test_empty_streams_page_detects_upcoming_fallback(self, monkeypatch) -> None:
+        fetcher = YouTubeFetcher()
+        data = _make_initial_data([], "Streamer")
+        streams_html = _html_with_initial_data(data)
+        live_html = _html_with_player(
+            """
+            {
+              "playabilityStatus": {"status": "LIVE_STREAM_OFFLINE"},
+              "videoDetails": {
+                "author": "Streamer",
+                "videoId": "wait123",
+                "isUpcoming": true,
+                "title": "Waiting Room"
+              },
+              "microformat": {
+                "playerMicroformatRenderer": {
+                  "liveBroadcastDetails": {
+                    "isLiveNow": false,
+                    "startTimestamp": "2099-01-01T00:00:00Z"
+                  }
+                }
+              }
+            }
+            """
+        )
+
+        def fake_fetch(url: str) -> str:
+            if url.endswith("/streams"):
+                return streams_html
+            return live_html
+
+        monkeypatch.setattr(fetcher, "_fetch_page", fake_fetch)
+        info = fetcher.get_stream_info("streamer")
+
+        assert info is not None
+        assert info.is_live is False
+        assert info.stream_status == "upcoming"
+        assert info.url == "https://www.youtube.com/watch?v=wait123"
+        assert info.scheduled_start != ""
 
 
 # ─────────────────────────────────────────────
@@ -457,3 +523,27 @@ class TestFallbackParseLiveStatus:
         </html>
         """
         assert fetcher._parse_live_status(html) == (False, "", "")
+
+
+def test_get_latest_finished_vod_prefers_broadcast_over_upload(monkeypatch) -> None:
+    fetcher = YouTubeFetcher()
+    upload = _make_video_renderer("upload1", "Regular Upload", "DEFAULT")
+    replay = _make_video_renderer("replay1", "Past Stream", "DEFAULT")
+    data = _make_initial_data([upload, replay], "Streamer")
+    html = _html_with_initial_data(data)
+
+    def fake_watch_details(video_id: str):
+        if video_id == "upload1":
+            return _WatchDetails()
+        if video_id == "replay1":
+            return _WatchDetails(ended_at="2026-06-05T12:00:00+00:00")
+        return _WatchDetails()
+
+    monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+    monkeypatch.setattr(fetcher, "_get_watch_details", fake_watch_details)
+
+    vod = fetcher.get_latest_finished_vod("streamer")
+
+    assert vod is not None
+    assert vod.url == "https://www.youtube.com/watch?v=replay1"
+    assert vod.title == "Past Stream"

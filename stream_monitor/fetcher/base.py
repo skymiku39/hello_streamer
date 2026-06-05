@@ -60,7 +60,11 @@ class StreamFetcher(ABC):
         ...
 
     def get_channel_items(self, channel_name: str) -> list[VideoItem]:
-        """Return video items from channel page. Default: empty list."""
+        """Return video items from channel page.
+
+        YouTube-only (TIDUS /streams feed). Twitch uses boolean live checks
+        and ARCHIVE VOD queries instead; the base implementation is empty.
+        """
         return []
 
     def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:

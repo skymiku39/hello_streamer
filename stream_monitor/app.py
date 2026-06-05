@@ -111,6 +111,7 @@ class ChannelRow(ctk.CTkFrame):
         self._status_elapsed: str = ""
         self._status_timestamp: str = ""
         self._vod_url: str = ""
+        self._upcoming_url: str = ""
         self._ended_at_source: str = ""
 
         color = _CLR_TWITCH if channel["platform"] == "twitch" else _CLR_YOUTUBE
@@ -330,13 +331,28 @@ class ChannelRow(ctk.CTkFrame):
     def _open_channel_page(self) -> None:
         open_url(self._channel_url(), self._get_browser_settings())
 
+    def _offline_link_url(self) -> str:
+        """Offline link priority — platform-specific."""
+        if self.channel["platform"] == "youtube" and self._upcoming_url:
+            return self._upcoming_url
+        if self._vod_url:
+            return self._vod_url
+        return self._channel_url()
+
     def _open_current_page(self) -> None:
-        if self._status_state == "offline" and self._vod_url:
-            open_url(self._vod_url, self._get_browser_settings())
+        if self._status_state == "offline":
+            open_url(self._offline_link_url(), self._get_browser_settings())
             return
         open_url(self._active_url or self._channel_url(), self._get_browser_settings())
 
     def _open_active_page(self) -> None:
+        if (
+            self._status_state == "offline"
+            and self.channel["platform"] == "youtube"
+            and self._upcoming_url
+        ):
+            open_url(self._upcoming_url, self._get_browser_settings())
+            return
         if self._active_url:
             open_url(self._active_url, self._get_browser_settings())
 
@@ -412,6 +428,7 @@ class ChannelRow(ctk.CTkFrame):
         """Forget every cached status value so the next paint starts blank."""
         self._active_url = ""
         self._vod_url = ""
+        self._upcoming_url = ""
         self._ended_at_source = ""
         self._status_title = ""
         self._status_state = None
@@ -536,6 +553,7 @@ class ChannelRow(ctk.CTkFrame):
             self._status_countdown = ""
             self._status_elapsed = ""
             self._vod_url = ""
+            self._upcoming_url = ""
             self._ended_at_source = ""
         elif state == "upcoming":
             self._status_state = "upcoming"
@@ -551,11 +569,15 @@ class ChannelRow(ctk.CTkFrame):
             self._status_state = "offline"
             self._status_title = detail.title if detail else ""
             self._vod_url = (detail.vod_url if detail else "") or ""
+            self._upcoming_url = (detail.upcoming_url if detail else "") or ""
             self._active_url = ""
             self._ended_at_source = (
                 detail.ended_at_source if detail else ""
             ) or "confirmed"
-            self._status_countdown = ""
+            sched = (detail.scheduled_start if detail else "") or ""
+            self._status_countdown = (
+                _format_countdown(sched) if self._upcoming_url and sched else ""
+            )
             self._status_timestamp = detail.ended_at if detail else ""
             self._status_elapsed = _format_elapsed(self._status_timestamp)
 
@@ -626,10 +648,16 @@ class ChannelRow(ctk.CTkFrame):
             text=tr("status.row.offline"),
             text_color="#999999",
             fg_color="transparent",
-            cursor="",
+            cursor=(
+                "hand2"
+                if self.channel["platform"] == "youtube" and self._upcoming_url
+                else ""
+            ),
         )
         self._status_tip.set_text(self._compose_status_tip(state))
-        if self._vod_url:
+        if self._upcoming_url:
+            self._set_link_tip_with_title("tooltip.row.link.upcoming")
+        elif self._vod_url:
             self._set_link_tip_with_title("tooltip.row.link.vod")
         else:
             self._set_link_tip_key("tooltip.row.link.offline")
@@ -645,6 +673,13 @@ class ChannelRow(ctk.CTkFrame):
         elif state == "live" and self._status_elapsed:
             parts.append(
                 tr("tooltip.row.status.live_elapsed", elapsed=self._status_elapsed)
+            )
+        if state == "offline" and self._upcoming_url and self._status_countdown:
+            parts.append(
+                tr(
+                    "tooltip.row.status.starts_in",
+                    countdown=self._status_countdown,
+                )
             )
         elif state == "offline" and self._status_elapsed:
             if self._ended_at_source == "vod":

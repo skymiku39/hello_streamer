@@ -64,6 +64,10 @@ def _channel_url(channel_name: str) -> str:
     return f"https://www.youtube.com/@{channel_name}"
 
 
+def _watch_url(video_id: str) -> str:
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
 def _unix_to_iso(ts: str) -> str:
     """Convert a Unix timestamp string to ISO 8601."""
     try:
@@ -556,16 +560,31 @@ class YouTubeFetcher(StreamFetcher):
 
     def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
         items = self.get_channel_items(channel_name)
+        best: FinishedVod | None = None
+        best_ended: datetime | None = None
+        fallback: FinishedVod | None = None
+
         for item in items:
             if item.style != "DEFAULT":
                 continue
             details = self._get_watch_details(item.video_id)
-            return FinishedVod(
+            candidate = FinishedVod(
                 url=item.url,
                 ended_at=details.ended_at,
                 title=item.title,
             )
-        return None
+            if fallback is None:
+                fallback = candidate
+            if not details.ended_at:
+                continue
+            ended_dt = parse_iso_datetime(details.ended_at)
+            if ended_dt is None:
+                continue
+            if best_ended is None or ended_dt > best_ended:
+                best = candidate
+                best_ended = ended_dt
+
+        return best or fallback
 
     # ------------------------------------------------------------------
     # Public API: get_stream_info (used by AddChannelDialog validation)
@@ -591,7 +610,14 @@ class YouTubeFetcher(StreamFetcher):
 
         has_live = any(item.style == "LIVE" for item in items)
         live_item = next((i for i in items if i.style == "LIVE"), None)
-        title = live_item.title if live_item else ""
+        upcoming_items = [item for item in items if item.style == "UPCOMING"]
+        upcoming_item = None
+        if upcoming_items:
+            upcoming_item = min(
+                upcoming_items,
+                key=lambda item: parse_iso_datetime(item.scheduled_start)
+                or datetime.max.replace(tzinfo=timezone.utc),
+            )
 
         if not items:
             fb = self._fallback_live_check(channel_name)
@@ -600,11 +626,37 @@ class YouTubeFetcher(StreamFetcher):
                     fb.display_name = display_name
                 return fb
 
+        if has_live and live_item is not None:
+            return StreamInfo(
+                channel=channel_name,
+                platform="youtube",
+                is_live=True,
+                title=live_item.title,
+                url=live_item.url,
+                display_name=display_name or live_item.display_name,
+                video_id=live_item.video_id,
+                stream_status="live",
+                started_at=live_item.started_at,
+            )
+
+        if upcoming_item is not None:
+            return StreamInfo(
+                channel=channel_name,
+                platform="youtube",
+                is_live=False,
+                title=upcoming_item.title,
+                url=upcoming_item.url,
+                display_name=display_name or upcoming_item.display_name,
+                video_id=upcoming_item.video_id,
+                stream_status="upcoming",
+                scheduled_start=upcoming_item.scheduled_start,
+            )
+
         return StreamInfo(
             channel=channel_name,
             platform="youtube",
-            is_live=has_live,
-            title=title,
+            is_live=False,
+            title="",
             url=f"{base}/live",
             display_name=display_name,
         )
@@ -623,15 +675,170 @@ class YouTubeFetcher(StreamFetcher):
         if html is None:
             return None
 
-        is_live, title, display_name = self._parse_live_status(html)
+        return self._stream_info_from_player_html(html, channel_name, fallback_url=url)
+
+    def _stream_info_from_player_html(
+        self,
+        html: str,
+        channel_name: str,
+        *,
+        fallback_url: str,
+    ) -> StreamInfo | None:
+        player = self._extract_json_var(html, "ytInitialPlayerResponse")
+        if not isinstance(player, dict):
+            return None
+
+        video_details = player.get("videoDetails", {})
+        if not isinstance(video_details, dict):
+            video_details = {}
+        title = video_details.get("title", "") or ""
+        display_name = video_details.get("author", "") or ""
+        video_id = video_details.get("videoId", "") or ""
+        if not isinstance(video_id, str):
+            video_id = ""
+        page_url = _watch_url(video_id) if video_id else fallback_url
+
+        playability = player.get("playabilityStatus", {})
+        if isinstance(playability, dict):
+            status = playability.get("status")
+            if status in {"LIVE_STREAM_OFFLINE", "UNPLAYABLE"}:
+                upcoming = self._upcoming_from_player(player, channel_name, page_url)
+                if upcoming is not None:
+                    return upcoming
+                return StreamInfo(
+                    channel=channel_name,
+                    platform="youtube",
+                    is_live=False,
+                    title=title,
+                    url=page_url,
+                    display_name=display_name,
+                    video_id=video_id,
+                )
+
+        microformat = player.get("microformat", {})
+        renderer = {}
+        if isinstance(microformat, dict):
+            renderer = microformat.get("playerMicroformatRenderer", {}) or {}
+        if not display_name and isinstance(renderer, dict):
+            display_name = renderer.get("ownerChannelName", "")
+        live_details = {}
+        if isinstance(renderer, dict):
+            live_details = renderer.get("liveBroadcastDetails", {}) or {}
+
+        if isinstance(live_details, dict) and live_details.get("isLiveNow") is True:
+            started_at = live_details.get("startTimestamp", "") or ""
+            if not isinstance(started_at, str):
+                started_at = ""
+            return StreamInfo(
+                channel=channel_name,
+                platform="youtube",
+                is_live=True,
+                title=title,
+                url=page_url,
+                display_name=display_name,
+                video_id=video_id,
+                stream_status="live",
+                started_at=started_at,
+            )
+
+        upcoming = self._upcoming_from_player(player, channel_name, page_url)
+        if upcoming is not None:
+            return upcoming
+
+        if isinstance(live_details, dict) and live_details.get("isLiveNow") is False:
+            return StreamInfo(
+                channel=channel_name,
+                platform="youtube",
+                is_live=False,
+                title=title,
+                url=page_url,
+                display_name=display_name,
+                video_id=video_id,
+            )
+
         return StreamInfo(
             channel=channel_name,
             platform="youtube",
-            is_live=is_live,
+            is_live=False,
             title=title,
-            url=url,
+            url=page_url,
             display_name=display_name,
+            video_id=video_id,
         )
+
+    def _upcoming_from_player(
+        self, player: dict, channel_name: str, page_url: str
+    ) -> StreamInfo | None:
+        video_details = player.get("videoDetails", {})
+        if not isinstance(video_details, dict):
+            video_details = {}
+        title = video_details.get("title", "") or ""
+        display_name = video_details.get("author", "") or ""
+        video_id = video_details.get("videoId", "") or ""
+        if not isinstance(video_id, str):
+            video_id = ""
+
+        details = self._watch_details_from_player(player)
+        if not (
+            video_details.get("isUpcoming") is True or details.scheduled_start
+        ):
+            return None
+
+        return StreamInfo(
+            channel=channel_name,
+            platform="youtube",
+            is_live=False,
+            title=title,
+            url=page_url,
+            display_name=display_name,
+            video_id=video_id,
+            stream_status="upcoming",
+            scheduled_start=details.scheduled_start,
+        )
+
+    def _watch_details_from_player(self, player: dict) -> _WatchDetails:
+        video_details = player.get("videoDetails", {})
+        if not isinstance(video_details, dict):
+            video_details = {}
+        is_upcoming = video_details.get("isUpcoming") is True
+
+        microformat = player.get("microformat", {})
+        renderer = {}
+        if isinstance(microformat, dict):
+            renderer = microformat.get("playerMicroformatRenderer", {}) or {}
+        live_details = {}
+        if isinstance(renderer, dict):
+            live_details = renderer.get("liveBroadcastDetails", {}) or {}
+
+        start = ""
+        if isinstance(live_details, dict):
+            start = live_details.get("startTimestamp", "") or ""
+        if not isinstance(start, str):
+            start = ""
+
+        if is_upcoming and start:
+            return _WatchDetails(scheduled_start=start)
+
+        playability = player.get("playabilityStatus", {})
+        live_streamability = {}
+        if isinstance(playability, dict):
+            live_streamability = playability.get("liveStreamability", {}) or {}
+        live_renderer = {}
+        if isinstance(live_streamability, dict):
+            live_renderer = live_streamability.get("liveStreamabilityRenderer", {}) or {}
+        offline_slate = {}
+        if isinstance(live_renderer, dict):
+            offline_slate = live_renderer.get("offlineSlate", {}) or {}
+        slate_renderer = {}
+        if isinstance(offline_slate, dict):
+            slate_renderer = offline_slate.get("liveStreamOfflineSlateRenderer", {}) or {}
+        scheduled_time = ""
+        if isinstance(slate_renderer, dict):
+            scheduled_time = slate_renderer.get("scheduledStartTime", "") or ""
+        if isinstance(scheduled_time, str) and scheduled_time:
+            return _WatchDetails(scheduled_start=_unix_to_iso(scheduled_time))
+
+        return _WatchDetails()
 
     def _parse_live_status(self, html: str) -> tuple[bool, str, str]:
         """Return (is_live, title, display_name) from ytInitialPlayerResponse."""

@@ -2,6 +2,9 @@
 
 使用 Twitch 網頁版的公用 Client-ID 搭配完整的瀏覽器 Headers 偽裝，
 繞過 Cloudflare 基本防護。輪詢間隔應保持 ≥30 秒以避免觸發 Rate Limit。
+
+Twitch 沒有 YouTube 那種獨立「待機室」頁面（watch?v= 倒數頁），
+僅有頻道排程；離線時 🔗 優先順序為錄播 > 頻道首頁。
 """
 
 from __future__ import annotations

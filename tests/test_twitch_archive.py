@@ -68,3 +68,9 @@ def test_get_latest_archive_url_empty_edges(monkeypatch) -> None:
         lambda _q, _v: {"data": {"user": {"videos": {"edges": []}}}},
     )
     assert fetcher.get_latest_archive_url("hello") is None
+
+
+def test_get_channel_items_not_supported() -> None:
+    """Twitch has no YouTube-style waiting room; default API returns empty."""
+    fetcher = TwitchFetcher()
+    assert fetcher.get_channel_items("hello") == []

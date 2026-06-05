@@ -81,8 +81,9 @@ class FakeYouTubeFetcher:
         items_batches: list[list[VideoItem]],
         info_batches: list[StreamInfo | None] | None = None,
     ) -> None:
-        self.items_batches = items_batches
+        self.items_batches = list(items_batches)
         self.info_batches = info_batches or []
+        self._last_items: list[VideoItem] = []
 
     def get_stream_info(self, channel_name: str) -> StreamInfo | None:
         if self.info_batches:
@@ -91,8 +92,11 @@ class FakeYouTubeFetcher:
 
     def get_channel_items(self, channel_name: str) -> list[VideoItem]:
         if self.items_batches:
-            return self.items_batches.pop(0)
-        return []
+            self._last_items = self.items_batches.pop(0)
+        return list(self._last_items)
+
+    def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+        return None
 
 
 # ─────────────────────────────────────────────
@@ -209,6 +213,9 @@ def test_youtube_duplicate_video_skipped(monkeypatch, tmp_path) -> None:
 
 
 def test_youtube_upcoming_sets_status(monkeypatch, tmp_path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    soon = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
     items = [
         VideoItem(
             video_id="vid_upcoming",
@@ -216,7 +223,7 @@ def test_youtube_upcoming_sets_status(monkeypatch, tmp_path) -> None:
             style="UPCOMING",
             url="https://youtube.com/watch?v=vid_upcoming",
             display_name="YT Chan",
-            scheduled_start="2026-05-06T12:00:00+00:00",
+            scheduled_start=soon,
         )
     ]
     fetcher = FakeYouTubeFetcher([items])
@@ -239,13 +246,18 @@ def test_youtube_upcoming_sets_status(monkeypatch, tmp_path) -> None:
 def test_youtube_upcoming_status_uses_nearest_scheduled_start(
     monkeypatch, tmp_path
 ) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    later_start = (now + timedelta(hours=4)).isoformat()
+    sooner_start = (now + timedelta(hours=2)).isoformat()
     later = VideoItem(
         video_id="later_waiting",
         title="Later Waiting Room",
         style="UPCOMING",
         url="https://youtube.com/watch?v=later_waiting",
         display_name="YT Chan",
-        scheduled_start="2026-05-06T13:00:00+00:00",
+        scheduled_start=later_start,
     )
     sooner = VideoItem(
         video_id="sooner_waiting",
@@ -253,7 +265,7 @@ def test_youtube_upcoming_status_uses_nearest_scheduled_start(
         style="UPCOMING",
         url="https://youtube.com/watch?v=sooner_waiting",
         display_name="YT Chan",
-        scheduled_start="2026-05-06T12:00:00+00:00",
+        scheduled_start=sooner_start,
     )
     fetcher = FakeYouTubeFetcher([[later, sooner]])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
@@ -271,7 +283,7 @@ def test_youtube_upcoming_status_uses_nearest_scheduled_start(
     assert isinstance(status, ChannelStatus)
     assert status == "upcoming"
     assert status.url == "https://youtube.com/watch?v=sooner_waiting"
-    assert status.scheduled_start == "2026-05-06T12:00:00+00:00"
+    assert status.scheduled_start == sooner_start
     db.close()
 
 
@@ -838,6 +850,198 @@ def test_twitch_offline_status_sets_vod_url_from_archive(
     db.close()
 
 
+def test_youtube_offline_sets_upcoming_url_with_vod(tmp_path) -> None:
+    """YouTube offline row keeps waiting-room link separate from VOD."""
+    from datetime import datetime, timedelta, timezone
+
+    upcoming_start = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    upcoming_item = VideoItem(
+        video_id="sched1",
+        title="Next stream",
+        url="https://www.youtube.com/watch?v=sched1",
+        style="UPCOMING",
+        scheduled_start=upcoming_start,
+    )
+
+    class FetcherWithUpcoming(FakeYouTubeFetcher):
+        def get_channel_items(self, channel_name: str) -> list[VideoItem]:
+            return [upcoming_item]
+
+        def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+            ended = (
+                datetime.now(timezone.utc) - timedelta(minutes=30)
+            ).isoformat()
+            return FinishedVod(
+                url="https://www.youtube.com/watch?v=archive1",
+                ended_at=ended,
+                title="Archive stream",
+            )
+
+    fetcher = FetcherWithUpcoming([])
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+    confirmed = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+
+    offline = monitor._build_youtube_offline_channel_status(
+        entry,
+        confirmed,
+        fetcher=fetcher,
+        payload=None,
+        prev_cs=None,
+    )
+
+    assert offline.upcoming_url == "https://www.youtube.com/watch?v=sched1"
+    assert offline.vod_url == "https://www.youtube.com/watch?v=archive1"
+    assert offline.scheduled_start == upcoming_start
+    assert offline.url == "https://www.youtube.com/@yt"
+    db.close()
+
+
+def test_youtube_offline_clears_expired_upcoming_url(tmp_path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    fetcher = FakeYouTubeFetcher([])
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+    expired_start = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    prev = ChannelStatus(
+        status=False,
+        upcoming_url="https://www.youtube.com/watch?v=old",
+        scheduled_start=expired_start,
+        ended_at=expired_start,
+    )
+
+    offline = monitor._build_youtube_offline_channel_status(
+        entry,
+        expired_start,
+        fetcher=fetcher,
+        payload=None,
+        prev_cs=prev,
+    )
+
+    assert offline.upcoming_url == ""
+    assert offline.scheduled_start == ""
+    db.close()
+
+
+def test_twitch_offline_never_sets_upcoming_url(monkeypatch, tmp_path) -> None:
+    fetcher = FakeTwitchFetcher([True, False, False])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    _check_and_commit(monitor, entry)
+    _check_and_commit(monitor, entry)
+    _check_and_commit(monitor, entry)
+
+    with monitor._lock:
+        offline = monitor._last_status["twitch:hello"]
+        assert isinstance(offline, ChannelStatus)
+        assert offline.upcoming_url == ""
+        assert offline.scheduled_start == ""
+    db.close()
+
+
+def test_youtube_upcoming_is_usable_helper() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from stream_monitor.monitor import _youtube_upcoming_is_usable
+
+    expired = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    soon = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    far = (datetime.now(timezone.utc) + timedelta(days=8)).isoformat()
+
+    assert _youtube_upcoming_is_usable(expired) is False
+    assert _youtube_upcoming_is_usable(soon) is True
+    assert _youtube_upcoming_is_usable(far) is False
+    assert _youtube_upcoming_is_usable("") is True
+
+
+def test_youtube_offline_ignores_upcoming_beyond_7_days(tmp_path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    far = (datetime.now(timezone.utc) + timedelta(days=10)).isoformat()
+    upcoming_item = VideoItem(
+        video_id="far1",
+        title="Far stream",
+        url="https://www.youtube.com/watch?v=far1",
+        style="UPCOMING",
+        scheduled_start=far,
+    )
+
+    class FetcherWithFarUpcoming(FakeYouTubeFetcher):
+        def get_channel_items(self, channel_name: str) -> list[VideoItem]:
+            return [upcoming_item]
+
+        def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+            ended = (
+                datetime.now(timezone.utc) - timedelta(hours=1)
+            ).isoformat()
+            return FinishedVod(
+                url="https://www.youtube.com/watch?v=vod1",
+                ended_at=ended,
+                title="Recent VOD",
+            )
+
+    fetcher = FetcherWithFarUpcoming([])
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+    confirmed = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+
+    offline = monitor._build_youtube_offline_channel_status(
+        entry,
+        confirmed,
+        fetcher=fetcher,
+        payload=None,
+        prev_cs=None,
+    )
+
+    assert offline.upcoming_url == ""
+    assert offline.vod_url == "https://www.youtube.com/watch?v=vod1"
+    db.close()
+
+
+def test_youtube_fallback_sets_upcoming_status(monkeypatch, tmp_path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    soon = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    fetcher = FakeYouTubeFetcher([])
+
+    def fake_get_stream_info(channel_name: str) -> StreamInfo:
+        return StreamInfo(
+            channel=channel_name,
+            platform="youtube",
+            is_live=False,
+            title="Waiting Room",
+            url="https://www.youtube.com/watch?v=wait1",
+            video_id="wait1",
+            stream_status="upcoming",
+            scheduled_start=soon,
+        )
+
+    monkeypatch.setattr(fetcher, "get_channel_items", lambda _name: [])
+    monkeypatch.setattr(fetcher, "get_stream_info", fake_get_stream_info)
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    _check_and_commit(monitor, entry)
+
+    with monitor._lock:
+        status = monitor._last_status["youtube:yt"]
+        assert isinstance(status, ChannelStatus)
+        assert status.status == "upcoming"
+        assert status.url == "https://www.youtube.com/watch?v=wait1"
+        assert status.scheduled_start == soon
+    db.close()
+
+
 def test_twitch_no_went_offline_when_never_was_live(monkeypatch, tmp_path) -> None:
     fetcher = FakeTwitchFetcher([False, False])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
@@ -852,24 +1056,21 @@ def test_twitch_no_went_offline_when_never_was_live(monkeypatch, tmp_path) -> No
     db.close()
 
 
-def test_twitch_cold_offline_anchors_ended_at(monkeypatch, tmp_path) -> None:
-    fetcher = FakeTwitchFetcher([False, False])
+def test_twitch_cold_offline_stays_placeholder_until_live(
+    monkeypatch, tmp_path
+) -> None:
+    """Never-live Twitch channels must not show OFFLINE with a fresh <1m clock."""
+    fetcher = FakeTwitchFetcher([False, False, False])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
 
-    _check_and_commit(monitor, entry)
-    with monitor._lock:
-        first = monitor._last_status["twitch:hello"]
-        assert isinstance(first, ChannelStatus)
-        assert first.ended_at
+    for _ in range(3):
+        _check_and_commit(monitor, entry)
 
-    _check_and_commit(monitor, entry)
     with monitor._lock:
-        second = monitor._last_status["twitch:hello"]
-        assert isinstance(second, ChannelStatus)
-        assert second.ended_at == first.ended_at
+        assert "twitch:hello" not in monitor._last_status
     db.close()
 
 
