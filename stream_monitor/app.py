@@ -110,6 +110,8 @@ class ChannelRow(ctk.CTkFrame):
         self._status_countdown: str = ""
         self._status_elapsed: str = ""
         self._status_timestamp: str = ""
+        self._vod_url: str = ""
+        self._ended_at_source: str = ""
 
         color = _CLR_TWITCH if channel["platform"] == "twitch" else _CLR_YOUTUBE
         self._platform_color = color
@@ -329,6 +331,9 @@ class ChannelRow(ctk.CTkFrame):
         open_url(self._channel_url(), self._get_browser_settings())
 
     def _open_current_page(self) -> None:
+        if self._status_state == "offline" and self._vod_url:
+            open_url(self._vod_url, self._get_browser_settings())
+            return
         open_url(self._active_url or self._channel_url(), self._get_browser_settings())
 
     def _open_active_page(self) -> None:
@@ -406,6 +411,8 @@ class ChannelRow(ctk.CTkFrame):
     def _reset_status_cache(self) -> None:
         """Forget every cached status value so the next paint starts blank."""
         self._active_url = ""
+        self._vod_url = ""
+        self._ended_at_source = ""
         self._status_title = ""
         self._status_state = None
         self._status_countdown = ""
@@ -528,6 +535,8 @@ class ChannelRow(ctk.CTkFrame):
             self._status_state = None
             self._status_countdown = ""
             self._status_elapsed = ""
+            self._vod_url = ""
+            self._ended_at_source = ""
         elif state == "upcoming":
             self._status_state = "upcoming"
             self._status_timestamp = detail.scheduled_start if detail else ""
@@ -541,7 +550,11 @@ class ChannelRow(ctk.CTkFrame):
         else:
             self._status_state = "offline"
             self._status_title = detail.title if detail else ""
-            self._active_url = (detail.vod_url if detail else "") or ""
+            self._vod_url = (detail.vod_url if detail else "") or ""
+            self._active_url = ""
+            self._ended_at_source = (
+                detail.ended_at_source if detail else ""
+            ) or "confirmed"
             self._status_countdown = ""
             self._status_timestamp = detail.ended_at if detail else ""
             self._status_elapsed = _format_elapsed(self._status_timestamp)
@@ -616,7 +629,7 @@ class ChannelRow(ctk.CTkFrame):
             cursor="",
         )
         self._status_tip.set_text(self._compose_status_tip(state))
-        if self._active_url:
+        if self._vod_url:
             self._set_link_tip_with_title("tooltip.row.link.vod")
         else:
             self._set_link_tip_key("tooltip.row.link.offline")
@@ -634,12 +647,20 @@ class ChannelRow(ctk.CTkFrame):
                 tr("tooltip.row.status.live_elapsed", elapsed=self._status_elapsed)
             )
         elif state == "offline" and self._status_elapsed:
-            parts.append(
-                tr(
-                    "tooltip.row.status.offline_elapsed",
-                    elapsed=self._status_elapsed,
+            if self._ended_at_source == "vod":
+                parts.append(
+                    tr(
+                        "tooltip.row.status.offline_elapsed_vod",
+                        elapsed=self._status_elapsed,
+                    )
                 )
-            )
+            else:
+                parts.append(
+                    tr(
+                        "tooltip.row.status.offline_elapsed_confirmed",
+                        elapsed=self._status_elapsed,
+                    )
+                )
         if parts:
             return "\n".join(parts)
         if state == "upcoming":

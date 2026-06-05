@@ -20,6 +20,15 @@ class VideoItem:
 
 
 @dataclass
+class FinishedVod:
+    """Most recent finished broadcast / archive for offline elapsed + link."""
+
+    url: str
+    ended_at: str = ""  # ISO8601 estimated stream end
+    title: str = ""
+
+
+@dataclass
 class StreamInfo:
     """Snapshot of a channel's live status."""
 
@@ -53,3 +62,7 @@ class StreamFetcher(ABC):
     def get_channel_items(self, channel_name: str) -> list[VideoItem]:
         """Return video items from channel page. Default: empty list."""
         return []
+
+    def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+        """Return the latest finished VOD/replay, if the platform supports it."""
+        return None

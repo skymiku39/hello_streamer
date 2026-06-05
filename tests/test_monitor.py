@@ -2,7 +2,7 @@ import logging
 
 from stream_monitor import monitor as monitor_module
 from stream_monitor.db import SeenVideoDB
-from stream_monitor.fetcher.base import StreamInfo, VideoItem
+from stream_monitor.fetcher.base import FinishedVod, StreamInfo, VideoItem
 from stream_monitor.monitor import ChannelEntry, ChannelStatus, Monitor
 
 
@@ -806,8 +806,17 @@ def test_twitch_offline_status_sets_vod_url_from_archive(
     monkeypatch, tmp_path
 ) -> None:
     class FetcherWithArchive(FakeTwitchFetcher):
-        def get_latest_archive_url(self, channel_name: str) -> str:
-            return "https://www.twitch.tv/videos/archive1"
+        def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+            from datetime import datetime, timedelta, timezone
+
+            ended = (
+                datetime.now(timezone.utc) - timedelta(minutes=45)
+            ).isoformat()
+            return FinishedVod(
+                url="https://www.twitch.tv/videos/archive1",
+                ended_at=ended,
+                title="Archive stream",
+            )
 
     fetcher = FetcherWithArchive([True, False, False])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
@@ -823,7 +832,9 @@ def test_twitch_offline_status_sets_vod_url_from_archive(
         offline = monitor._last_status["twitch:hello"]
         assert isinstance(offline, ChannelStatus)
         assert offline.vod_url == "https://www.twitch.tv/videos/archive1"
+        assert offline.url == "https://www.twitch.tv/hello"
         assert offline.ended_at
+        assert offline.ended_at_source == "vod"
     db.close()
 
 

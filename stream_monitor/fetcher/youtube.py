@@ -17,12 +17,13 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
 import requests
 
-from stream_monitor.fetcher.base import StreamFetcher, StreamInfo, VideoItem
+from stream_monitor.fetcher.base import FinishedVod, StreamFetcher, StreamInfo, VideoItem
+from stream_monitor.util import parse_iso_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ _WATCH_DETAILS_CACHE_TTL = 300
 class _WatchDetails(NamedTuple):
     scheduled_start: str = ""
     started_at: str = ""
+    ended_at: str = ""
 
 
 def _channel_url(channel_name: str) -> str:
@@ -508,7 +510,62 @@ class YouTubeFetcher(StreamFetcher):
         if isinstance(scheduled_time, str) and scheduled_time:
             return _WatchDetails(scheduled_start=_unix_to_iso(scheduled_time))
 
-        return _WatchDetails()
+        ended_at = self._estimate_ended_at_from_player(
+            video_details if isinstance(video_details, dict) else {},
+            live_details if isinstance(live_details, dict) else {},
+        )
+        return _WatchDetails(ended_at=ended_at)
+
+    @staticmethod
+    def _estimate_ended_at_from_player(
+        video_details: dict, live_details: dict
+    ) -> str:
+        end_ts = ""
+        if isinstance(live_details, dict):
+            raw = live_details.get("endTimestamp", "") or ""
+            if isinstance(raw, str) and raw:
+                end_ts = raw
+        if end_ts:
+            if end_ts.endswith("Z"):
+                end_ts = end_ts.replace("Z", "+00:00")
+            if parse_iso_datetime(end_ts):
+                return end_ts
+
+        upload = ""
+        if isinstance(video_details, dict):
+            upload = video_details.get("uploadDate", "") or ""
+        length_raw = (
+            video_details.get("lengthSeconds") if isinstance(video_details, dict) else None
+        )
+        try:
+            length_seconds = int(length_raw) if length_raw is not None else 0
+        except (TypeError, ValueError):
+            length_seconds = 0
+        if not upload or length_seconds <= 0:
+            return ""
+        try:
+            if len(upload) == 8 and upload.isdigit():
+                start = datetime.strptime(upload, "%Y%m%d").replace(tzinfo=timezone.utc)
+            else:
+                start = parse_iso_datetime(upload)
+            if start is None:
+                return ""
+            return (start + timedelta(seconds=length_seconds)).isoformat()
+        except ValueError:
+            return ""
+
+    def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+        items = self.get_channel_items(channel_name)
+        for item in items:
+            if item.style != "DEFAULT":
+                continue
+            details = self._get_watch_details(item.video_id)
+            return FinishedVod(
+                url=item.url,
+                ended_at=details.ended_at,
+                title=item.title,
+            )
+        return None
 
     # ------------------------------------------------------------------
     # Public API: get_stream_info (used by AddChannelDialog validation)

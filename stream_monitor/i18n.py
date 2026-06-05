@@ -83,6 +83,8 @@ _ZH_TW: dict[str, str] = {
     "tooltip.row.status.starts_in": "⏱ {countdown} 後開始",
     "tooltip.row.status.live_elapsed": "⏱ 已開播 {elapsed}",
     "tooltip.row.status.offline_elapsed": "⏱ 已下播 {elapsed}",
+    "tooltip.row.status.offline_elapsed_vod": "⏱ 已下播 {elapsed}（依錄播時間）",
+    "tooltip.row.status.offline_elapsed_confirmed": "⏱ 已下播 {elapsed}（依監聽確認）",
 
     # Bottom status bar
     "status.idle": "尚未啟動",
@@ -298,6 +300,8 @@ _ZH_CN: dict[str, str] = {
     "tooltip.row.status.starts_in": "⏱ {countdown} 后开始",
     "tooltip.row.status.live_elapsed": "⏱ 已开播 {elapsed}",
     "tooltip.row.status.offline_elapsed": "⏱ 已下播 {elapsed}",
+    "tooltip.row.status.offline_elapsed_vod": "⏱ 已下播 {elapsed}（依录播时间）",
+    "tooltip.row.status.offline_elapsed_confirmed": "⏱ 已下播 {elapsed}（依监听确认）",
 
     # Bottom status bar
     "status.idle": "尚未启动",
@@ -505,6 +509,8 @@ _EN: dict[str, str] = {
     "tooltip.row.status.starts_in": "⏱ Starts in {countdown}",
     "tooltip.row.status.live_elapsed": "⏱ Live for {elapsed}",
     "tooltip.row.status.offline_elapsed": "⏱ Offline for {elapsed}",
+    "tooltip.row.status.offline_elapsed_vod": "⏱ Offline for {elapsed} (from VOD)",
+    "tooltip.row.status.offline_elapsed_confirmed": "⏱ Offline for {elapsed} (since detected)",
 
     "status.idle": "Not started",
     "status.trigger_running": "Monitor + Trigger…",
@@ -703,6 +709,8 @@ _JA: dict[str, str] = {
     "tooltip.row.status.starts_in": "⏱ {countdown} 後に開始",
     "tooltip.row.status.live_elapsed": "⏱ 配信開始から {elapsed} 経過",
     "tooltip.row.status.offline_elapsed": "⏱ 配信終了から {elapsed} 経過",
+    "tooltip.row.status.offline_elapsed_vod": "⏱ 配信終了から {elapsed}（録画ベース）",
+    "tooltip.row.status.offline_elapsed_confirmed": "⏱ 配信終了から {elapsed}（検知時刻）",
 
     "status.idle": "未開始",
     "status.trigger_running": "監視＋実行中…",
@@ -901,6 +909,8 @@ _KO: dict[str, str] = {
     "tooltip.row.status.starts_in": "⏱ {countdown} 후 시작",
     "tooltip.row.status.live_elapsed": "⏱ {elapsed} 동안 방송 중",
     "tooltip.row.status.offline_elapsed": "⏱ {elapsed} 전 종료",
+    "tooltip.row.status.offline_elapsed_vod": "⏱ {elapsed} 전 종료 (VOD 기준)",
+    "tooltip.row.status.offline_elapsed_confirmed": "⏱ {elapsed} 전 종료 (감지 시각)",
 
     "status.idle": "시작 전",
     "status.trigger_running": "감시 + 트리거 중…",

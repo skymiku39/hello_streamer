@@ -1,29 +1,30 @@
-# Hello Streamer v0.9.5
+# Hello Streamer v0.9.6
 
-## 修復離線／直播列顯示
+## 混合下播時間
 
-### Twitch 頻道 key 正規化
-登入名統一為小寫（例如 `RunRunLuna` → `runrunluna`），避免監控 snapshot 與 UI 列 key 不一致而顯示錯誤狀態。
+離線列左側「已下播多久」採**混合模式**：
 
-### 下播時間錨定
-- 冷啟動即離線的頻道會在**第一次**確認離線時寫入 `ended_at`，後續 poll 保留同一時間戳，不再每輪重設導致永遠顯示 `0m`。
-- LIVE → OFFLINE 過渡期間，在 anti-flap 確認下播前不再寫入空的離線 snapshot。
+1. 程式確認下播的時間（監聽確認）
+2. 若查得到上一場錄播／影片的結束時間，且在合理範圍內，則改用**平台時間**（通常更早、更接近實際下播）
 
-### 時間欄顯示
-- 未滿 1 分鐘顯示 `<1m`（多語系），不再長時間卡在 `0m`。
-- UI 每 30 秒重算「已開播／已下播」時間，無需等下一輪 API poll。
+- **Twitch**：最新 ARCHIVE VOD 的 `createdAt + lengthSeconds`
+- **YouTube**：上一場 `DEFAULT` 影片的 `endTimestamp`，或 `uploadDate + lengthSeconds`
 
-### 漏檢與診斷
-- Twitch 回報離線時會**重試一次** GQL，降低短暫 `stream: null` 假陰性。
-- 狀態長期不變時每 20 輪 poll 記一筆 `stable poll` log，便於確認有在輪詢。
+下播後 VOD 尚未生成時，會先顯示確認時間；穩定離線輪詢會重試補上錄播連結與時間。滑鼠提示會標示「依錄播時間」或「依監聽確認」。
+
+## 離線連結分離
+
+| 位置 | 行為 |
+|------|------|
+| 左側平台徽章（TWITCH / YOUTUBE） | 一律開啟**頻道首頁** |
+| 右側 🔗 | 有上一場 VOD 時開**錄播**；否則開頻道首頁 |
 
 ## 下載檔案
 
-- Windows 請下載 `HelloStreamer-v0.9.5-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.9.5-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.5-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v0.9.6-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.9.6-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.6-linux-arm64.tar.gz`
 
 ## 升級提醒
 
-- 從 v0.9.4 升級可直接覆蓋執行檔；`config.json` 與 Profile 資料夾無需變更。
-- 下播時間仍以程式**確認下播當下**為準，非平台提供的精確結束時間。
+- 從 v0.9.5 升級可直接覆蓋執行檔；`config.json` 無需變更。

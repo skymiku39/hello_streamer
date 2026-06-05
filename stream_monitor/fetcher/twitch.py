@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import timedelta
 
 import requests
 
-from stream_monitor.fetcher.base import StreamFetcher, StreamInfo
+from stream_monitor.fetcher.base import FinishedVod, StreamFetcher, StreamInfo
+from stream_monitor.util import parse_iso_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,9 @@ query LatestArchive($login: String!) {
       edges {
         node {
           id
+          title
+          createdAt
+          lengthSeconds
         }
       }
     }
@@ -125,27 +130,52 @@ class TwitchFetcher(StreamFetcher):
     def _query(self, channel_name: str) -> dict | None:
         return self._gql(_GQL_QUERY, {"login": channel_name.lower()})
 
-    def get_latest_archive_url(self, channel_name: str) -> str | None:
-        """Return the most recent VOD URL for *channel_name*, if available."""
+    @staticmethod
+    def _archive_ended_at(created_at: str, length_seconds: int | None) -> str:
+        start = parse_iso_datetime(created_at)
+        if start is None or not length_seconds or length_seconds <= 0:
+            return ""
+        return (start + timedelta(seconds=length_seconds)).isoformat()
+
+    def get_latest_archive(self, channel_name: str) -> FinishedVod | None:
+        """Return the most recent ARCHIVE VOD with estimated end time."""
         data = self._gql(_ARCHIVE_QUERY, {"login": channel_name.lower()})
         if data is None:
             return None
         try:
-            edges = data["data"]["user"]["videos"]["edges"]
+            user = data["data"]["user"]
+            if user is None:
+                return None
+            edges = user["videos"]["edges"]
             if not edges:
                 return None
             node = edges[0]["node"]
             video_id = node.get("id")
             if not video_id:
                 return None
-            return f"https://www.twitch.tv/videos/{video_id}"
-        except (KeyError, TypeError, IndexError) as exc:
+            created_at = node.get("createdAt", "") or ""
+            length_raw = node.get("lengthSeconds")
+            length_seconds = int(length_raw) if length_raw is not None else None
+            return FinishedVod(
+                url=f"https://www.twitch.tv/videos/{video_id}",
+                ended_at=self._archive_ended_at(created_at, length_seconds),
+                title=node.get("title", "") or "",
+            )
+        except (KeyError, TypeError, IndexError, ValueError) as exc:
             logger.warning(
                 "Failed to parse Twitch archive response for %s: %s",
                 channel_name,
                 exc,
             )
             return None
+
+    def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+        return self.get_latest_archive(channel_name)
+
+    def get_latest_archive_url(self, channel_name: str) -> str | None:
+        """Return the most recent VOD URL for *channel_name*, if available."""
+        archive = self.get_latest_archive(channel_name)
+        return archive.url if archive else None
 
     def is_live(self, channel_name: str) -> bool:
         data = self._query(channel_name)
