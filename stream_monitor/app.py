@@ -68,10 +68,15 @@ from stream_monitor.notifier import (
     prune_off_topic_tracked_windows,
 )
 from stream_monitor.single_instance import SingleInstance
+from stream_monitor.util import channel_key
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
 from stream_monitor.tray import TrayIcon
 
 logger = logging.getLogger(__name__)
+
+
+def _is_live_state(state: bool | str | None) -> bool:
+    return state is True or state == "live"
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -104,6 +109,7 @@ class ChannelRow(ctk.CTkFrame):
         self._status_state: str | None = None
         self._status_countdown: str = ""
         self._status_elapsed: str = ""
+        self._status_timestamp: str = ""
 
         color = _CLR_TWITCH if channel["platform"] == "twitch" else _CLR_YOUTUBE
         self._platform_color = color
@@ -524,24 +530,38 @@ class ChannelRow(ctk.CTkFrame):
             self._status_elapsed = ""
         elif state == "upcoming":
             self._status_state = "upcoming"
-            self._status_countdown = _format_countdown(
-                detail.scheduled_start if detail else ""
-            )
+            self._status_timestamp = detail.scheduled_start if detail else ""
+            self._status_countdown = _format_countdown(self._status_timestamp)
             self._status_elapsed = ""
-        elif state is True or state == "live":
+        elif _is_live_state(state):
             self._status_state = "live"
-            self._status_elapsed = _format_elapsed(detail.started_at if detail else "")
+            self._status_timestamp = detail.started_at if detail else ""
+            self._status_elapsed = _format_elapsed(self._status_timestamp)
             self._status_countdown = ""
         else:
             self._status_state = "offline"
             self._status_title = detail.title if detail else ""
             self._active_url = (detail.vod_url if detail else "") or ""
             self._status_countdown = ""
-            self._status_elapsed = _format_elapsed(
-                detail.ended_at if detail else ""
-            )
+            self._status_timestamp = detail.ended_at if detail else ""
+            self._status_elapsed = _format_elapsed(self._status_timestamp)
 
         self._render_status_visuals()
+
+    def refresh_elapsed_display(self) -> None:
+        """Recompute time_label from cached ISO timestamp (live/offline/upcoming)."""
+        if not self.channel.get("enabled", True):
+            return
+        state = self._status_state
+        if state == "live":
+            self._status_elapsed = _format_elapsed(self._status_timestamp)
+            self.time_label.configure(text=self._status_elapsed)
+        elif state == "offline":
+            self._status_elapsed = _format_elapsed(self._status_timestamp)
+            self.time_label.configure(text=self._status_elapsed)
+        elif state == "upcoming":
+            self._status_countdown = _format_countdown(self._status_timestamp)
+            self.time_label.configure(text=self._status_countdown)
 
     def _render_status_visuals(self) -> None:
         """Apply the cached status data onto the visible widgets (i18n-aware)."""
@@ -630,7 +650,7 @@ class ChannelRow(ctk.CTkFrame):
 
     @property
     def key(self) -> str:
-        return f"{self.channel['platform']}:{self.channel['name']}"
+        return channel_key(self.channel["platform"], self.channel["name"])
 
     def set_display_name(self, display_name: str | None) -> bool:
         display_name = (display_name or "").strip()
@@ -688,6 +708,7 @@ class App(ctk.CTk):
         self._build_ui()
         self._populate_channels()
         self._poll_events()
+        self._tick_elapsed_labels()
 
         self._unsub_i18n = i18n.subscribe(self._on_language_changed)
 
@@ -1379,6 +1400,11 @@ class App(ctk.CTk):
             display_names = self._monitor.snapshot_display_names()
             self._event_queue.put(("status_update", (statuses, display_names)))
 
+    def _tick_elapsed_labels(self) -> None:
+        for row in self._channel_rows:
+            row.refresh_elapsed_display()
+        self.after(30_000, self._tick_elapsed_labels)
+
     def _poll_events(self) -> None:
         live_events: list[tuple[ChannelEntry, StreamInfo]] = []
         offline_events: list[tuple[ChannelEntry, Any]] = []
@@ -1409,7 +1435,14 @@ class App(ctk.CTk):
             statuses, display_names = latest_status_update
             self._apply_display_names(display_names)
             for row in self._channel_rows:
-                row.set_status(statuses.get(row.key))
+                status = statuses.get(row.key)
+                if status is None and row._status_state in ("live", "offline"):
+                    logger.warning(
+                        "status_update missing snapshot for %s (row state=%s)",
+                        row.key,
+                        row._status_state,
+                    )
+                row.set_status(status)
 
             # A monitor poll just completed — this is the natural cadence at
             # which to sweep tracked browser windows for "off-topic" drift.

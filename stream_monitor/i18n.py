@@ -95,6 +95,7 @@ _ZH_TW: dict[str, str] = {
     "status.row.upcoming": " UPCOMING ",
     "status.row.live": " ● LIVE ",
     "status.row.offline": " OFFLINE ",
+    "status.row.elapsed.under_one_min": "<1m",
 
     # Tray
     "tray.show": "顯示主畫面",
@@ -309,6 +310,7 @@ _ZH_CN: dict[str, str] = {
     "status.row.upcoming": " UPCOMING ",
     "status.row.live": " ● LIVE ",
     "status.row.offline": " OFFLINE ",
+    "status.row.elapsed.under_one_min": "<1m",
 
     # Tray
     "tray.show": "显示主界面",
@@ -514,6 +516,7 @@ _EN: dict[str, str] = {
     "status.row.upcoming": " UPCOMING ",
     "status.row.live": " ● LIVE ",
     "status.row.offline": " OFFLINE ",
+    "status.row.elapsed.under_one_min": "<1m",
 
     "tray.show": "Show main window",
     "tray.trigger_active": "✓ Monitor + Trigger",
@@ -711,6 +714,7 @@ _JA: dict[str, str] = {
     "status.row.upcoming": " 待機中 ",
     "status.row.live": " ● LIVE ",
     "status.row.offline": " OFFLINE ",
+    "status.row.elapsed.under_one_min": "<1分",
 
     "tray.show": "メイン画面を表示",
     "tray.trigger_active": "✓ 監視＋実行中",
@@ -908,6 +912,7 @@ _KO: dict[str, str] = {
     "status.row.upcoming": " 예정 ",
     "status.row.live": " ● LIVE ",
     "status.row.offline": " OFFLINE ",
+    "status.row.elapsed.under_one_min": "<1분",
 
     "tray.show": "메인 화면 표시",
     "tray.trigger_active": "✓ 감시 + 트리거 중",

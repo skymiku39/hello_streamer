@@ -158,6 +158,8 @@ def _language_icon(size: int = 20) -> ctk.CTkImage:
 
 
 def _format_minutes_delta(total_seconds: float) -> str:
+    if 0 < total_seconds < 60:
+        return tr("status.row.elapsed.under_one_min")
     minutes = max(0, int(total_seconds // 60))
     days, rem = divmod(minutes, 24 * 60)
     hours, mins = divmod(rem, 60)

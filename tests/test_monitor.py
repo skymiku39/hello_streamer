@@ -18,9 +18,16 @@ class FakeTwitchFetcher:
 
     def __init__(self, statuses: list[bool]) -> None:
         self.statuses = statuses
+        self._repeat_offline: bool | None = None
 
     def get_stream_info(self, channel_name: str) -> StreamInfo:
-        is_live = self.statuses.pop(0)
+        if self._repeat_offline is not None:
+            is_live = self._repeat_offline
+            self._repeat_offline = None
+        else:
+            is_live = self.statuses.pop(0) if self.statuses else False
+            if not is_live:
+                self._repeat_offline = is_live
         return StreamInfo(
             channel=channel_name,
             platform="twitch",
@@ -41,9 +48,16 @@ class FakeTwitchFetcherReadings:
 
     def __init__(self, readings: list[bool | None]) -> None:
         self.readings = readings
+        self._repeat_offline: bool | None = None
 
     def get_stream_info(self, channel_name: str) -> StreamInfo | None:
-        val = self.readings.pop(0)
+        if self._repeat_offline is not None:
+            val = self._repeat_offline
+            self._repeat_offline = None
+        else:
+            val = self.readings.pop(0) if self.readings else None
+            if val is False:
+                self._repeat_offline = val
         if val is None:
             return None
         return StreamInfo(
@@ -825,6 +839,33 @@ def test_twitch_no_went_offline_when_never_was_live(monkeypatch, tmp_path) -> No
     with monitor._lock:
         assert monitor._pending_offline_events == []
     db.close()
+
+
+def test_twitch_cold_offline_anchors_ended_at(monkeypatch, tmp_path) -> None:
+    fetcher = FakeTwitchFetcher([False, False])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        first = monitor._last_status["twitch:hello"]
+        assert isinstance(first, ChannelStatus)
+        assert first.ended_at
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        second = monitor._last_status["twitch:hello"]
+        assert isinstance(second, ChannelStatus)
+        assert second.ended_at == first.ended_at
+    db.close()
+
+
+def test_twitch_entry_key_normalizes_login_case() -> None:
+    entry = ChannelEntry(platform="twitch", name="RunRunLuna")
+    assert entry.name == "runrunluna"
+    assert entry.key == "twitch:runrunluna"
 
 
 def test_youtube_tidus_emits_went_offline_when_video_drops_out(

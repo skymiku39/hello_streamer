@@ -16,7 +16,7 @@ from typing import Any, Callable
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo, VideoItem
-from stream_monitor.util import parse_iso_datetime
+from stream_monitor.util import channel_key, normalize_channel_name, parse_iso_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,8 @@ _STYLE_TO_STATUS = {
 # just opened. Requiring two consecutive misses makes both problems go away
 # while still bounding worst-case latency to two poll intervals.
 _OFFLINE_STRIKE_THRESHOLD = 2
+# Log unchanged channel status every N poll cycles (per channel) for diagnostics.
+_STABLE_STATUS_LOG_EVERY = 20
 
 
 @dataclass
@@ -52,9 +54,12 @@ class ChannelEntry:
     # easily see it without re-resolving the channel via config_manager.
     monitor_only: bool = False
 
+    def __post_init__(self) -> None:
+        self.name = normalize_channel_name(self.platform, self.name)
+
     @property
     def key(self) -> str:
-        return f"{self.platform}:{self.name}"
+        return channel_key(self.platform, self.name)
 
 
 @dataclass
@@ -167,6 +172,8 @@ class Monitor:
         # _run after went_live dispatch.
         self._pending_offline_events: list[tuple[ChannelEntry, OfflineInfo]] = []
         self._lock = threading.Lock()
+        self._poll_cycle = 0
+        self._stable_status_polls: dict[str, int] = {}
 
     @property
     def is_running(self) -> bool:
@@ -267,6 +274,7 @@ class Monitor:
     def _run(self) -> None:
         while not self._stop_event.is_set():
             poll_started = time.monotonic()
+            self._poll_cycle += 1
             with self._lock:
                 entries = list(self._entries)
                 self._pending_offline_events.clear()
@@ -395,7 +403,7 @@ class Monitor:
         """Build or preserve offline row state for the channel list UI."""
         prev_cs = prev if isinstance(prev, ChannelStatus) else None
         if prev_cs and prev_cs.status is False:
-            ended_at = prev_cs.ended_at
+            ended_at = prev_cs.ended_at or _utc_now_iso()
             vod_url = prev_cs.vod_url or extra_vod_url
             title = prev_cs.title or (payload.title if payload else "")
             if not vod_url and payload and payload.url and entry.platform == "youtube":
@@ -441,12 +449,42 @@ class Monitor:
         vod_url = extra_vod_url
         if prev_cs:
             vod_url = prev_cs.vod_url or vod_url
+        ended_at = ""
+        if prev_cs:
+            ended_at = prev_cs.ended_at or _utc_now_iso()
+        else:
+            ended_at = _utc_now_iso()
         return ChannelStatus(
             status=False,
             title=prev_cs.title if prev_cs else "",
-            ended_at=prev_cs.ended_at if prev_cs else "",
+            ended_at=ended_at,
             vod_url=vod_url,
             url=vod_url,
+        )
+
+    def _maybe_log_stable_twitch_status(
+        self, entry: ChannelEntry, info: StreamInfo, prev_status: Any
+    ) -> None:
+        """Caller holds ``_lock``. Periodic log when Twitch reading is unchanged."""
+        api_live = info.is_live
+        unchanged = (prev_status is True and api_live) or (
+            prev_status is not True and not api_live
+        )
+        if not unchanged:
+            self._stable_status_polls.pop(entry.key, None)
+            return
+        count = self._stable_status_polls.get(entry.key, 0) + 1
+        self._stable_status_polls[entry.key] = count
+        if count % _STABLE_STATUS_LOG_EVERY != 0:
+            return
+        last = self._last_status.get(entry.key)
+        last_repr = last.status if isinstance(last, ChannelStatus) else last
+        logger.info(
+            "Twitch %s: stable poll #%d api_live=%s last_status=%s",
+            entry.key,
+            count,
+            api_live,
+            last_repr,
         )
 
     def _offline_payload_for(
@@ -582,6 +620,10 @@ class Monitor:
         try:
             fetcher = get_fetcher(entry.platform)
             info = fetcher.get_stream_info(entry.name)
+            if info is not None and not info.is_live:
+                retry = fetcher.get_stream_info(entry.name)
+                if retry is not None:
+                    info = retry
         except Exception:
             logger.exception("Error fetching %s", entry.key)
             return []
@@ -632,11 +674,14 @@ class Monitor:
                 )
             else:
                 self._live_started_at.pop(live_key, None)
-                self._last_status[entry.key] = self._offline_status_for(
-                    entry, prev, newly_offline=False
-                )
+                if prev_status is not True:
+                    self._last_status[entry.key] = self._offline_status_for(
+                        entry, prev, newly_offline=False
+                    )
             if info.display_name:
                 self._display_names[entry.key] = info.display_name
+
+            self._maybe_log_stable_twitch_status(entry, info, prev_status)
 
         went_live = info.is_live and prev_status is not True
         went_offline = (not info.is_live) and prev_status is True
