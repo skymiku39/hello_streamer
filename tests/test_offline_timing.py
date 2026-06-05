@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from stream_monitor.monitor import ChannelEntry, _merge_offline_ended_at
+from stream_monitor.monitor import _merge_offline_ended_at
 
 
 def test_merge_prefers_vod_when_earlier_than_confirmed() -> None:
@@ -14,13 +14,13 @@ def test_merge_prefers_vod_when_earlier_than_confirmed() -> None:
     assert source == "vod"
 
 
-def test_merge_keeps_confirmed_when_vod_too_old() -> None:
+def test_merge_uses_vod_even_when_older_than_confirmed() -> None:
     confirmed_dt = datetime.now(timezone.utc)
     confirmed = confirmed_dt.isoformat()
     vod_end = (confirmed_dt - timedelta(days=3)).isoformat()
     ended, source = _merge_offline_ended_at(confirmed, vod_end)
-    assert ended == confirmed
-    assert source == "confirmed"
+    assert ended == vod_end
+    assert source == "vod"
 
 
 def test_merge_keeps_confirmed_when_vod_in_future() -> None:

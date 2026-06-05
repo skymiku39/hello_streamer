@@ -266,6 +266,53 @@ class TestGetChannelItemsIntegration:
         monkeypatch.setattr(fetcher, "_fetch_page", lambda url: None)
         assert fetcher.get_channel_items("nobody") == []
 
+    def test_fill_timing_false_skips_live_watch_page(self, monkeypatch) -> None:
+        fetcher = YouTubeFetcher()
+        vr = _make_video_renderer("xyz", "Test", "LIVE")
+        data = _make_initial_data([vr], "Creator")
+        html = _html_with_initial_data(data)
+        watch_calls: list[str] = []
+
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+        monkeypatch.setattr(
+            fetcher,
+            "_get_watch_details",
+            lambda video_id: watch_calls.append(video_id) or _WatchDetails(),
+        )
+
+        items = fetcher.get_channel_items("creator", fill_timing=False)
+
+        assert len(items) == 1
+        assert watch_calls == []
+
+    def test_enrich_items_fetches_upcoming_schedule(self, monkeypatch) -> None:
+        fetcher = YouTubeFetcher()
+        vr = _make_video_renderer("up1", "Premiere Soon", "UPCOMING")
+        data = _make_initial_data([vr], "Creator")
+        html = _html_with_initial_data(data)
+        watch_calls: list[str] = []
+
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+        monkeypatch.setattr(
+            fetcher,
+            "_get_watch_details",
+            lambda video_id: (
+                watch_calls.append(video_id)
+                or _WatchDetails(scheduled_start="2026-12-01T18:00:00+00:00")
+            ),
+        )
+
+        items = fetcher.get_channel_items("creator", fill_timing=False)
+        assert len(items) == 1
+        assert items[0].style == "UPCOMING"
+        assert not items[0].scheduled_start
+        assert watch_calls == []
+
+        fetcher.enrich_items_for_details(items)
+
+        assert items[0].scheduled_start == "2026-12-01T18:00:00+00:00"
+        assert watch_calls == ["up1"]
+
 
 # ─────────────────────────────────────────────
 # get_stream_info (used for channel validation)

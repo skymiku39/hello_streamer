@@ -1,39 +1,31 @@
-# Hello Streamer v0.9.8
+# Hello Streamer v0.9.10
 
-## 平台分離處理
+## 兩梯次輪詢
 
-YouTube 與 Twitch 的監聽機制本質不同，離線狀態與連結補齊各自獨立：
+每輪檢查拆成兩個梯次，開播觸發更快：
 
-| | YouTube | Twitch |
-|---|---------|--------|
-| 偵測 | TIDUS（`/streams` + `videoId/style`） | GQL 布林 live + ARCHIVE VOD |
-| 待機室 | 有（`UPCOMING` 狀態與待機連結） | **無**（無獨立待機頁） |
-| 離線 🔗 | 7 日內待機室 > 錄播 > 頻道首頁 | 錄播 > 頻道首頁 |
+- **梯次 1**：確認是否直播，立即觸發通知／開瀏覽器等動作
+- **梯次 2**：再更新離線狀態、錄播連結、待機室、UI 與 DB 寫入
 
-## Twitch 離線顯示修正
+可在 log 搜尋 `tier1=` 觀察觸發延遲與整輪耗時（`total=`）。
 
-- 從未在本輪監聽中確認開播的 Twitch 頻道，不再誤顯示 `<1m` 的 OFFLINE
-- 須先 witness 過 LIVE，下播後才顯示 OFFLINE 與「已下播多久」
+## YouTube 待機室與下播時間
 
-## YouTube 連結修正
+- 待機室若 `/streams` 頁沒有排程時間，改在梯次 2 補抓 watch 頁取得開播倒數
+- 下播時間不再設 48 小時上限；有錄播結束時間就採用，即使錄播是數天前
 
-- 直播與 fallback 觸發統一使用 `watch?v=` URL
-- `/streams` 抓不到資料時，fallback 可感知待機（`UPCOMING`）狀態
-- 離線錄播優先選有結束時間的直播錄影
-- 待機連結在排程開播後 30 分鐘自動清除
-- **排程超過 7 天的待機室會被忽略**，離線 🔗 改走錄播方案
+## Twitch 離線錄播（延續 v0.9.9）
 
-## UI
-
-- 離線且有 YouTube 待機連結時，狀態列可點擊開啟待機室
-- 左側平台徽章一律開頻道首頁，右側 🔗 依平台優先順序開啟
+- 冷啟動離線的 Twitch 頻道，若有 ARCHIVE 錄播，顯示 **OFFLINE** 與 🔗 錄播連結
+- 從未開播且抓不到錄播時，維持 `--`
 
 ## 下載檔案
 
-- Windows 請下載 `HelloStreamer-v0.9.8-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.9.8-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.8-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v0.9.10-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.9.10-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.10-linux-arm64.tar.gz`
 
 ## 升級提醒
 
-- 從 v0.9.6 / v0.9.7 升級可直接覆蓋執行檔；`config.json` 無需變更。
+- 從 v0.9.9 升級可直接覆蓋執行檔；`config.json` 無需變更。
+- 監聽頻道較多時，建議檢查間隔維持 ≥30 秒，以降低 Twitch rate limit 風險。

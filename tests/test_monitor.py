@@ -1,4 +1,6 @@
 import logging
+import threading
+import time
 
 from stream_monitor import monitor as monitor_module
 from stream_monitor.db import SeenVideoDB
@@ -37,8 +39,41 @@ class FakeTwitchFetcher:
             display_name="Hello Channel",
         )
 
-    def get_channel_items(self, channel_name: str) -> list[VideoItem]:
+    def get_channel_items(
+        self, channel_name: str, *, fill_timing: bool = True
+    ) -> list[VideoItem]:
         return []
+
+    def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+        return None
+
+
+class FakeTwitchFetcherCalls:
+    """Twitch fetcher driven by per-HTTP-call readings (not per-poll)."""
+
+    platform = "twitch"
+
+    def __init__(self, readings: list[bool]) -> None:
+        self.readings = list(readings)
+
+    def get_stream_info(self, channel_name: str) -> StreamInfo | None:
+        is_live = self.readings.pop(0) if self.readings else False
+        return StreamInfo(
+            channel=channel_name,
+            platform="twitch",
+            is_live=is_live,
+            title="Live now" if is_live else "",
+            url=f"https://www.twitch.tv/{channel_name}",
+            display_name="Hello Channel",
+        )
+
+    def get_channel_items(
+        self, channel_name: str, *, fill_timing: bool = True
+    ) -> list[VideoItem]:
+        return []
+
+    def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+        return None
 
 
 class FakeTwitchFetcherReadings:
@@ -69,7 +104,9 @@ class FakeTwitchFetcherReadings:
             display_name="Hello Channel",
         )
 
-    def get_channel_items(self, channel_name: str) -> list[VideoItem]:
+    def get_channel_items(
+        self, channel_name: str, *, fill_timing: bool = True
+    ) -> list[VideoItem]:
         return []
 
 
@@ -90,10 +127,15 @@ class FakeYouTubeFetcher:
             return self.info_batches.pop(0)
         return None
 
-    def get_channel_items(self, channel_name: str) -> list[VideoItem]:
+    def get_channel_items(
+        self, channel_name: str, *, fill_timing: bool = True
+    ) -> list[VideoItem]:
         if self.items_batches:
             self._last_items = self.items_batches.pop(0)
         return list(self._last_items)
+
+    def enrich_items_for_details(self, items: list[VideoItem]) -> None:
+        return None
 
     def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
         return None
@@ -106,7 +148,19 @@ def test_twitch_triggers_only_on_live_transition(monkeypatch, tmp_path) -> None:
     # Sequence chosen to exercise *confirmed* offline transitions only —
     # the anti-flap guard requires two consecutive "not live" readings
     # before it commits to the offline edge (see _OFFLINE_STRIKE_THRESHOLD).
-    fetcher = FakeTwitchFetcher([False, True, True, False, False, True])
+    # Stable-offline polls issue one GQL call; live→offline edges double-check.
+    fetcher = FakeTwitchFetcherCalls(
+        [
+            False,  # poll 1: stable offline
+            True,  # poll 2: went live
+            True,  # poll 3: still live
+            False,
+            False,  # poll 4: offline edge (double-check)
+            False,
+            False,  # poll 5: offline edge (double-check) → confirmed offline
+            True,  # poll 6: went live again
+        ]
+    )
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     events: list[tuple[str, str]] = []
@@ -209,6 +263,46 @@ def test_youtube_duplicate_video_skipped(monkeypatch, tmp_path) -> None:
 
     results_second = _check_and_commit(monitor, entry)
     assert len(results_second) == 0
+    db.close()
+
+
+def test_youtube_upcoming_poll_fills_missing_schedule(
+    monkeypatch, tmp_path
+) -> None:
+    """Monitor poll path must surface UPCOMING countdown when /streams omits startTime."""
+    from datetime import datetime, timedelta, timezone
+
+    soon = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
+    bare_upcoming = VideoItem(
+        video_id="vid_upcoming",
+        title="Waiting Room",
+        style="UPCOMING",
+        url="https://youtube.com/watch?v=vid_upcoming",
+        display_name="YT Chan",
+        scheduled_start="",
+    )
+
+    class FetcherFillsUpcoming(FakeYouTubeFetcher):
+        def enrich_items_for_details(self, items: list[VideoItem]) -> None:
+            for item in items:
+                if item.style == "UPCOMING" and not item.scheduled_start:
+                    item.scheduled_start = soon
+
+    fetcher = FetcherFillsUpcoming([[bare_upcoming]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "ytchan"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+    _check_and_commit(monitor, entry)
+
+    with monitor._lock:
+        status = monitor._last_status["youtube:ytchan"]
+        assert isinstance(status, ChannelStatus)
+        assert status.status == "upcoming"
+        assert status.scheduled_start == soon
     db.close()
 
 
@@ -1023,7 +1117,9 @@ def test_youtube_fallback_sets_upcoming_status(monkeypatch, tmp_path) -> None:
             scheduled_start=soon,
         )
 
-    monkeypatch.setattr(fetcher, "get_channel_items", lambda _name: [])
+    monkeypatch.setattr(
+        fetcher, "get_channel_items", lambda _name, **kwargs: []
+    )
     monkeypatch.setattr(fetcher, "get_stream_info", fake_get_stream_info)
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
 
@@ -1056,10 +1152,83 @@ def test_twitch_no_went_offline_when_never_was_live(monkeypatch, tmp_path) -> No
     db.close()
 
 
-def test_twitch_cold_offline_stays_placeholder_until_live(
+def test_twitch_cold_offline_shows_vod_when_archive_available(
     monkeypatch, tmp_path
 ) -> None:
-    """Never-live Twitch channels must not show OFFLINE with a fresh <1m clock."""
+    """Never-live Twitch channels show OFFLINE + VOD when ARCHIVE exists."""
+
+    class FetcherWithArchive(FakeTwitchFetcher):
+        def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+            from datetime import datetime, timedelta, timezone
+
+            ended = (
+                datetime.now(timezone.utc) - timedelta(hours=2)
+            ).isoformat()
+            return FinishedVod(
+                url="https://www.twitch.tv/videos/cold1",
+                ended_at=ended,
+                title="Past broadcast",
+            )
+
+    fetcher = FetcherWithArchive([False, False])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    _check_and_commit(monitor, entry)
+
+    with monitor._lock:
+        offline = monitor._last_status["twitch:hello"]
+        assert isinstance(offline, ChannelStatus)
+        assert offline.status is False
+        assert offline.vod_url == "https://www.twitch.tv/videos/cold1"
+        assert offline.ended_at_source == "vod"
+    db.close()
+
+
+def test_twitch_cold_offline_stale_vod_uses_archive_elapsed(
+    monkeypatch, tmp_path
+) -> None:
+    """Infrequent Twitch streamers: cold-start should show days-old VOD elapsed."""
+
+    class FetcherWithStaleArchive(FakeTwitchFetcher):
+        def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+            from datetime import datetime, timedelta, timezone
+
+            ended = (
+                datetime.now(timezone.utc) - timedelta(days=4)
+            ).isoformat()
+            return FinishedVod(
+                url="https://www.twitch.tv/videos/stale1",
+                ended_at=ended,
+                title="Stream from last week",
+            )
+
+    fetcher = FetcherWithStaleArchive([False])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    _check_and_commit(monitor, entry)
+
+    with monitor._lock:
+        offline = monitor._last_status["twitch:hello"]
+        assert isinstance(offline, ChannelStatus)
+        assert offline.vod_url == "https://www.twitch.tv/videos/stale1"
+        assert offline.ended_at_source == "vod"
+        from datetime import datetime, timedelta, timezone
+
+        ended_dt = datetime.fromisoformat(offline.ended_at)
+        assert ended_dt < datetime.now(timezone.utc) - timedelta(days=3)
+    db.close()
+
+
+def test_twitch_cold_offline_stays_placeholder_without_archive(
+    monkeypatch, tmp_path
+) -> None:
+    """Never-live Twitch channels stay at -- when no ARCHIVE VOD is available."""
     fetcher = FakeTwitchFetcher([False, False, False])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
@@ -1690,3 +1859,221 @@ def test_youtube_single_live_dropout_with_upcoming_keeps_live_status(
         assert monitor._last_status["youtube:yt"].status is True
         assert monitor._pending_offline_events == []
     db.close()
+
+
+# ─────────────────────────────────────────────
+# Poll performance optimizations
+# ─────────────────────────────────────────────
+
+
+class SlowFetcher:
+    """Fetcher that sleeps on each call to simulate HTTP latency."""
+
+    platform = "twitch"
+    delay_s = 0.2
+
+    def __init__(self) -> None:
+        self.call_count = 0
+        self._active = 0
+        self.max_active = 0
+        self._lock = threading.Lock()
+
+    def get_stream_info(self, channel_name: str) -> StreamInfo:
+        with self._lock:
+            self.call_count += 1
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+        try:
+            time.sleep(self.delay_s)
+        finally:
+            with self._lock:
+                self._active -= 1
+        return StreamInfo(
+            channel=channel_name,
+            platform="twitch",
+            is_live=False,
+            url=f"https://www.twitch.tv/{channel_name}",
+        )
+
+    def get_channel_items(
+        self, channel_name: str, *, fill_timing: bool = True
+    ) -> list[VideoItem]:
+        return []
+
+
+class CountingTwitchFetcher:
+    platform = "twitch"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_stream_info(self, channel_name: str) -> StreamInfo:
+        self.calls += 1
+        return StreamInfo(
+            channel=channel_name,
+            platform="twitch",
+            is_live=False,
+            url=f"https://www.twitch.tv/{channel_name}",
+        )
+
+    def get_channel_items(
+        self, channel_name: str, *, fill_timing: bool = True
+    ) -> list[VideoItem]:
+        return []
+
+
+def test_poll_interval_compensation(monkeypatch) -> None:
+    """Wait time should subtract poll elapsed so cycles start every interval."""
+    sleeps: list[float] = []
+    clock = [0.0]
+
+    def fake_monotonic() -> float:
+        return clock[0]
+
+    def fake_sleep(duration: float) -> None:
+        clock[0] += duration
+
+    monkeypatch.setattr(time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "a", "enabled": True}],
+        interval=10,
+    )
+    monitor._stop_event.clear()
+
+    def controlled_wait(timeout: float) -> bool:
+        sleeps.append(timeout)
+        if len(sleeps) >= 2:
+            monitor._stop_event.set()
+        return monitor._stop_event.is_set()
+
+    monitor._stop_event.wait = controlled_wait  # type: ignore[method-assign]
+
+    def slow_probe(_entry: ChannelEntry):
+        time.sleep(0.15)
+        return []
+
+    monkeypatch.setattr(monitor, "_probe_live", slow_probe)
+    monkeypatch.setattr(monitor, "_refresh_details", lambda _e: monitor._noop_commit)
+    monitor._run()
+
+    assert len(sleeps) == 2
+    assert sleeps[0] < 10.0
+    assert sleeps[0] >= 9.5
+
+
+def test_parallel_poll_faster_than_sequential(monkeypatch) -> None:
+    """Parallel probes overlap HTTP work; sequential probes do not."""
+    channels = [
+        {"platform": "twitch", "name": f"ch{i}", "enabled": True} for i in range(12)
+    ]
+
+    seq_fetcher = SlowFetcher()
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: seq_fetcher)
+    seq_monitor = Monitor(channels=channels, max_concurrent=1)
+    for entry in seq_monitor._entries:
+        seq_monitor._check_channel(entry)
+    assert seq_fetcher.max_active == 1
+
+    par_fetcher = SlowFetcher()
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: par_fetcher)
+    par_monitor = Monitor(channels=channels, max_concurrent=4)
+    enabled = [e for e in par_monitor._entries if e.enabled]
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(par_monitor._check_channel, e) for e in enabled]
+        for f in as_completed(futures):
+            f.result()
+    assert par_fetcher.max_active >= 2
+
+
+def test_twitch_skips_offline_retry_when_stable_offline(monkeypatch) -> None:
+    fetcher = CountingTwitchFetcher()
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "stable"}])
+    entry = ChannelEntry(platform="twitch", name="stable")
+
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(status=False)
+
+    monitor._probe_live(entry)
+    assert fetcher.calls == 1
+
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(status=True)
+
+    monitor._probe_live(entry)
+    assert fetcher.calls == 3
+
+
+def test_youtube_poll_passes_fill_timing_false(monkeypatch, tmp_path) -> None:
+    captured: list[bool] = []
+
+    class TimingAwareFetcher(FakeYouTubeFetcher):
+        def get_channel_items(
+            self, channel_name: str, *, fill_timing: bool = True
+        ) -> list[VideoItem]:
+            captured.append(fill_timing)
+            return super().get_channel_items(channel_name, fill_timing=fill_timing)
+
+    live = VideoItem(
+        video_id="vid1",
+        title="Live",
+        style="LIVE",
+        url="https://www.youtube.com/watch?v=vid1",
+    )
+    fetcher = TimingAwareFetcher(items_batches=[[live]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    _check_and_commit(monitor, entry)
+
+    assert captured == [False]
+    db.close()
+
+
+def test_youtube_offline_reuses_channel_items() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    fetch_calls: list[str] = []
+
+    soon = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    upcoming = VideoItem(
+        video_id="up1",
+        title="Soon",
+        style="UPCOMING",
+        url="https://www.youtube.com/watch?v=up1",
+        scheduled_start=soon,
+    )
+
+    class TrackingFetcher:
+        platform = "youtube"
+
+        def get_channel_items(
+            self, channel_name: str, *, fill_timing: bool = True
+        ) -> list[VideoItem]:
+            fetch_calls.append(channel_name)
+            return []
+
+        def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+            return None
+
+    fetcher = TrackingFetcher()
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}])
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    status = monitor._build_youtube_offline_channel_status(
+        entry,
+        "2020-01-01T00:00:00+00:00",
+        fetcher=fetcher,
+        payload=None,
+        prev_cs=None,
+        channel_items=[upcoming],
+    )
+
+    assert fetch_calls == []
+    assert status.upcoming_url == upcoming.url

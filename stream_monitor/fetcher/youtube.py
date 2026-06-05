@@ -419,7 +419,9 @@ class YouTubeFetcher(StreamFetcher):
     # ------------------------------------------------------------------
     # Public API: get_channel_items (TIDUS)
     # ------------------------------------------------------------------
-    def get_channel_items(self, channel_name: str) -> list[VideoItem]:
+    def get_channel_items(
+        self, channel_name: str, *, fill_timing: bool = True
+    ) -> list[VideoItem]:
         base = _channel_url(channel_name)
         html = self._fetch_page(f"{base}/streams")
         if html is None:
@@ -430,8 +432,22 @@ class YouTubeFetcher(StreamFetcher):
             return []
 
         items, _display_name = self._parse_channel_items(data, channel_name)
-        self._fill_live_timing_details(items)
+        if fill_timing:
+            self._fill_live_timing_details(items)
         return items
+
+    def enrich_items_for_details(self, items: list[VideoItem]) -> None:
+        """Tier-2 helper: fill missing UPCOMING/LIVE timing on cached items."""
+        self._fill_live_timing_details(items)
+
+    def _fill_upcoming_timing_details(self, items: list[VideoItem]) -> None:
+        """Poll-path helper: fetch watch page only for UPCOMING missing startTime."""
+        for item in items:
+            if item.style != "UPCOMING" or item.scheduled_start:
+                continue
+            details = self._get_watch_details(item.video_id)
+            if details.scheduled_start:
+                item.scheduled_start = details.scheduled_start
 
     def _fill_live_timing_details(self, items: list[VideoItem]) -> None:
         for item in items:

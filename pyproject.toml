@@ -1,6 +1,6 @@
 [project]
 name = "stream-monitor"
-version = "0.9.8"
+version = "0.9.10"
 description = "哈嘍主播 — 監控 Twitch/YouTube 實況主開播狀態的桌面應用程式"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

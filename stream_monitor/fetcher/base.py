@@ -59,11 +59,16 @@ class StreamFetcher(ABC):
         """Return rich stream info, or None on failure."""
         ...
 
-    def get_channel_items(self, channel_name: str) -> list[VideoItem]:
+    def get_channel_items(
+        self, channel_name: str, *, fill_timing: bool = True
+    ) -> list[VideoItem]:
         """Return video items from channel page.
 
         YouTube-only (TIDUS /streams feed). Twitch uses boolean live checks
         and ARCHIVE VOD queries instead; the base implementation is empty.
+
+        *fill_timing* is YouTube-specific; when False the poll path skips
+        per-video watch-page fetches for started_at / scheduled_start.
         """
         return []
 

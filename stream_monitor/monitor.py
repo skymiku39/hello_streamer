@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -41,9 +42,9 @@ _OFFLINE_STRIKE_THRESHOLD = 2
 # Log unchanged channel status every N poll cycles (per channel) for diagnostics.
 _STABLE_STATUS_LOG_EVERY = 20
 _CONFIRMED_FUTURE_SLACK = timedelta(minutes=5)
-_VOD_MAX_AGE_BEFORE_CONFIRM = timedelta(hours=48)
 _UPCOMING_EXPIRY_GRACE = timedelta(minutes=30)
 _UPCOMING_MAX_FUTURE = timedelta(days=7)
+_DEFAULT_MAX_CONCURRENT = 4
 
 
 @dataclass
@@ -100,6 +101,20 @@ class OfflineInfo:
     display_name: str = ""
 
 
+@dataclass
+class _ProbeSnapshot:
+    """Tier-1 probe cache reused by tier-2 detail refresh in the same poll."""
+
+    twitch_info: StreamInfo | None = None
+    twitch_offline_hold: bool = False
+    youtube_items: list[VideoItem] | None = None
+    youtube_pending_seen: list[tuple[str, str, str, str, str]] | None = None
+    youtube_fallback: bool = False
+    youtube_fallback_info: StreamInfo | None = None
+    youtube_fallback_hold: bool = False
+    fetcher: Any = None
+
+
 def _video_item_to_stream_info(item: VideoItem, channel: str) -> StreamInfo:
     return StreamInfo(
         channel=channel,
@@ -144,8 +159,6 @@ def _merge_offline_ended_at(
         return confirmed_iso, "confirmed"
     if platform_dt > confirmed_dt + _CONFIRMED_FUTURE_SLACK:
         return confirmed_iso, "confirmed"
-    if platform_dt < confirmed_dt - _VOD_MAX_AGE_BEFORE_CONFIRM:
-        return confirmed_iso, "confirmed"
     return platform_end, "vod"
 
 
@@ -187,6 +200,7 @@ class Monitor:
         on_poll_complete: Callable[[], None] | None = None,
         db: SeenVideoDB | None = None,
         on_went_offline: OfflineCallback | None = None,
+        max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
     ) -> None:
         self._entries = [
             ChannelEntry(
@@ -198,6 +212,7 @@ class Monitor:
             for ch in channels
         ]
         self._interval = max(10, interval)
+        self._max_concurrent = max(1, max_concurrent)
         self._on_status_change = on_status_change
         self._on_poll_complete = on_poll_complete
         self._on_went_offline = on_went_offline
@@ -228,6 +243,7 @@ class Monitor:
         self._lock = threading.Lock()
         self._poll_cycle = 0
         self._stable_status_polls: dict[str, int] = {}
+        self._probe_snapshots: dict[str, _ProbeSnapshot] = {}
 
     @property
     def is_running(self) -> bool:
@@ -337,19 +353,76 @@ class Monitor:
             with self._lock:
                 entries = list(self._entries)
                 self._pending_offline_events.clear()
+                self._probe_snapshots.clear()
 
-            enabled_count = sum(1 for e in entries if e.enabled)
+            enabled_entries = [e for e in entries if e.enabled]
+            enabled_count = len(enabled_entries)
             offline_count = 0
-            went_live_batch: list[tuple[ChannelEntry, StreamInfo]] = []
+            went_live_count = 0
             commits: list[Callable[[], None]] = []
-            for entry in entries:
-                if self._stop_event.is_set():
-                    break
-                if not entry.enabled:
-                    continue
-                results, commit = self._check_channel(entry)
-                went_live_batch.extend(results)
-                commits.append(commit)
+
+            def _dispatch_live(
+                events: list[tuple[ChannelEntry, StreamInfo]],
+            ) -> None:
+                nonlocal went_live_count
+                for entry, info in events:
+                    went_live_count += 1
+                    if self._on_status_change:
+                        try:
+                            self._on_status_change(entry, info)
+                        except Exception:
+                            logger.exception(
+                                "on_status_change callback error for %s",
+                                entry.key,
+                            )
+
+            tier1_started = time.monotonic()
+            if (
+                enabled_entries
+                and self._max_concurrent > 1
+                and len(enabled_entries) > 1
+            ):
+                workers = min(self._max_concurrent, len(enabled_entries))
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    probe_futures = [
+                        pool.submit(self._probe_live, entry)
+                        for entry in enabled_entries
+                    ]
+                    for future in as_completed(probe_futures):
+                        if self._stop_event.is_set():
+                            break
+                        _dispatch_live(future.result())
+            else:
+                for entry in enabled_entries:
+                    if self._stop_event.is_set():
+                        break
+                    _dispatch_live(self._probe_live(entry))
+
+            if self._stop_event.is_set():
+                break
+
+            tier1_elapsed = time.monotonic() - tier1_started
+
+            if (
+                enabled_entries
+                and self._max_concurrent > 1
+                and len(enabled_entries) > 1
+            ):
+                workers = min(self._max_concurrent, len(enabled_entries))
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    refresh_futures = [
+                        pool.submit(self._refresh_details, entry)
+                        for entry in enabled_entries
+                    ]
+                    for future in as_completed(refresh_futures):
+                        if self._stop_event.is_set():
+                            break
+                        commits.append(future.result())
+            else:
+                for entry in enabled_entries:
+                    if self._stop_event.is_set():
+                        break
+                    commits.append(self._refresh_details(entry))
 
             if self._stop_event.is_set():
                 break
@@ -358,20 +431,6 @@ class Monitor:
                 if self._stop_event.is_set():
                     break
                 commit()
-
-            if self._stop_event.is_set():
-                break
-
-            for entry, info in went_live_batch:
-                if self._stop_event.is_set():
-                    break
-                if self._on_status_change:
-                    try:
-                        self._on_status_change(entry, info)
-                    except Exception:
-                        logger.exception(
-                            "on_status_change callback error for %s", entry.key
-                        )
 
             if self._stop_event.is_set():
                 break
@@ -401,15 +460,18 @@ class Monitor:
                 except Exception:
                     logger.exception("on_poll_complete callback error")
 
+            elapsed = time.monotonic() - poll_started
             logger.info(
-                "Poll complete: enabled=%d went_live=%d went_offline=%d elapsed=%.2fs",
+                "Poll complete: enabled=%d went_live=%d went_offline=%d "
+                "tier1=%.2fs total=%.2fs",
                 enabled_count,
-                len(went_live_batch),
+                went_live_count,
                 offline_count,
-                time.monotonic() - poll_started,
+                tier1_elapsed,
+                elapsed,
             )
 
-            self._stop_event.wait(self._interval)
+            self._stop_event.wait(max(0.0, self._interval - elapsed))
 
     # ------------------------------------------------------------------
     # Dispatch
@@ -449,21 +511,10 @@ class Monitor:
         self._offline_strikes.pop(live_key, None)
         return "commit"
 
-    def _find_youtube_upcoming_item(
-        self, entry: ChannelEntry, fetcher: Any | None
+    @staticmethod
+    def _pick_youtube_upcoming_from_items(
+        items: list[VideoItem],
     ) -> VideoItem | None:
-        """Return the nearest YouTube UPCOMING (waiting-room) item, if any."""
-        if fetcher is None:
-            try:
-                fetcher = get_fetcher("youtube")
-            except Exception:
-                logger.exception("No YouTube fetcher for %s", entry.key)
-                return None
-        try:
-            items = fetcher.get_channel_items(entry.name)
-        except Exception:
-            logger.exception("Failed to fetch YouTube channel items for %s", entry.key)
-            return None
         upcoming = [
             item
             for item in items
@@ -478,6 +529,29 @@ class Monitor:
                 item.scheduled_start, datetime.max.replace(tzinfo=timezone.utc)
             ),
         )
+
+    def _find_youtube_upcoming_item(
+        self,
+        entry: ChannelEntry,
+        fetcher: Any | None,
+        *,
+        channel_items: list[VideoItem] | None = None,
+    ) -> VideoItem | None:
+        """Return the nearest YouTube UPCOMING (waiting-room) item, if any."""
+        if channel_items is not None:
+            return self._pick_youtube_upcoming_from_items(channel_items)
+        if fetcher is None:
+            try:
+                fetcher = get_fetcher("youtube")
+            except Exception:
+                logger.exception("No YouTube fetcher for %s", entry.key)
+                return None
+        try:
+            items = fetcher.get_channel_items(entry.name)
+        except Exception:
+            logger.exception("Failed to fetch YouTube channel items for %s", entry.key)
+            return None
+        return self._pick_youtube_upcoming_from_items(items)
 
     def _fetch_finished_vod(
         self, entry: ChannelEntry, fetcher: Any | None
@@ -536,6 +610,7 @@ class Monitor:
         payload: OfflineInfo | None,
         prev_cs: ChannelStatus | None,
         extra_vod_url: str = "",
+        channel_items: list[VideoItem] | None = None,
     ) -> ChannelStatus:
         """YouTube offline: waiting room + VOD + hybrid ended_at."""
         home = _channel_home_url(entry)
@@ -547,7 +622,9 @@ class Monitor:
             extra_vod_url=extra_vod_url,
         )
         ended_at, source = _merge_offline_ended_at(confirmed_iso, platform_end)
-        upcoming_item = self._find_youtube_upcoming_item(entry, fetcher)
+        upcoming_item = self._find_youtube_upcoming_item(
+            entry, fetcher, channel_items=channel_items
+        )
         upcoming_url = upcoming_item.url if upcoming_item else ""
         scheduled_start = upcoming_item.scheduled_start if upcoming_item else ""
         if not upcoming_url and prev_cs and prev_cs.upcoming_url:
@@ -675,6 +752,7 @@ class Monitor:
         newly_offline: bool,
         fetcher: Any | None = None,
         extra_vod_url: str = "",
+        channel_items: list[VideoItem] | None = None,
     ) -> ChannelStatus:
         """Build or preserve YouTube offline row state."""
         prev_cs = prev if isinstance(prev, ChannelStatus) else None
@@ -705,6 +783,7 @@ class Monitor:
             payload=payload,
             prev_cs=prev_cs,
             extra_vod_url=extra_vod_url,
+            channel_items=channel_items,
         )
 
     def _twitch_offline_status_for(
@@ -905,20 +984,48 @@ class Monitor:
     def _check_channel(
         self, entry: ChannelEntry
     ) -> tuple[list[tuple[ChannelEntry, StreamInfo]], Callable[[], None]]:
-        if entry.platform == "youtube":
-            return self._check_youtube(entry)
-        return self._check_twitch(entry), self._noop_commit
+        events = self._probe_live(entry)
+        commit = self._refresh_details(entry)
+        return events, commit
 
-    # ------------------------------------------------------------------
-    # Twitch: boolean edge-trigger (unchanged)
-    # ------------------------------------------------------------------
-    def _check_twitch(
+    def _probe_live(
         self, entry: ChannelEntry
     ) -> list[tuple[ChannelEntry, StreamInfo]]:
+        snap = _ProbeSnapshot()
+        if entry.platform == "youtube":
+            events = self._probe_youtube(entry, snap)
+        else:
+            events = self._probe_twitch(entry, snap)
+        with self._lock:
+            self._probe_snapshots[entry.key] = snap
+        return events
+
+    def _refresh_details(self, entry: ChannelEntry) -> Callable[[], None]:
+        with self._lock:
+            snap = self._probe_snapshots.get(entry.key)
+        if snap is None:
+            snap = _ProbeSnapshot()
+        if entry.platform == "youtube":
+            return self._refresh_youtube(entry, snap)
+        self._refresh_twitch(entry, snap)
+        return self._noop_commit
+
+    # ------------------------------------------------------------------
+    # Tier 1 — live probe + trigger
+    # ------------------------------------------------------------------
+    def _probe_twitch(
+        self, entry: ChannelEntry, snap: _ProbeSnapshot
+    ) -> list[tuple[ChannelEntry, StreamInfo]]:
+        with self._lock:
+            prev = self._last_status.get(entry.key)
+            prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
+
         try:
             fetcher = get_fetcher(entry.platform)
             info = fetcher.get_stream_info(entry.name)
-            if info is not None and not info.is_live:
+            # Double-check only at the live→offline edge; stable offline
+            # channels skip the extra GQL round-trip.
+            if info is not None and not info.is_live and prev_status is True:
                 retry = fetcher.get_stream_info(entry.name)
                 if retry is not None:
                     info = retry
@@ -933,7 +1040,8 @@ class Monitor:
 
         with self._lock:
             prev = self._last_status.get(entry.key)
-            prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
+            prev_cs = prev if isinstance(prev, ChannelStatus) else None
+            prev_status = prev_cs.status if prev_cs is not None else prev
 
             # ── Anti-flap guard ──────────────────────────────────────────
             if not info.is_live and prev_status is True:
@@ -947,6 +1055,9 @@ class Monitor:
                 if miss == "hold":
                     if info.display_name:
                         self._display_names[entry.key] = info.display_name
+                    snap.twitch_info = info
+                    snap.twitch_offline_hold = True
+                    snap.fetcher = fetcher
                     return []
             else:
                 self._offline_strikes.pop(live_key, None)
@@ -973,26 +1084,13 @@ class Monitor:
                 )
             else:
                 self._live_started_at.pop(live_key, None)
-                if entry.key in self._twitch_seen_live and prev_status is not True:
-                    self._last_status[entry.key] = self._twitch_offline_status_for(
-                        entry, prev, newly_offline=False, fetcher=fetcher
-                    )
             if info.display_name:
                 self._display_names[entry.key] = info.display_name
 
-            self._maybe_log_stable_twitch_status(entry, info, prev_status)
+        snap.twitch_info = info
+        snap.fetcher = fetcher
 
         went_live = info.is_live and prev_status is not True
-        went_offline = (not info.is_live) and prev_status is True
-        if went_offline:
-            with self._lock:
-                self._enqueue_twitch_went_offline(
-                    entry,
-                    live_key,
-                    prev,
-                    label="Twitch",
-                    fetcher=fetcher,
-                )
         if went_live:
             logger.info(
                 "Twitch %s: went_live title=%r url=%s",
@@ -1010,20 +1108,74 @@ class Monitor:
         return []
 
     # ------------------------------------------------------------------
-    # YouTube: TIDUS videoId + style
+    # Tier 2 — Twitch detail refresh
     # ------------------------------------------------------------------
-    def _check_youtube(
-        self, entry: ChannelEntry
-    ) -> tuple[list[tuple[ChannelEntry, StreamInfo]], Callable[[], None]]:
+    def _refresh_twitch(
+        self, entry: ChannelEntry, snap: _ProbeSnapshot
+    ) -> None:
+        info = snap.twitch_info
+        fetcher = snap.fetcher
+        if info is None:
+            return
+
+        live_key = _live_cache_key(entry.key)
+        with self._lock:
+            prev = self._last_status.get(entry.key)
+            prev_cs = prev if isinstance(prev, ChannelStatus) else None
+            prev_status = prev_cs.status if prev_cs is not None else prev
+
+        went_offline = (
+            (not info.is_live)
+            and prev_status is True
+            and not snap.twitch_offline_hold
+        )
+        if went_offline:
+            with self._lock:
+                self._enqueue_twitch_went_offline(
+                    entry,
+                    live_key,
+                    prev,
+                    label="Twitch",
+                    fetcher=fetcher,
+                )
+        elif not info.is_live and prev_status is not True:
+            with self._lock:
+                witnessed = entry.key in self._twitch_seen_live
+                offline_cs = self._twitch_offline_status_for(
+                    entry,
+                    prev,
+                    newly_offline=False,
+                    fetcher=fetcher,
+                )
+                if witnessed or prev_cs is not None:
+                    self._last_status[entry.key] = offline_cs
+                elif (
+                    offline_cs.vod_url
+                    and offline_cs.ended_at_source == "vod"
+                ):
+                    self._last_status[entry.key] = offline_cs
+
+        with self._lock:
+            self._maybe_log_stable_twitch_status(entry, info, prev_status)
+
+    # ------------------------------------------------------------------
+    # Tier 1/2 — YouTube
+    # ------------------------------------------------------------------
+    def _probe_youtube(
+        self, entry: ChannelEntry, snap: _ProbeSnapshot
+    ) -> list[tuple[ChannelEntry, StreamInfo]]:
         try:
             fetcher = get_fetcher(entry.platform)
-            items = fetcher.get_channel_items(entry.name)
+            items = fetcher.get_channel_items(entry.name, fill_timing=False)
         except Exception:
             logger.exception("Error fetching %s", entry.key)
-            return [], self._noop_commit
+            return []
 
+        snap.fetcher = fetcher
+        snap.youtube_items = items
         if not items:
-            return self._check_youtube_fallback(entry, fetcher), self._noop_commit
+            snap.youtube_fallback = True
+            return self._probe_youtube_fallback_live(entry, fetcher, snap)
 
         new_events: list[tuple[ChannelEntry, StreamInfo]] = []
         has_live = False
@@ -1100,33 +1252,39 @@ class Monitor:
             info = _video_item_to_stream_info(item, entry.name)
             new_events.append((entry, info))
 
+        snap.youtube_pending_seen = pending_seen
+        return new_events
+
+    def _refresh_youtube(
+        self, entry: ChannelEntry, snap: _ProbeSnapshot
+    ) -> Callable[[], None]:
+        if snap.youtube_fallback:
+            self._refresh_youtube_fallback(entry, snap)
+            return self._noop_commit
+
+        fetcher = snap.fetcher
+        items = snap.youtube_items
+        if fetcher is None or items is None:
+            return self._noop_commit
+
+        fetcher.enrich_items_for_details(items)
+
+        has_live = False
+        has_upcoming = False
+        live_items: list[VideoItem] = []
+        upcoming_items: list[VideoItem] = []
+        for item in items:
+            if item.style == "LIVE":
+                has_live = True
+                live_items.append(item)
+            elif item.style == "UPCOMING":
+                if _youtube_upcoming_is_usable(item.scheduled_start):
+                    has_upcoming = True
+                    upcoming_items.append(item)
+
         with self._lock:
-            # Detect went-offline edges: anything in self._live_payload that
-            # belongs to this entry but is no longer in this poll's LIVE set.
-            #
-            # The TIDUS feed occasionally drops a still-live video from the
-            # /streams listing for a single poll (channel re-rendering,
-            # YouTube edge cache lag, "live now" tab partially populated).
-            # Without a strike guard those single-poll dropouts produce a
-            # phantom went_offline → went_live edge pair, duplicating the
-            # "stream went live" notification. We therefore require two
-            # consecutive misses *of the same video_id* before committing
-            # to the offline edge — and we treat strike-pending video_ids
-            # as still active so _live_started_at isn't wiped prematurely.
-            # Track the original (genuinely-present) LIVE set separately from
-            # the "kept-alive by strike-pending" set, so we can clear strikes
-            # only for video_ids that the feed actually returned this poll.
             observed_live_ids = {item.video_id for item in live_items}
 
-            # ── Fallback-alias takeover ────────────────────────────────────
-            # When the fallback path saw the channel as live but TIDUS was
-            # empty, it stored payload under the bare entry key (video_id
-            # placeholder "_"). The moment TIDUS recovers and reports any
-            # LIVE video, that alias is *superseded* by the real video_id
-            # payload — not stale. Drop it silently here so it doesn't get
-            # caught by the strike machinery below and emit a fake
-            # went_offline (which would prematurely close the player while
-            # the stream is provably still live).
             if has_live:
                 fallback_alias_key = _live_cache_key(entry.key)
                 self._live_payload.pop(fallback_alias_key, None)
@@ -1145,9 +1303,6 @@ class Monitor:
                 strikes = self._offline_strikes.get(stale_key, 0) + 1
                 if strikes < _OFFLINE_STRIKE_THRESHOLD:
                     self._offline_strikes[stale_key] = strikes
-                    # Pretend the missing video_id is still live this poll
-                    # so the cleanup of _live_started_at below leaves its
-                    # started_at intact for the next strike window.
                     active_live_ids.add(stale_key.rsplit("|", 1)[-1])
                     has_strike_pending = True
                     logger.info(
@@ -1163,10 +1318,6 @@ class Monitor:
                 if payload is not None:
                     self._pending_offline_events.append((entry, payload))
 
-            # Clear strikes only for video_ids that the feed *actually* showed
-            # as LIVE this poll — they're provably back, so the prior miss was
-            # noise. (We must NOT clear strikes for ids we only kept alive via
-            # the strike-pending branch above; those still need to accumulate.)
             for vid in observed_live_ids:
                 self._offline_strikes.pop(_live_cache_key(entry.key, vid), None)
 
@@ -1192,15 +1343,6 @@ class Monitor:
                     started_at=live_item.started_at,
                 )
             elif has_strike_pending:
-                # Hold the prior LIVE display steady while we wait out the
-                # transient miss. We deliberately don't touch _last_status
-                # or _live_started_at so the UI doesn't flash OFFLINE/UPCOMING
-                # for a single poll between transient feed dropouts.
-                #
-                # NOTE: this branch must come *before* has_upcoming — if the
-                # LIVE video drops out for one poll but an UPCOMING item is
-                # also present, we want the UI to stay on LIVE rather than
-                # flicker to "upcoming" and fire a spurious upcoming alert.
                 pass
             elif has_upcoming:
                 self._live_started_at = {
@@ -1237,8 +1379,11 @@ class Monitor:
                     newly_offline=False,
                     fetcher=fetcher,
                     extra_vod_url=extra_vod,
+                    channel_items=items,
                 )
             self._youtube_baselined.add(entry.key)
+
+        pending_seen = snap.youtube_pending_seen or []
 
         def commit() -> None:
             for args in pending_seen:
@@ -1247,10 +1392,10 @@ class Monitor:
                 except Exception:
                     logger.exception("DB error for video %s", args[0])
 
-        return new_events, commit
+        return commit
 
-    def _check_youtube_fallback(
-        self, entry: ChannelEntry, fetcher: Any
+    def _probe_youtube_fallback_live(
+        self, entry: ChannelEntry, fetcher: Any, snap: _ProbeSnapshot
     ) -> list[tuple[ChannelEntry, StreamInfo]]:
         try:
             info = fetcher.get_stream_info(entry.name)
@@ -1280,6 +1425,8 @@ class Monitor:
                 if miss == "hold":
                     if info.display_name:
                         self._display_names[entry.key] = info.display_name
+                    snap.youtube_fallback_info = info
+                    snap.youtube_fallback_hold = True
                     return []
             else:
                 self._offline_strikes.pop(live_key, None)
@@ -1303,42 +1450,12 @@ class Monitor:
                     name=entry.name,
                     display_name=info.display_name or "",
                 )
-            elif (
-                info.stream_status == "upcoming"
-                and _youtube_upcoming_is_usable(info.scheduled_start)
-            ):
-                self._live_started_at = {
-                    key: value
-                    for key, value in self._live_started_at.items()
-                    if _entry_key_from_live_cache_key(key) != entry.key
-                }
-                self._fallback_triggered_live.pop(entry.key, None)
-                self._last_status[entry.key] = ChannelStatus(
-                    status="upcoming",
-                    url=info.url,
-                    title=info.title,
-                    scheduled_start=info.scheduled_start,
-                )
-            else:
-                self._live_started_at = {
-                    key: value
-                    for key, value in self._live_started_at.items()
-                    if _entry_key_from_live_cache_key(key) != entry.key
-                }
-                self._fallback_triggered_live.pop(entry.key, None)
-                self._last_status[entry.key] = self._youtube_offline_status_for(
-                    entry, prev, newly_offline=False, fetcher=fetcher
-                )
             if info.display_name:
                 self._display_names[entry.key] = info.display_name
 
+        snap.youtube_fallback_info = info
+
         went_live = info.is_live and prev_status is not True
-        went_offline = (not info.is_live) and prev_status is True
-        if went_offline:
-            with self._lock:
-                self._enqueue_youtube_fallback_went_offline(
-                    entry, prev, label="YouTube fallback"
-                )
         if went_live:
             logger.info(
                 "YouTube fallback %s: went_live title=%r url=%s",
@@ -1356,3 +1473,55 @@ class Monitor:
                 entry.key,
             )
         return []
+
+    def _refresh_youtube_fallback(
+        self, entry: ChannelEntry, snap: _ProbeSnapshot
+    ) -> None:
+        info = snap.youtube_fallback_info
+        fetcher = snap.fetcher
+        if info is None or snap.youtube_fallback_hold:
+            return
+
+        with self._lock:
+            prev = self._last_status.get(entry.key)
+            prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
+
+        went_offline = (
+            (not info.is_live)
+            and prev_status is True
+        )
+        if went_offline:
+            with self._lock:
+                self._enqueue_youtube_fallback_went_offline(
+                    entry, prev, label="YouTube fallback"
+                )
+            return
+
+        if not info.is_live:
+            with self._lock:
+                if (
+                    info.stream_status == "upcoming"
+                    and _youtube_upcoming_is_usable(info.scheduled_start)
+                ):
+                    self._live_started_at = {
+                        key: value
+                        for key, value in self._live_started_at.items()
+                        if _entry_key_from_live_cache_key(key) != entry.key
+                    }
+                    self._fallback_triggered_live.pop(entry.key, None)
+                    self._last_status[entry.key] = ChannelStatus(
+                        status="upcoming",
+                        url=info.url,
+                        title=info.title,
+                        scheduled_start=info.scheduled_start,
+                    )
+                else:
+                    self._live_started_at = {
+                        key: value
+                        for key, value in self._live_started_at.items()
+                        if _entry_key_from_live_cache_key(key) != entry.key
+                    }
+                    self._fallback_triggered_live.pop(entry.key, None)
+                    self._last_status[entry.key] = self._youtube_offline_status_for(
+                        entry, prev, newly_offline=False, fetcher=fetcher
+                    )
