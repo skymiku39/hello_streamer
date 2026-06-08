@@ -110,6 +110,7 @@ class ChannelRow(ctk.CTkFrame):
         self._status_countdown: str = ""
         self._status_elapsed: str = ""
         self._status_timestamp: str = ""
+        self._status_scheduled_start: str = ""
         self._vod_url: str = ""
         self._upcoming_url: str = ""
         self._ended_at_source: str = ""
@@ -575,6 +576,7 @@ class ChannelRow(ctk.CTkFrame):
                 detail.ended_at_source if detail else ""
             ) or "confirmed"
             sched = (detail.scheduled_start if detail else "") or ""
+            self._status_scheduled_start = sched
             self._status_countdown = (
                 _format_countdown(sched) if self._upcoming_url and sched else ""
             )
@@ -592,8 +594,14 @@ class ChannelRow(ctk.CTkFrame):
             self._status_elapsed = _format_elapsed(self._status_timestamp)
             self.time_label.configure(text=self._status_elapsed)
         elif state == "offline":
-            self._status_elapsed = _format_elapsed(self._status_timestamp)
-            self.time_label.configure(text=self._status_elapsed)
+            if self._upcoming_url and self._status_scheduled_start:
+                self._status_countdown = _format_countdown(
+                    self._status_scheduled_start
+                )
+                self.time_label.configure(text=self._status_countdown)
+            else:
+                self._status_elapsed = _format_elapsed(self._status_timestamp)
+                self.time_label.configure(text=self._status_elapsed)
         elif state == "upcoming":
             self._status_countdown = _format_countdown(self._status_timestamp)
             self.time_label.configure(text=self._status_countdown)
@@ -642,8 +650,11 @@ class ChannelRow(ctk.CTkFrame):
             self._set_link_tip_with_title("tooltip.row.link.live")
             return
 
-        # offline — mirror live: elapsed since end + OFFLINE badge
-        self.time_label.configure(text=self._status_elapsed)
+        # offline — elapsed since end, or countdown when waiting room is linked
+        if self._upcoming_url and self._status_countdown:
+            self.time_label.configure(text=self._status_countdown)
+        else:
+            self.time_label.configure(text=self._status_elapsed)
         self.status_label.configure(
             text=tr("status.row.offline"),
             text_color="#999999",
