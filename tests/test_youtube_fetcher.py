@@ -200,6 +200,20 @@ class TestParseChannelItems:
         assert items[0].url == "https://www.youtube.com/watch?v=vid_lockup"
         assert display_name == "TestChannel"
 
+    def test_lockup_scheduled_badge_without_premiere_is_default(self) -> None:
+        fetcher = YouTubeFetcher()
+        lockup = _make_lockup_view_model(
+            "vid_sched",
+            "Weekly Episode",
+            badge_text="Scheduled",
+            metadata_text="Scheduled for May 10",
+        )
+        data = _make_initial_data_with_lockups([lockup])
+        items, _ = fetcher._parse_channel_items(data, "chan")
+
+        assert len(items) == 1
+        assert items[0].style == "DEFAULT"
+
     def test_extracts_default_from_lockup_view_model_without_upcoming_badge(self) -> None:
         fetcher = YouTubeFetcher()
         lockup = _make_lockup_view_model(
@@ -313,6 +327,39 @@ class TestGetChannelItemsIntegration:
         assert items[0].scheduled_start == "2026-12-01T18:00:00+00:00"
         assert watch_calls == ["up1"]
 
+    def test_fetch_watch_details_ignores_offline_slate_without_upcoming(
+        self, monkeypatch
+    ) -> None:
+        fetcher = YouTubeFetcher()
+        html = _html_with_player(
+            """
+            {
+              "playabilityStatus": {
+                "status": "OK",
+                "liveStreamability": {
+                  "liveStreamabilityRenderer": {
+                    "offlineSlate": {
+                      "liveStreamOfflineSlateRenderer": {
+                        "scheduledStartTime": "2099-01-01T00:00:00+00:00"
+                      }
+                    }
+                  }
+                }
+              },
+              "videoDetails": {
+                "title": "Weekly Slot",
+                "isUpcoming": false,
+                "isLiveContent": false
+              }
+            }
+            """
+        )
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+
+        details = fetcher._fetch_watch_details("weekly1")
+
+        assert details.scheduled_start == ""
+
 
 # ─────────────────────────────────────────────
 # get_stream_info (used for channel validation)
@@ -335,9 +382,14 @@ class TestGetStreamInfo:
         assert info.video_id == "v1"
 
     def test_reports_upcoming_from_channel_items(self, monkeypatch) -> None:
+        from datetime import datetime, timedelta, timezone
+
         fetcher = YouTubeFetcher()
+        soon_unix = str(
+            int((datetime.now(timezone.utc) + timedelta(hours=3)).timestamp())
+        )
         vr = _make_video_renderer(
-            "v_up", "Waiting Room", "UPCOMING", "4102444800"
+            "v_up", "Waiting Room", "UPCOMING", soon_unix
         )
         data = _make_initial_data([vr], "Streamer")
         html = _html_with_initial_data(data)
@@ -410,28 +462,33 @@ class TestGetStreamInfo:
         assert info.video_id == "live123"
 
     def test_empty_streams_page_detects_upcoming_fallback(self, monkeypatch) -> None:
+        from datetime import datetime, timedelta, timezone
+
         fetcher = YouTubeFetcher()
+        soon = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         data = _make_initial_data([], "Streamer")
         streams_html = _html_with_initial_data(data)
         live_html = _html_with_player(
-            """
-            {
-              "playabilityStatus": {"status": "LIVE_STREAM_OFFLINE"},
-              "videoDetails": {
+            f"""
+            {{
+              "playabilityStatus": {{"status": "LIVE_STREAM_OFFLINE"}},
+              "videoDetails": {{
                 "author": "Streamer",
                 "videoId": "wait123",
                 "isUpcoming": true,
                 "title": "Waiting Room"
-              },
-              "microformat": {
-                "playerMicroformatRenderer": {
-                  "liveBroadcastDetails": {
+              }},
+              "microformat": {{
+                "playerMicroformatRenderer": {{
+                  "liveBroadcastDetails": {{
                     "isLiveNow": false,
-                    "startTimestamp": "2099-01-01T00:00:00Z"
-                  }
-                }
-              }
-            }
+                    "startTimestamp": "{soon}"
+                  }}
+                }}
+              }}
+            }}
             """
         )
 

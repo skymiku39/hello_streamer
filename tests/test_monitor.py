@@ -306,6 +306,36 @@ def test_youtube_upcoming_poll_fills_missing_schedule(
     db.close()
 
 
+def test_youtube_past_upcoming_does_not_set_upcoming_status(
+    monkeypatch, tmp_path
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    items = [
+        VideoItem(
+            video_id="vid_past",
+            title="Missed Premiere",
+            style="UPCOMING",
+            url="https://www.youtube.com/watch?v=vid_past",
+            scheduled_start=past,
+        )
+    ]
+    fetcher = FakeYouTubeFetcher([items])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "ytchan"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="ytchan")
+    _check_and_commit(monitor, entry)
+
+    with monitor._lock:
+        status = monitor._last_status["youtube:ytchan"]
+        assert isinstance(status, ChannelStatus)
+        assert status.status is not True
+        assert status.status != "upcoming"
+    db.close()
+
+
 def test_youtube_upcoming_sets_status(monkeypatch, tmp_path) -> None:
     from datetime import datetime, timedelta, timezone
 
@@ -1051,7 +1081,9 @@ def test_youtube_upcoming_is_usable_helper() -> None:
     assert _youtube_upcoming_is_usable(expired) is False
     assert _youtube_upcoming_is_usable(soon) is True
     assert _youtube_upcoming_is_usable(far) is False
-    assert _youtube_upcoming_is_usable("") is True
+    assert _youtube_upcoming_is_usable("") is False
+    recent_past = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    assert _youtube_upcoming_is_usable(recent_past) is False
 
 
 def test_youtube_offline_ignores_upcoming_beyond_7_days(tmp_path) -> None:

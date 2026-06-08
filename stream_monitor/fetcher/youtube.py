@@ -28,7 +28,10 @@ from stream_monitor.fetcher.base import (
     StreamInfo,
     VideoItem,
 )
-from stream_monitor.util import parse_iso_datetime
+from stream_monitor.util import (
+    parse_iso_datetime,
+    youtube_upcoming_schedule_is_surfacable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +334,7 @@ class YouTubeFetcher(StreamFetcher):
         style = "DEFAULT"
         if any("即將" in text or "預定" in text for text in [*badge_texts, *metadata_texts]):
             style = "UPCOMING"
-        elif "UPCOMING" in searchable or "SCHEDULED" in searchable:
+        elif "UPCOMING" in searchable or "PREMIERE" in searchable:
             style = "UPCOMING"
         elif "LIVE" in searchable or any("直播" in text for text in badge_texts):
             style = "LIVE"
@@ -532,7 +535,23 @@ class YouTubeFetcher(StreamFetcher):
         scheduled_time = ""
         if isinstance(slate_renderer, dict):
             scheduled_time = slate_renderer.get("scheduledStartTime", "") or ""
-        if isinstance(scheduled_time, str) and scheduled_time:
+        playability_status = ""
+        if isinstance(playability, dict):
+            playability_status = playability.get("status", "") or ""
+        is_live_content = (
+            isinstance(video_details, dict)
+            and video_details.get("isLiveContent") is True
+        )
+        if (
+            isinstance(scheduled_time, str)
+            and scheduled_time
+            and (
+                is_upcoming
+                or (
+                    playability_status == "LIVE_STREAM_OFFLINE" and is_live_content
+                )
+            )
+        ):
             return _WatchDetails(scheduled_start=_unix_to_iso(scheduled_time))
 
         ended_at = self._estimate_ended_at_from_player(
@@ -631,7 +650,12 @@ class YouTubeFetcher(StreamFetcher):
 
         has_live = any(item.style == "LIVE" for item in items)
         live_item = next((i for i in items if i.style == "LIVE"), None)
-        upcoming_items = [item for item in items if item.style == "UPCOMING"]
+        upcoming_items = [
+            item
+            for item in items
+            if item.style == "UPCOMING"
+            and youtube_upcoming_schedule_is_surfacable(item.scheduled_start)
+        ]
         upcoming_item = None
         if upcoming_items:
             upcoming_item = min(
@@ -800,9 +824,9 @@ class YouTubeFetcher(StreamFetcher):
             video_id = ""
 
         details = self._watch_details_from_player(player)
-        if not (
-            video_details.get("isUpcoming") is True or details.scheduled_start
-        ):
+        if video_details.get("isUpcoming") is not True:
+            return None
+        if not youtube_upcoming_schedule_is_surfacable(details.scheduled_start):
             return None
 
         return StreamInfo(
@@ -856,7 +880,20 @@ class YouTubeFetcher(StreamFetcher):
         scheduled_time = ""
         if isinstance(slate_renderer, dict):
             scheduled_time = slate_renderer.get("scheduledStartTime", "") or ""
-        if isinstance(scheduled_time, str) and scheduled_time:
+        playability_status = ""
+        if isinstance(playability, dict):
+            playability_status = playability.get("status", "") or ""
+        is_live_content = video_details.get("isLiveContent") is True
+        if (
+            isinstance(scheduled_time, str)
+            and scheduled_time
+            and (
+                is_upcoming
+                or (
+                    playability_status == "LIVE_STREAM_OFFLINE" and is_live_content
+                )
+            )
+        ):
             return _WatchDetails(scheduled_start=_unix_to_iso(scheduled_time))
 
         return _WatchDetails()

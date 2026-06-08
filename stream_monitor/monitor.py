@@ -17,7 +17,12 @@ from typing import Any, Callable
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import FinishedVod, StreamInfo, VideoItem
-from stream_monitor.util import channel_key, normalize_channel_name, parse_iso_datetime
+from stream_monitor.util import (
+    channel_key,
+    normalize_channel_name,
+    parse_iso_datetime,
+    youtube_upcoming_schedule_is_surfacable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +47,6 @@ _OFFLINE_STRIKE_THRESHOLD = 2
 # Log unchanged channel status every N poll cycles (per channel) for diagnostics.
 _STABLE_STATUS_LOG_EVERY = 20
 _CONFIRMED_FUTURE_SLACK = timedelta(minutes=5)
-_UPCOMING_EXPIRY_GRACE = timedelta(minutes=30)
-_UPCOMING_MAX_FUTURE = timedelta(days=7)
 _DEFAULT_MAX_CONCURRENT = 4
 
 
@@ -176,17 +179,7 @@ def _sort_datetime(value: str, fallback: datetime) -> datetime:
 
 def _youtube_upcoming_is_usable(scheduled_start: str) -> bool:
     """True when a YouTube waiting-room schedule is worth surfacing."""
-    if not scheduled_start:
-        return True
-    start_dt = parse_iso_datetime(scheduled_start)
-    if start_dt is None:
-        return True
-    now = datetime.now(timezone.utc)
-    if now > start_dt + _UPCOMING_EXPIRY_GRACE:
-        return False
-    if start_dt > now + _UPCOMING_MAX_FUTURE:
-        return False
-    return True
+    return youtube_upcoming_schedule_is_surfacable(scheduled_start)
 
 
 class Monitor:
