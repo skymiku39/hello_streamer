@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 
 from stream_monitor.db import SeenVideoDB
 
@@ -99,4 +100,29 @@ def test_cleanup_keeps_recent_records(tmp_path) -> None:
     removed = db.cleanup(days=30)
     assert removed == 0
     assert db.is_seen("recent", "LIVE") is True
+    db.close()
+
+
+def test_concurrent_is_seen_and_mark_seen(tmp_path) -> None:
+    """Parallel Monitor workers must not corrupt the shared SQLite connection."""
+    db = SeenVideoDB(tmp_path / "test.db")
+    errors: list[BaseException] = []
+
+    def worker(index: int) -> None:
+        try:
+            vid = f"vid{index % 4}"
+            style = "LIVE" if index % 2 == 0 else "UPCOMING"
+            if not db.is_seen(vid, style):
+                db.mark_seen(vid, "youtube", "chan", style, f"t{index}")
+            assert db.is_seen(vid, style)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(32)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
     db.close()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -49,10 +50,9 @@ class StreamFetcher(ABC):
 
     platform: str = ""
 
-    @abstractmethod
-    def is_live(self, channel_name: str) -> bool:
-        """Return True if *channel_name* is currently streaming."""
-        ...
+    def __init__(self) -> None:
+        # requests.Session is not thread-safe; Monitor polls channels in parallel.
+        self._http_lock = threading.Lock()
 
     @abstractmethod
     def get_stream_info(self, channel_name: str) -> StreamInfo | None:
@@ -72,6 +72,11 @@ class StreamFetcher(ABC):
         """
         return []
 
-    def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+    def get_latest_finished_vod(
+        self,
+        channel_name: str,
+        *,
+        items: list[VideoItem] | None = None,
+    ) -> FinishedVod | None:
         """Return the latest finished VOD/replay, if the platform supports it."""
         return None

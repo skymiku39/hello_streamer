@@ -1,3 +1,30 @@
+# Hello Streamer v0.9.13
+
+## 長期運行維護
+
+- **YouTube watch 頁快取**：上限 256 筆，過期（5 分鐘）與超量時自動修剪，避免長期監聽記憶體緩慢累積
+- **定期 housekeeping**：啟動、執行緒重啟與每 24 小時輪詢後，清理 `seen_videos.db` 超過 30 天的紀錄並修剪 YouTube 快取
+
+## 瀏覽器自動關閉安全
+
+- **隔離檢查**：未啟用獨立 Profile 時，跳過離題頁 prune，且下播關窗不使用標題關鍵字 fallback（只關 Hello Streamer 追蹤到的 HWND）
+- **自訂瀏覽器啟動失敗**：若已勾選自動關閉相關選項，改走系統瀏覽器時會封鎖 title fallback，降低誤關其他分頁的風險
+- **分頁模式誠實提示**：未勾選「獨立視窗」且未啟用 App Mode 時，程式**無法**登記 HWND／追蹤記憶體／自動關閉；設定介面會停用相關選項並顯示說明
+- **YouTube lockup 多語言**：改善英文 LIVE、日文配信予定等 badge 的直播／待機室判斷
+
+## 下載檔案
+
+- Windows 請下載 `HelloStreamer-v0.9.13-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.9.13-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.13-linux-arm64.tar.gz`
+
+## 升級提醒
+
+- 從 v0.9.12 升級可直接覆蓋執行檔；`config.json` 無需變更。
+- 若使用「直播結束自動關閉」或「只保留直播相關視窗」，建議確認已啟用獨立 Profile（儲存瀏覽器設定時會自動修復）。
+
+---
+
 # Hello Streamer v0.9.12
 
 ## 休眠／喚醒穩定性

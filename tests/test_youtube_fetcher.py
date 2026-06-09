@@ -1,6 +1,12 @@
 import json
+import time
 
-from stream_monitor.fetcher.youtube import YouTubeFetcher, _WatchDetails
+from stream_monitor.fetcher.youtube import (
+    _WATCH_DETAILS_CACHE_MAX,
+    _WATCH_DETAILS_CACHE_TTL,
+    YouTubeFetcher,
+    _WatchDetails,
+)
 
 
 def _html_with_player(player_json: str, extra: str = "") -> str:
@@ -651,3 +657,76 @@ def test_get_latest_finished_vod_prefers_broadcast_over_upload(monkeypatch) -> N
     assert vod is not None
     assert vod.url == "https://www.youtube.com/watch?v=replay1"
     assert vod.title == "Past Stream"
+
+
+def test_lockup_style_detects_english_live_badge() -> None:
+    fetcher = YouTubeFetcher()
+    lockup = _make_lockup_view_model("abc123", "Stream Title", badge_text="LIVE")
+    item = fetcher._parse_lockup_view_model(lockup, "Channel")
+    assert item is not None
+    assert item.style == "LIVE"
+
+
+def test_lockup_style_detects_japanese_upcoming_badge() -> None:
+    fetcher = YouTubeFetcher()
+    lockup = _make_lockup_view_model(
+        "abc123", "Waiting", badge_text="配信予定"
+    )
+    item = fetcher._parse_lockup_view_model(lockup, "Channel")
+    assert item is not None
+    assert item.style == "UPCOMING"
+
+
+def test_prune_watch_details_cache_drops_expired_entries() -> None:
+    YouTubeFetcher._watch_details_cache.clear()
+    try:
+        stale_ts = time.time() - _WATCH_DETAILS_CACHE_TTL - 1
+        YouTubeFetcher._watch_details_cache["old"] = (stale_ts, _WatchDetails())
+        YouTubeFetcher._watch_details_cache["fresh"] = (
+            time.time(),
+            _WatchDetails(started_at="2026-06-01T00:00:00+00:00"),
+        )
+        removed = YouTubeFetcher.prune_watch_details_cache()
+        assert removed == 1
+        assert "old" not in YouTubeFetcher._watch_details_cache
+        assert "fresh" in YouTubeFetcher._watch_details_cache
+    finally:
+        YouTubeFetcher._watch_details_cache.clear()
+
+
+def test_prune_watch_details_cache_enforces_max_size() -> None:
+    YouTubeFetcher._watch_details_cache.clear()
+    try:
+        now = time.time()
+        for index in range(_WATCH_DETAILS_CACHE_MAX + 5):
+            YouTubeFetcher._watch_details_cache[f"vid{index}"] = (
+                now + index,
+                _WatchDetails(),
+            )
+        removed = YouTubeFetcher.prune_watch_details_cache()
+        assert removed == 5
+        assert len(YouTubeFetcher._watch_details_cache) == _WATCH_DETAILS_CACHE_MAX
+    finally:
+        YouTubeFetcher._watch_details_cache.clear()
+
+
+def test_get_watch_details_triggers_inline_prune(monkeypatch) -> None:
+    YouTubeFetcher._watch_details_cache.clear()
+    try:
+        fetcher = YouTubeFetcher()
+        now = time.time()
+        for index in range(_WATCH_DETAILS_CACHE_MAX):
+            YouTubeFetcher._watch_details_cache[f"cached{index}"] = (
+                now,
+                _WatchDetails(),
+            )
+        monkeypatch.setattr(
+            fetcher,
+            "_fetch_watch_details",
+            lambda _vid: _WatchDetails(started_at="2026-06-01T00:00:00+00:00"),
+        )
+        fetcher._get_watch_details("newvid")
+        assert len(YouTubeFetcher._watch_details_cache) <= _WATCH_DETAILS_CACHE_MAX
+        assert "newvid" in YouTubeFetcher._watch_details_cache
+    finally:
+        YouTubeFetcher._watch_details_cache.clear()

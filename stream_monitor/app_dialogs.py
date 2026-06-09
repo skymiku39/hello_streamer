@@ -685,9 +685,32 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             toggle_frame,
             text=tr("browser.toggle.new_window"),
             variable=self.new_window_var,
+            command=self._refresh_win32_management_state,
             font=_font(12),
         )
-        self.new_window_cb.pack(anchor="w", pady=(0, 4))
+        self.new_window_cb.pack(anchor="w", pady=(0, 2))
+        self._new_window_hint = ctk.CTkLabel(
+            toggle_frame,
+            text=tr("browser.toggle.new_window.hint"),
+            font=_font(11),
+            text_color="#aaaabb",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        )
+        self._new_window_hint.pack(anchor="w", pady=(0, 4))
+
+        self._no_window_tracking_label = ctk.CTkLabel(
+            toggle_frame,
+            text=tr("browser.msg.no_window_tracking_warning"),
+            font=_font(11),
+            text_color="#ffb74d",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        )
+        self._no_window_tracking_label.pack(anchor="w", pady=(0, 4))
+        self._no_window_tracking_label.pack_forget()
 
         self.minimized_var = ctk.BooleanVar(
             value=bool(settings.get("minimized", False))
@@ -1198,6 +1221,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._section_window_label.configure(text=tr("browser.section.window"))
         self._section_window_hint.configure(text=tr("browser.section.window.hint"))
         self.new_window_cb.configure(text=tr("browser.toggle.new_window"))
+        self._new_window_hint.configure(text=tr("browser.toggle.new_window.hint"))
+        self._no_window_tracking_label.configure(
+            text=tr("browser.msg.no_window_tracking_warning")
+        )
         self.minimized_cb.configure(text=tr("browser.toggle.minimized"))
         self._section_lifecycle_label.configure(text=tr("browser.section.lifecycle"))
         self._section_lifecycle_hint.configure(
@@ -1355,6 +1382,46 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         if not self.enabled_var.get() or self.app_mode_var.get():
             state = "disabled"
         self.new_window_cb.configure(state=state)
+        self._refresh_win32_management_state()
+
+    def _win32_management_available(self) -> bool:
+        """Dedicated profile + a launch mode that spawns a trackable HWND."""
+        if not self.enabled_var.get():
+            return False
+        if not self.user_data_dir_enabled_var.get():
+            return False
+        return bool(self.app_mode_var.get() or self.new_window_var.get())
+
+    def _refresh_win32_management_state(self) -> None:
+        """Grey out HWND-dependent options when opening as a tab only."""
+        if not self.enabled_var.get():
+            self._no_window_tracking_label.pack_forget()
+            return
+
+        profile_enabled = self.user_data_dir_enabled_var.get()
+        tracking_possible = self._win32_management_available()
+        win32_state = "normal" if tracking_possible else "disabled"
+
+        for widget in self._isolation_dependent_widgets:
+            widget.configure(
+                state=win32_state if profile_enabled else "disabled"
+            )
+
+        executable = self.path_entry.get().strip() or "chrome"
+        if detect_browser_family(executable) == "firefox":
+            self.app_mode_cb.configure(
+                state="normal" if profile_enabled else "disabled"
+            )
+
+        if profile_enabled and not tracking_possible:
+            self._no_window_tracking_label.pack(
+                anchor="w", pady=(0, 4), before=self.minimized_cb
+            )
+        else:
+            self._no_window_tracking_label.pack_forget()
+
+        self._refresh_geometry_state()
+        self._refresh_user_tab_iso_banner()
 
     # Widgets whose feature requires a dedicated profile to actually take
     # effect at runtime. notifier._open_with_browser_settings deliberately
@@ -1397,25 +1464,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.per_channel_profile_cb.configure(state=profile_state)
         self._signin_btn.configure(state=profile_state)
 
-        # Isolation-dependent gating: these all live or die with the Win32
-        # post-launch worker, which only fires when a dedicated profile is
-        # configured. Keep them grey in shared mode so the UI matches what
-        # the launcher will actually do.
-        for widget in self._isolation_dependent_widgets:
-            widget.configure(state=profile_state)
-        # ``app_mode_cb`` has an additional Firefox-incompatibility — the
-        # ``--app=`` flag is a Chromium feature and the post-launch worker
-        # only knows Chrome window classes. When the user has selected a
-        # Firefox path we must keep the box disabled even when profile is
-        # on, otherwise the UI would imply the feature is usable.
-        executable = self.path_entry.get().strip() or "chrome"
-        if detect_browser_family(executable) == "firefox":
-            self.app_mode_cb.configure(state="disabled")
-        # Cascade into x/y/w/h entries — they additionally depend on the
-        # apply_geometry checkbox and the browser family (Firefox forces
-        # them off because the post-launch worker only knows Chrome class
-        # names).
-        self._refresh_geometry_state()
+        # HWND-dependent gating: dedicated profile AND (app mode or new
+        # window). Tab-only launches cannot be tracked or auto-closed.
+        self._refresh_win32_management_state()
 
         # Show the no-isolation warning only when the user actively turned off
         # dedicated profile — that's the only state where Win32 management
@@ -1450,9 +1501,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         executable = self.path_entry.get().strip() or "chrome"
         is_chromium = detect_browser_family(executable) != "firefox"
-        profile_enabled = self.user_data_dir_enabled_var.get()
         geometry_active = (
-            is_chromium and profile_enabled and self.apply_geometry_var.get()
+            is_chromium
+            and self._win32_management_available()
+            and self.apply_geometry_var.get()
         )
         entry_state = "normal" if geometry_active else "disabled"
         for entry in (self.x_entry, self.y_entry, self.w_entry, self.h_entry):

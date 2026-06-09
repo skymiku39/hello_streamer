@@ -19,6 +19,15 @@ def channel_key(platform: str, name: str) -> str:
     return f"{platform}:{normalize_channel_name(platform, name)}"
 
 
+def channel_page_url(platform: str, name: str) -> str:
+    """Return the public channel page URL for *platform* and *name*."""
+    if platform == "twitch":
+        return f"https://www.twitch.tv/{name}"
+    if name.startswith("UC"):
+        return f"https://www.youtube.com/channel/{name}"
+    return f"https://www.youtube.com/@{name}"
+
+
 def parse_iso_datetime(value: str) -> datetime | None:
     if not value:
         return None

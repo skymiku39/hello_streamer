@@ -32,10 +32,4 @@ def get_fetcher(platform: str) -> StreamFetcher:
         return fetcher
 
 
-def clear_fetcher_cache() -> None:
-    """Drop cached fetchers (for tests)."""
-    with _FETCHER_LOCK:
-        _FETCHERS.clear()
-
-
-__all__ = ["StreamFetcher", "clear_fetcher_cache", "get_fetcher"]
+__all__ = ["StreamFetcher", "get_fetcher"]

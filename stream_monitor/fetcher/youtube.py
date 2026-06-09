@@ -29,6 +29,7 @@ from stream_monitor.fetcher.base import (
     VideoItem,
 )
 from stream_monitor.util import (
+    channel_page_url,
     parse_iso_datetime,
     youtube_upcoming_schedule_is_surfacable,
 )
@@ -58,18 +59,38 @@ _JSON_DECODER = json.JSONDecoder()
 _MAX_RETRIES = 2
 _RETRY_DELAY = 3
 _WATCH_DETAILS_CACHE_TTL = 300
+_WATCH_DETAILS_CACHE_MAX = 256
+
+# lockupViewModel badge/metadata text fragments (multilingual).
+_LOCKUP_UPCOMING_MARKERS = (
+    "即將",
+    "預定",
+    "upcoming",
+    "premiere",
+    "開始",
+    "starts",
+    "startet",
+    "commence",
+    "開始予定",
+    "配信予定",
+    "예정",
+    "시작",
+)
+_LOCKUP_LIVE_MARKERS = (
+    "直播",
+    "live",
+    "ライブ",
+    "라이브",
+    "en direct",
+    "en vivo",
+    "ao vivo",
+)
 
 
 class _WatchDetails(NamedTuple):
     scheduled_start: str = ""
     started_at: str = ""
     ended_at: str = ""
-
-
-def _channel_url(channel_name: str) -> str:
-    if channel_name.startswith("UC"):
-        return f"https://www.youtube.com/channel/{channel_name}"
-    return f"https://www.youtube.com/@{channel_name}"
 
 
 def _watch_url(video_id: str) -> str:
@@ -88,7 +109,58 @@ class YouTubeFetcher(StreamFetcher):
     platform = "youtube"
     _watch_details_cache: dict[str, tuple[float, _WatchDetails]] = {}
 
+    @classmethod
+    def _prune_watch_details_cache_unlocked(
+        cls,
+        *,
+        max_entries: int,
+        ttl: float,
+        now: float | None = None,
+    ) -> int:
+        """Caller must hold the fetcher HTTP lock."""
+        now = time.time() if now is None else now
+        stale_keys = [
+            vid
+            for vid, (ts, _details) in cls._watch_details_cache.items()
+            if now - ts >= ttl
+        ]
+        for vid in stale_keys:
+            cls._watch_details_cache.pop(vid, None)
+        removed = len(stale_keys)
+        overflow = len(cls._watch_details_cache) - max_entries
+        if overflow > 0:
+            victims = sorted(
+                cls._watch_details_cache.items(), key=lambda item: item[1][0]
+            )[:overflow]
+            for vid, _entry in victims:
+                cls._watch_details_cache.pop(vid, None)
+            removed += overflow
+        return removed
+
+    @classmethod
+    def prune_watch_details_cache(
+        cls,
+        *,
+        max_entries: int | None = None,
+        ttl: float | None = None,
+    ) -> int:
+        """Drop expired and excess watch-detail cache entries.
+
+        Returns the number of entries removed. Safe to call from any thread;
+        uses the fetcher HTTP lock for consistency with cache reads/writes.
+        """
+        cap = max_entries if max_entries is not None else _WATCH_DETAILS_CACHE_MAX
+        ttl_s = ttl if ttl is not None else _WATCH_DETAILS_CACHE_TTL
+        from stream_monitor.fetcher import get_fetcher
+
+        fetcher = get_fetcher("youtube")
+        with fetcher._http_lock:
+            return cls._prune_watch_details_cache_unlocked(
+                max_entries=cap, ttl=ttl_s
+            )
+
     def __init__(self) -> None:
+        super().__init__()
         self._session = requests.Session()
         self._session.headers.update(_HEADERS)
         self._session.cookies.set("CONSENT", "PENDING+987", domain=".youtube.com")
@@ -103,7 +175,8 @@ class YouTubeFetcher(StreamFetcher):
     def _fetch_page(self, url: str) -> str | None:
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                resp = self._session.get(url, timeout=15)
+                with self._http_lock:
+                    resp = self._session.get(url, timeout=15)
                 if resp.status_code == 404:
                     logger.warning("YouTube page not found: %s", url)
                     return None
@@ -338,15 +411,7 @@ class YouTubeFetcher(StreamFetcher):
 
         badge_texts = self._extract_lockup_badge_texts(lockup)
         metadata_texts = self._extract_lockup_metadata_texts(metadata_model)
-        searchable = " ".join([*badge_texts, *metadata_texts]).upper()
-
-        style = "DEFAULT"
-        if any("即將" in text or "預定" in text for text in [*badge_texts, *metadata_texts]):
-            style = "UPCOMING"
-        elif "UPCOMING" in searchable or "PREMIERE" in searchable:
-            style = "UPCOMING"
-        elif "LIVE" in searchable or any("直播" in text for text in badge_texts):
-            style = "LIVE"
+        style = self._lockup_style_from_texts(badge_texts, metadata_texts)
 
         return VideoItem(
             video_id=video_id,
@@ -355,6 +420,26 @@ class YouTubeFetcher(StreamFetcher):
             url=f"https://www.youtube.com/watch?v={video_id}",
             display_name=display_name,
         )
+
+    @staticmethod
+    def _lockup_style_from_texts(
+        badge_texts: list[str], metadata_texts: list[str]
+    ) -> str:
+        combined = [*badge_texts, *metadata_texts]
+        for text in combined:
+            low = text.lower()
+            if any(marker in low for marker in _LOCKUP_UPCOMING_MARKERS):
+                return "UPCOMING"
+        searchable = " ".join(combined).upper()
+        if "UPCOMING" in searchable or "PREMIERE" in searchable:
+            return "UPCOMING"
+        for text in combined:
+            low = text.lower()
+            if any(marker in low for marker in _LOCKUP_LIVE_MARKERS):
+                return "LIVE"
+        if "LIVE" in searchable:
+            return "LIVE"
+        return "DEFAULT"
 
     @staticmethod
     def _extract_lockup_badge_texts(lockup: dict) -> list[str]:
@@ -439,7 +524,7 @@ class YouTubeFetcher(StreamFetcher):
     def get_channel_items(
         self, channel_name: str, *, fill_timing: bool = True
     ) -> list[VideoItem] | None:
-        base = _channel_url(channel_name)
+        base = channel_page_url("youtube", channel_name)
         html = self._fetch_page(f"{base}/streams")
         if html is None:
             return None
@@ -482,12 +567,21 @@ class YouTubeFetcher(StreamFetcher):
 
     def _get_watch_details(self, video_id: str) -> _WatchDetails:
         now = time.time()
-        cached = self._watch_details_cache.get(video_id)
-        if cached and now - cached[0] < _WATCH_DETAILS_CACHE_TTL:
-            return cached[1]
+        with self._http_lock:
+            cached = self._watch_details_cache.get(video_id)
+            if cached and now - cached[0] < _WATCH_DETAILS_CACHE_TTL:
+                return cached[1]
 
         details = self._fetch_watch_details(video_id)
-        self._watch_details_cache[video_id] = (now, details)
+        with self._http_lock:
+            now = time.time()
+            self._watch_details_cache[video_id] = (now, details)
+            if len(self._watch_details_cache) > _WATCH_DETAILS_CACHE_MAX:
+                type(self)._prune_watch_details_cache_unlocked(
+                    max_entries=_WATCH_DETAILS_CACHE_MAX,
+                    ttl=_WATCH_DETAILS_CACHE_TTL,
+                    now=now,
+                )
         return details
 
     def _fetch_watch_details(self, video_id: str) -> _WatchDetails:
@@ -607,8 +701,14 @@ class YouTubeFetcher(StreamFetcher):
         except ValueError:
             return ""
 
-    def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
-        items = self.get_channel_items(channel_name)
+    def get_latest_finished_vod(
+        self,
+        channel_name: str,
+        *,
+        items: list[VideoItem] | None = None,
+    ) -> FinishedVod | None:
+        if items is None:
+            items = self.get_channel_items(channel_name)
         if not items:
             return None
         best: FinishedVod | None = None
@@ -641,7 +741,7 @@ class YouTubeFetcher(StreamFetcher):
     # Public API: get_stream_info (used by AddChannelDialog validation)
     # ------------------------------------------------------------------
     def get_stream_info(self, channel_name: str) -> StreamInfo | None:
-        base = _channel_url(channel_name)
+        base = channel_page_url("youtube", channel_name)
         html = self._fetch_page(f"{base}/streams")
         if html is None:
             return self._fallback_live_check(channel_name)
@@ -717,15 +817,11 @@ class YouTubeFetcher(StreamFetcher):
             display_name=display_name,
         )
 
-    def is_live(self, channel_name: str) -> bool:
-        info = self.get_stream_info(channel_name)
-        return info.is_live if info else False
-
     # ------------------------------------------------------------------
     # Fallback: old /@channel/live + ytInitialPlayerResponse
     # ------------------------------------------------------------------
     def _fallback_live_check(self, channel_name: str) -> StreamInfo | None:
-        base = _channel_url(channel_name)
+        base = channel_page_url("youtube", channel_name)
         url = f"{base}/live"
         html = self._fetch_page(url)
         if html is None:

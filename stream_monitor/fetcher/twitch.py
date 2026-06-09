@@ -84,6 +84,7 @@ class TwitchFetcher(StreamFetcher):
     platform = "twitch"
 
     def __init__(self) -> None:
+        super().__init__()
         self._session = requests.Session()
         self._session.headers.update(_HEADERS)
 
@@ -92,7 +93,8 @@ class TwitchFetcher(StreamFetcher):
         channel_name = variables.get("login", "")
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                resp = self._session.post(_GQL_URL, json=payload, timeout=10)
+                with self._http_lock:
+                    resp = self._session.post(_GQL_URL, json=payload, timeout=10)
                 if resp.status_code == 403:
                     logger.warning(
                         "Twitch returned 403 for %s (attempt %d/%d), "
@@ -181,23 +183,18 @@ class TwitchFetcher(StreamFetcher):
             )
             return None
 
-    def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
+    def get_latest_finished_vod(
+        self,
+        channel_name: str,
+        *,
+        items: list | None = None,
+    ) -> FinishedVod | None:
         return self.get_latest_archive(channel_name)
 
     def get_latest_archive_url(self, channel_name: str) -> str | None:
         """Return the most recent VOD URL for *channel_name*, if available."""
         archive = self.get_latest_archive(channel_name)
         return archive.url if archive else None
-
-    def is_live(self, channel_name: str) -> bool:
-        data = self._query(channel_name)
-        if data is None:
-            return False
-        try:
-            stream = data["data"]["user"]["stream"]
-            return stream is not None and stream.get("type") == "live"
-        except (KeyError, TypeError):
-            return False
 
     def get_stream_info(self, channel_name: str) -> StreamInfo | None:
         data = self._query(channel_name)

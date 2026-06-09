@@ -2191,6 +2191,94 @@ def test_open_with_browser_settings_skips_win32_management_without_isolation(
         _reset_tracked_hwnds()
 
 
+def test_open_url_webbrowser_does_not_block_without_custom_browser(
+    monkeypatch,
+) -> None:
+    _reset_tracked_hwnds()
+    try:
+        monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+        monkeypatch.setattr(notifier.webbrowser, "open", lambda *_a, **_k: True)
+        url = "https://www.twitch.tv/example"
+        assert notifier.open_url(url) is True
+        assert url not in notifier._TITLE_FALLBACK_BLOCKED_URLS
+    finally:
+        _reset_tracked_hwnds()
+
+
+def test_open_url_custom_failure_blocks_title_fallback_when_close_enabled(
+    monkeypatch,
+) -> None:
+    _reset_tracked_hwnds()
+    try:
+        monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+        monkeypatch.setattr(
+            notifier, "_open_with_browser_settings", lambda *_a, **_k: False
+        )
+        monkeypatch.setattr(notifier.webbrowser, "open", lambda *_a, **_k: True)
+        url = "https://www.twitch.tv/example"
+        settings = {
+            "enabled": True,
+            "browser_path": "chrome",
+            "close_on_offline": True,
+            "user_data_dir": "",
+            "per_channel_profile": False,
+        }
+        assert notifier.open_url(url, settings) is True
+        assert url in notifier._TITLE_FALLBACK_BLOCKED_URLS
+    finally:
+        _reset_tracked_hwnds()
+
+
+def test_browser_window_tracking_requires_new_window_or_app_mode() -> None:
+    base = {
+        "enabled": True,
+        "user_data_dir": "/tmp/profile",
+        "per_channel_profile": False,
+    }
+    assert notifier.browser_window_tracking_available(
+        {**base, "new_window": True, "app_mode": False}
+    )
+    assert notifier.browser_window_tracking_available(
+        {**base, "new_window": False, "app_mode": True}
+    )
+    assert not notifier.browser_window_tracking_available(
+        {**base, "new_window": False, "app_mode": False}
+    )
+    assert not notifier.browser_window_tracking_available(
+        {
+            "enabled": True,
+            "user_data_dir": "",
+            "per_channel_profile": False,
+            "new_window": True,
+        }
+    )
+
+
+def test_browser_isolation_available_requires_enabled_profile() -> None:
+    assert notifier.browser_isolation_available(None) is False
+    assert notifier.browser_isolation_available({"enabled": False}) is False
+    assert (
+        notifier.browser_isolation_available(
+            {
+                "enabled": True,
+                "user_data_dir": "",
+                "per_channel_profile": False,
+            }
+        )
+        is False
+    )
+    assert (
+        notifier.browser_isolation_available(
+            {
+                "enabled": True,
+                "user_data_dir": "/tmp/profile",
+                "per_channel_profile": False,
+            }
+        )
+        is True
+    )
+
+
 def test_open_with_browser_settings_blocks_title_fallback_without_isolation_for_tabs(
     monkeypatch,
 ) -> None:

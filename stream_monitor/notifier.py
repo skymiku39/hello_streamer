@@ -237,6 +237,51 @@ def _default_browser_profile_root() -> str:
     return default_browser_profile_dir()
 
 
+def _close_features_enabled(settings: dict[str, Any]) -> bool:
+    return any(
+        bool(settings.get(flag))
+        for flag in (
+            "close_on_offline",
+            "close_off_topic_pages",
+            "close_on_stop",
+        )
+    )
+
+
+def browser_window_tracking_available(
+    settings: dict[str, Any] | None,
+    url: str = "https://www.twitch.tv/example",
+) -> bool:
+    """True when Win32 HWND tracking and managed close can work.
+
+    Requires a dedicated profile **and** a launch mode that creates a new
+  top-level browser window (``app_mode`` or ``new_window``). Opening as a
+    tab in an existing window cannot be tracked or closed reliably.
+    """
+    if not browser_isolation_available(settings, url):
+        return False
+    if not settings:
+        return False
+    return bool(settings.get("app_mode")) or bool(settings.get("new_window", True))
+
+
+def browser_isolation_available(
+    settings: dict[str, Any] | None,
+    url: str = "https://www.twitch.tv/example",
+) -> bool:
+    """True when custom-browser launches can use a dedicated profile.
+
+    HWND tracking and safe close-on-offline / off-topic pruning depend on
+    this isolation. Without it, title-keyword fallbacks can close unrelated
+    browser windows that merely mention a channel name.
+    """
+    if not settings or not settings.get("enabled"):
+        return False
+    base_dir = (settings.get("user_data_dir") or "").strip()
+    per_channel = bool(settings.get("per_channel_profile", True))
+    return bool(_resolve_effective_user_data_dir(url, base_dir, per_channel))
+
+
 def _resolve_effective_user_data_dir(
     url: str, base_dir: str, per_channel: bool
 ) -> str:
@@ -581,15 +626,26 @@ def open_url(
 
     hints_tuple = tuple(title_hints or ())
 
+    custom_launch_failed = False
     if browser_settings and browser_settings.get("enabled"):
         if _open_with_browser_settings(
             url, browser_settings, title_hints=hints_tuple
         ):
             return True
+        custom_launch_failed = True
+
+    block_fallback = (
+        _is_windows()
+        and custom_launch_failed
+        and browser_settings is not None
+        and _close_features_enabled(browser_settings)
+    )
 
     try:
         opened = webbrowser.open(url, new=2)
         if opened is not False:
+            if block_fallback:
+                _block_title_fallback_for_url(url)
             return True
         logger.warning("webbrowser.open returned False for URL: %s", url)
     except Exception:
@@ -598,6 +654,8 @@ def open_url(
     if platform.system() == "Windows":
         try:
             os.startfile(url)  # type: ignore[attr-defined]
+            if block_fallback:
+                _block_title_fallback_for_url(url)
             return True
         except OSError:
             logger.exception("Failed to open URL with Windows shell: %s", url)

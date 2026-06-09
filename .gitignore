@@ -165,6 +165,9 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# Local PyInstaller release artifacts (official builds live on GitHub Releases).
+release/
+
 # Hello Streamer runtime data
 # Per-user browser profile created on demand by the Browser Settings dialog.
 browser_profile/

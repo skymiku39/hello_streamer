@@ -61,6 +61,7 @@ from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelEntry, ChannelStatus, Monitor
 from stream_monitor.notifier import (
     action_for_stream_status,
+    browser_window_tracking_available,
     close_all_tracked_windows,
     close_browser_window_for_url,
     execute_action,
@@ -70,7 +71,7 @@ from stream_monitor.notifier import (
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
 from stream_monitor.tray import TrayIcon
-from stream_monitor.util import channel_key
+from stream_monitor.util import channel_key, channel_page_url
 
 logger = logging.getLogger(__name__)
 
@@ -321,13 +322,7 @@ class ChannelRow(ctk.CTkFrame):
                 pass
 
     def _channel_url(self) -> str:
-        plat = self.channel["platform"]
-        name = self.channel["name"]
-        if plat == "twitch":
-            return f"https://www.twitch.tv/{name}"
-        if name.startswith("UC"):
-            return f"https://www.youtube.com/channel/{name}"
-        return f"https://www.youtube.com/@{name}"
+        return channel_page_url(self.channel["platform"], self.channel["name"])
 
     def _open_channel_page(self) -> None:
         open_url(self._channel_url(), self._get_browser_settings())
@@ -1531,20 +1526,29 @@ class App(ctk.CTk):
             self._apply_display_names(display_names)
             for row in self._channel_rows:
                 status = statuses.get(row.key)
-                if status is None and row._status_state in ("live", "offline"):
-                    logger.warning(
-                        "status_update missing snapshot for %s (row state=%s)",
-                        row.key,
-                        row._status_state,
-                    )
-                row.set_status(status)
+                if status is None:
+                    if row._status_state in ("live", "offline", "upcoming"):
+                        logger.warning(
+                            "status_update missing snapshot for %s (row state=%s)",
+                            row.key,
+                            row._status_state,
+                        )
+                        continue
+                    row.set_status(None)
+                else:
+                    row.set_status(status)
 
             # A monitor poll just completed — this is the natural cadence at
             # which to sweep tracked browser windows for "off-topic" drift.
             # We only run when the user opted in, and we tolerate the call
             # being a no-op on non-Windows (the helper returns 0).
             raw_browser_settings = self.config.get("browser_settings") or {}
-            if trigger_enabled and raw_browser_settings.get("close_off_topic_pages"):
+            if (
+                trigger_enabled
+                and raw_browser_settings.get("enabled")
+                and raw_browser_settings.get("close_off_topic_pages")
+                and browser_window_tracking_available(raw_browser_settings)
+            ):
                 try:
                     closed = prune_off_topic_tracked_windows()
                     if closed:
@@ -1553,6 +1557,15 @@ class App(ctk.CTk):
                         )
                 except Exception:
                     logger.exception("off-topic prune failed")
+            elif (
+                trigger_enabled
+                and raw_browser_settings.get("close_off_topic_pages")
+                and not browser_window_tracking_available(raw_browser_settings)
+            ):
+                logger.debug(
+                    "Skipped off-topic prune: HWND window tracking unavailable "
+                    "(need dedicated profile and app mode or separate window)"
+                )
 
         configured_action = self.config.get("action", "open_and_stop")
         browser_settings = self._current_browser_settings()
@@ -1600,7 +1613,9 @@ class App(ctk.CTk):
         if (
             trigger_enabled
             and offline_events
+            and browser_settings
             and browser_settings.get("close_on_offline")
+            and browser_window_tracking_available(browser_settings)
             and not skip_close_on_offline
         ):
             for entry, offline_info in offline_events:
@@ -1630,15 +1645,19 @@ class App(ctk.CTk):
         url = getattr(offline_info, "url", "") or ""
         if not url:
             return
-        # Build a small list of keywords for the title-fallback path:
-        # the channel slug (e.g. "Kaicenat") and the display name help when
-        # the URL was opened via webbrowser (no HWND tracking).
-        keywords: list[str] = []
-        if entry.name:
-            keywords.append(entry.name)
-        display_name = getattr(offline_info, "display_name", "") or ""
-        if display_name and display_name not in keywords:
-            keywords.append(display_name)
+        # Title-keyword fallback is only safe when we launched with a dedicated
+        # profile (HWND tracking). Shared-profile / webbrowser opens register
+        # a one-shot block instead; still pass keywords only when isolation is
+        # available so a stale block cannot be bypassed by config drift.
+        settings = self._current_browser_settings()
+        keywords: list[str] | None = None
+        if settings and browser_window_tracking_available(settings, url):
+            keywords = []
+            if entry.name:
+                keywords.append(entry.name)
+            display_name = getattr(offline_info, "display_name", "") or ""
+            if display_name and display_name not in keywords:
+                keywords.append(display_name)
         try:
             closed = close_browser_window_for_url(url, title_keywords=keywords)
         except Exception:
