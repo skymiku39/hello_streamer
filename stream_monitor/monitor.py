@@ -44,8 +44,8 @@ _STYLE_TO_STATUS = {
 # just opened. Requiring two consecutive misses makes both problems go away
 # while still bounding worst-case latency to two poll intervals.
 _OFFLINE_STRIKE_THRESHOLD = 2
-# After a long poll gap (e.g. system sleep), skip strike accumulation for
-# fetch failures on the first poll back — network may not be ready yet.
+# After a long wall-clock gap (e.g. system sleep), run a wake verification
+# poll before the next regular cycle — confirm cached state or defer edges.
 _POST_RESUME_GAP_MULTIPLIER = 2
 _FETCH_FAILURE_REASONS = frozenset({"fetch returned None", "fetch exception"})
 # Log unchanged channel status every N poll cycles (per channel) for diagnostics.
@@ -243,11 +243,17 @@ class Monitor:
         self._stable_status_polls: dict[str, int] = {}
         self._probe_snapshots: dict[str, _ProbeSnapshot] = {}
         self._last_poll_ended: float = 0.0
-        self._poll_post_resume_grace = False
+        self._last_poll_wall_started: float = 0.0
+        self._wake_verify_mode = False
+        self._wake_verify_active = False
 
     @property
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def wake_verify_active(self) -> bool:
+        return self._wake_verify_active
 
     def snapshot_statuses(self) -> dict[str, Any]:
         with self._lock:
@@ -339,6 +345,14 @@ class Monitor:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def restart_thread(self) -> None:
+        """Restart the polling thread without clearing in-memory channel state."""
+        if self.is_running:
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread is not None:
@@ -359,27 +373,32 @@ class Monitor:
             self._stop_event.wait(max(0.0, self._interval - elapsed))
 
     def _execute_poll_cycle(self, poll_started: float) -> float:
-        if self._last_poll_ended > 0:
-            gap = poll_started - self._last_poll_ended
+        wall_now = time.time()
+        run_wake_verify = False
+        if self._last_poll_wall_started > 0:
+            wall_gap = wall_now - self._last_poll_wall_started
             grace_threshold = self._interval * _POST_RESUME_GAP_MULTIPLIER
-            self._poll_post_resume_grace = gap > grace_threshold
-            if self._poll_post_resume_grace:
+            if wall_gap > grace_threshold:
+                run_wake_verify = True
                 logger.info(
-                    "post_resume_grace: gap=%.1fs > %.1fs, "
-                    "fetch failures won't count strikes this poll",
-                    gap,
+                    "wake_verify_scheduled: wall_gap=%.1fs > %.1fs",
+                    wall_gap,
                     grace_threshold,
                 )
-        else:
-            self._poll_post_resume_grace = False
+        self._last_poll_wall_started = wall_now
 
         self._poll_cycle += 1
         with self._lock:
             entries = list(self._entries)
-            self._pending_offline_events.clear()
-            self._probe_snapshots.clear()
 
         enabled_entries = [e for e in entries if e.enabled]
+
+        if run_wake_verify and enabled_entries:
+            return self._run_wake_verification(enabled_entries, poll_started)
+
+        with self._lock:
+            self._pending_offline_events.clear()
+            self._probe_snapshots.clear()
         enabled_count = len(enabled_entries)
         offline_count = 0
         went_live_count = 0
@@ -520,6 +539,150 @@ class Monitor:
         return elapsed
 
     # ------------------------------------------------------------------
+    # Wake verification (after long pause / sleep)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _status_bucket(status: Any) -> str:
+        if status is True or status == "live":
+            return "live"
+        if status == "upcoming":
+            return "upcoming"
+        return "offline"
+
+    def _cached_status_bucket(self, entry: ChannelEntry) -> str:
+        with self._lock:
+            prev = self._last_status.get(entry.key)
+        if prev is None:
+            return "offline"
+        if isinstance(prev, ChannelStatus):
+            return self._status_bucket(prev.status)
+        return self._status_bucket(prev)
+
+    def _probe_channel_status(self, entry: ChannelEntry) -> str | None:
+        """Lightweight live/offline/upcoming probe for wake verification."""
+        try:
+            fetcher = get_fetcher(entry.platform)
+        except Exception:
+            logger.exception("wake_verify: no fetcher for %s", entry.key)
+            return None
+
+        if entry.platform == "twitch":
+            try:
+                info = fetcher.get_stream_info(entry.name)
+            except Exception:
+                logger.exception("wake_verify: fetch error for %s", entry.key)
+                return None
+            if info is None:
+                return None
+            return "live" if info.is_live else "offline"
+
+        try:
+            items = fetcher.get_channel_items(entry.name, fill_timing=False)
+        except Exception:
+            logger.exception("wake_verify: fetch error for %s", entry.key)
+            return None
+        if items is None:
+            return None
+        if any(item.style == "LIVE" for item in items):
+            return "live"
+        upcoming = self._pick_youtube_upcoming_from_items(items)
+        if upcoming is not None:
+            return "upcoming"
+        if items:
+            return "offline"
+        try:
+            info = fetcher.get_stream_info(entry.name)
+        except Exception:
+            logger.exception("wake_verify: fallback error for %s", entry.key)
+            return None
+        if info is None:
+            return None
+        if info.is_live:
+            return "live"
+        if (
+            info.stream_status == "upcoming"
+            and _youtube_upcoming_is_usable(info.scheduled_start)
+        ):
+            return "upcoming"
+        return "offline"
+
+    def _run_wake_verification(
+        self,
+        enabled_entries: list[ChannelEntry],
+        poll_started: float,
+    ) -> float:
+        """Extra poll after wake: refresh when API agrees with cache, else defer."""
+        self._wake_verify_active = True
+        self._wake_verify_mode = True
+        confirmed = 0
+        deferred = 0
+        try:
+            with self._lock:
+                self._pending_offline_events.clear()
+                self._probe_snapshots.clear()
+
+            for entry in enabled_entries:
+                if self._stop_event.is_set():
+                    break
+                cached = self._cached_status_bucket(entry)
+                observed = self._probe_channel_status(entry)
+                if observed is None:
+                    deferred += 1
+                    logger.info(
+                        "wake_verify_deferred %s: fetch unavailable "
+                        "cached=%s",
+                        entry.key,
+                        cached,
+                    )
+                    continue
+                if observed != cached:
+                    deferred += 1
+                    logger.info(
+                        "wake_verify_deferred %s: mismatch cached=%s "
+                        "observed=%s",
+                        entry.key,
+                        cached,
+                        observed,
+                    )
+                    continue
+
+                confirmed += 1
+                logger.info(
+                    "wake_verify_confirmed %s: cached=%s observed=%s",
+                    entry.key,
+                    cached,
+                    observed,
+                )
+                try:
+                    self._probe_live(entry)
+                    commit = self._refresh_details(entry)
+                    commit()
+                except Exception:
+                    logger.exception(
+                        "wake_verify refresh failed for %s", entry.key
+                    )
+
+            if self._on_poll_complete:
+                try:
+                    self._on_poll_complete()
+                except Exception:
+                    logger.exception("on_poll_complete callback error")
+        finally:
+            self._wake_verify_mode = False
+            self._wake_verify_active = False
+
+        elapsed = time.monotonic() - poll_started
+        logger.info(
+            "Wake verify complete: enabled=%d confirmed=%d deferred=%d "
+            "total=%.2fs",
+            len(enabled_entries),
+            confirmed,
+            deferred,
+            elapsed,
+        )
+        return elapsed
+
+    # ------------------------------------------------------------------
     # Dispatch
     # ------------------------------------------------------------------
     _noop_commit: Callable[[], None] = staticmethod(lambda: None)  # type: ignore[assignment]
@@ -541,17 +704,7 @@ class Monitor:
         """
         if prev_status is not True:
             return "noop"
-        if (
-            self._poll_post_resume_grace
-            and reason in _FETCH_FAILURE_REASONS
-        ):
-            logger.info(
-                "%s %s: post_resume_grace skipping strike reason=%s "
-                "prev_status=True kept=True",
-                label,
-                entry.key,
-                reason,
-            )
+        if self._wake_verify_mode:
             return "hold"
         strikes = self._offline_strikes.get(live_key, 0) + 1
         if strikes < _OFFLINE_STRIKE_THRESHOLD:
@@ -956,6 +1109,8 @@ class Monitor:
         fetcher: Any | None = None,
     ) -> None:
         """Commit twitch channel to offline and queue went_offline. Caller holds ``_lock``."""
+        if self._wake_verify_mode:
+            return
         payload = self._live_payload.pop(live_key, None) or self._offline_payload_for(
             entry, live_key, prev
         )
@@ -971,6 +1126,8 @@ class Monitor:
         self, entry: ChannelEntry, prev: Any, *, label: str
     ) -> None:
         """Sweep all payloads for this channel and queue went_offline. Caller holds ``_lock``."""
+        if self._wake_verify_mode:
+            return
         payloads_to_emit: list[OfflineInfo] = []
         for k in list(self._live_payload.keys()):
             if _entry_key_from_live_cache_key(k) == entry.key:
@@ -1172,6 +1329,9 @@ class Monitor:
         snap.twitch_info = info
         snap.fetcher = fetcher
 
+        if self._wake_verify_mode:
+            return []
+
         went_live = info.is_live and prev_status is not True
         if went_live:
             logger.info(
@@ -1276,6 +1436,30 @@ class Monitor:
         snap.fetcher = fetcher
         snap.youtube_items = items
         if not items:
+            with self._lock:
+                prev = self._last_status.get(entry.key)
+                prev_status = (
+                    prev.status if isinstance(prev, ChannelStatus) else prev
+                )
+                was_fallback_live = entry.key in self._fallback_triggered_live
+            if (
+                was_fallback_live
+                and prev_status is True
+                and not self._wake_verify_mode
+            ):
+                live_key = _live_cache_key(entry.key)
+                with self._lock:
+                    miss = self._record_offline_miss(
+                        entry,
+                        live_key,
+                        prev_status,
+                        label="YouTube",
+                        reason="empty tidus feed",
+                    )
+                if miss == "hold":
+                    snap.youtube_fallback = True
+                    snap.youtube_fallback_hold = True
+                    return []
             snap.youtube_fallback = True
             return self._probe_youtube_fallback_live(entry, fetcher, snap)
 
@@ -1352,6 +1536,8 @@ class Monitor:
             new_events.append((entry, info))
 
         snap.youtube_pending_seen = pending_seen
+        if self._wake_verify_mode:
+            return []
         return new_events
 
     def _refresh_youtube(
@@ -1529,6 +1715,9 @@ class Monitor:
                 self._display_names[entry.key] = info.display_name
 
         snap.youtube_fallback_info = info
+
+        if self._wake_verify_mode:
+            return []
 
         went_live = info.is_live and prev_status is not True
         if went_live:

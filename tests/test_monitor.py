@@ -2411,32 +2411,143 @@ def test_twitch_fetch_exception_increments_strike_when_was_live(
     db.close()
 
 
-def test_post_resume_grace_skips_fetch_none_strike(
+def test_wake_verify_same_live_refreshes_no_event(
     monkeypatch, tmp_path, caplog,
 ) -> None:
-    """After a long poll gap, fetch failures must not accumulate strikes."""
-    fetcher = FakeTwitchFetcherReadings([True, None])
+    fetcher = FakeTwitchFetcherReadings([True, True])
     monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
+    events: list[tuple[str, str]] = []
     monitor = Monitor(
         channels=[{"platform": "twitch", "name": "hello"}],
-        interval=60,
+        on_status_change=lambda entry, info: events.append((entry.key, info.title)),
         db=db,
     )
     entry = ChannelEntry(platform="twitch", name="hello")
-
     _check_and_commit(monitor, entry)
-    with monitor._lock:
-        assert monitor._last_status["twitch:hello"].status is True
 
-    monitor._poll_post_resume_grace = True
+    monkeypatch.setattr(monitor, "_probe_channel_status", lambda _e: "live")
     caplog.set_level(logging.INFO)
+    monitor._run_wake_verification([entry], time.monotonic())
+
+    assert events == []
+    with monitor._lock:
+        assert monitor._last_status["twitch:hello"].status is True
+    assert any("wake_verify_confirmed" in r.message for r in caplog.records)
+    db.close()
+
+
+def test_wake_verify_mismatch_defers_offline(
+    monkeypatch, tmp_path, caplog,
+) -> None:
+    fetcher = FakeTwitchFetcherReadings([False])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(
+            status=True,
+            url="https://www.twitch.tv/hello",
+            title="Live",
+        )
+
+    monkeypatch.setattr(monitor, "_probe_channel_status", lambda _e: "offline")
+    caplog.set_level(logging.INFO)
+    monitor._run_wake_verification([entry], time.monotonic())
+
+    with monitor._lock:
+        assert monitor._last_status[entry.key].status is True
+        assert monitor._pending_offline_events == []
+    assert any("wake_verify_deferred" in r.message for r in caplog.records)
+    db.close()
+
+
+def test_wake_verify_fetch_none_deferred(
+    monkeypatch, tmp_path, caplog,
+) -> None:
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(
+            status=True,
+            url="https://www.twitch.tv/hello",
+            title="Live",
+        )
+
+    monkeypatch.setattr(monitor, "_probe_channel_status", lambda _e: None)
+    caplog.set_level(logging.INFO)
+    monitor._run_wake_verification([entry], time.monotonic())
+
+    with monitor._lock:
+        assert monitor._last_status[entry.key].status is True
+    assert any("wake_verify_deferred" in r.message for r in caplog.records)
+    db.close()
+
+
+def test_restart_thread_preserves_last_status(monkeypatch, tmp_path) -> None:
+    fetcher = FakeTwitchFetcherReadings([True])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
     _check_and_commit(monitor, entry)
 
     with monitor._lock:
-        assert monitor._last_status["twitch:hello"].status is True
-        assert monitor._offline_strikes.get("twitch:hello|_") is None
-    assert any("post_resume_grace" in r.message for r in caplog.records)
+        expected = monitor._last_status[entry.key]
+        monitor._twitch_seen_live.add(entry.key)
+        monitor._offline_strikes["twitch:hello|_"] = 1
+
+    monkeypatch.setattr(monitor, "_run", lambda: None)
+    monitor.stop()
+    monitor.restart_thread()
+    time.sleep(0.1)
+    try:
+        with monitor._lock:
+            assert monitor._last_status[entry.key] == expected
+            assert entry.key in monitor._twitch_seen_live
+            assert monitor._offline_strikes.get("twitch:hello|_") == 1
+    finally:
+        monitor.stop()
+    db.close()
+
+
+def test_empty_tidus_feed_strike_before_fallback(
+    monkeypatch, tmp_path,
+) -> None:
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[[]],
+        info_batches=[
+            StreamInfo(
+                channel="yt",
+                platform="youtube",
+                is_live=False,
+                title="",
+                url="",
+            ),
+        ],
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(
+            status=True,
+            url="https://www.youtube.com/watch?v=live1",
+            title="Live Stream",
+        )
+        monitor._fallback_triggered_live[entry.key] = "Live Stream"
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._last_status[entry.key].status is True
+        assert monitor._offline_strikes.get("youtube:yt|_") == 1
+        assert monitor._pending_offline_events == []
     db.close()
 
 

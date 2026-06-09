@@ -776,7 +776,7 @@ class App(ctk.CTk):
         self._populate_channels()
         self._poll_events()
         self._tick_elapsed_labels()
-        self.after(30_000, self._monitor_health_check)
+        self.after(10_000, self._monitor_health_check)
 
         self._unsub_i18n = i18n.subscribe(self._on_language_changed)
 
@@ -1357,6 +1357,10 @@ class App(ctk.CTk):
         if self._monitor and self._monitor.is_running:
             self._monitor.update_interval(interval)
             self._monitor.update_channels(channels)
+        elif self._monitor is not None:
+            self._monitor.update_interval(interval)
+            self._monitor.update_channels(channels)
+            self._monitor.restart_thread()
         else:
             self._monitor = Monitor(
                 channels=channels,
@@ -1475,20 +1479,26 @@ class App(ctk.CTk):
 
     def _monitor_health_check(self) -> None:
         """Restart the background monitor if its thread died unexpectedly."""
-        if self._monitor_mode in ("trigger", "watch"):
-            if self._monitor is not None and not self._monitor.is_running:
-                logger.warning(
-                    "Monitor thread died unexpectedly (mode=%s), restarting",
-                    self._monitor_mode,
-                )
-                if self._ensure_monitor_running():
-                    if self._monitor_mode == "trigger":
-                        self._set_status_text("status.monitor_restarted", _CLR_LIVE)
-                        self._tray.update_tooltip_key("tray.tooltip.trigger")
-                    else:
-                        self._set_status_text("status.monitor_restarted", "#64b5f6")
-                        self._tray.update_tooltip_key("tray.tooltip.watch")
-        self.after(30_000, self._monitor_health_check)
+        self._maybe_restart_dead_monitor()
+        self.after(10_000, self._monitor_health_check)
+
+    def _maybe_restart_dead_monitor(self) -> None:
+        if self._monitor_mode not in ("trigger", "watch"):
+            return
+        if self._monitor is None or self._monitor.is_running:
+            return
+        logger.warning(
+            "Monitor thread died unexpectedly (mode=%s), restarting",
+            self._monitor_mode,
+        )
+        if not self._ensure_monitor_running():
+            return
+        if self._monitor_mode == "trigger":
+            self._set_status_text("status.monitor_restarted", _CLR_LIVE)
+            self._tray.update_tooltip_key("tray.tooltip.trigger")
+        else:
+            self._set_status_text("status.monitor_restarted", "#64b5f6")
+            self._tray.update_tooltip_key("tray.tooltip.watch")
 
     def _poll_events(self) -> None:
         live_events: list[tuple[ChannelEntry, StreamInfo]] = []
@@ -1584,8 +1594,14 @@ class App(ctk.CTk):
             elif action == "open_and_exit":
                 should_exit = True
 
-        if trigger_enabled and offline_events and browser_settings.get(
-            "close_on_offline"
+        skip_close_on_offline = (
+            self._monitor is not None and self._monitor.wake_verify_active
+        )
+        if (
+            trigger_enabled
+            and offline_events
+            and browser_settings.get("close_on_offline")
+            and not skip_close_on_offline
         ):
             for entry, offline_info in offline_events:
                 # close_on_offline must respect monitor-only too — we never
@@ -1604,6 +1620,7 @@ class App(ctk.CTk):
         elif should_exit:
             self._quit_app()
 
+        self._maybe_restart_dead_monitor()
         self.after(500, self._poll_events)
 
     def _handle_channel_offline(
