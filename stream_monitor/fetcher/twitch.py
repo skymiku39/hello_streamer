@@ -123,7 +123,16 @@ class TwitchFetcher(StreamFetcher):
                 if attempt < _MAX_RETRIES:
                     time.sleep(_RETRY_DELAY)
             except requests.RequestException as exc:
-                logger.warning("Twitch request failed for %s: %s", channel_name, exc)
+                logger.warning(
+                    "Twitch request failed for %s: %s (attempt %d/%d)",
+                    channel_name,
+                    exc,
+                    attempt + 1,
+                    _MAX_RETRIES + 1,
+                )
+                if attempt < _MAX_RETRIES:
+                    time.sleep(_RETRY_DELAY)
+                    continue
                 return None
             except ValueError as exc:
                 logger.warning("Invalid JSON from Twitch for %s: %s", channel_name, exc)

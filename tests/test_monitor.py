@@ -2356,3 +2356,116 @@ def test_run_tier_gap_youtube_status(monkeypatch, tmp_path) -> None:
         assert row.status is False
         assert row.upcoming_url
     db.close()
+
+
+def test_run_survives_probe_exception(monkeypatch, tmp_path) -> None:
+    """An uncaught probe error must not kill the background monitor thread."""
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hello"}],
+        interval=1,
+        db=db,
+    )
+
+    def _boom(_entry: ChannelEntry) -> list:
+        raise RuntimeError("probe boom")
+
+    monkeypatch.setattr(monitor, "_probe_live", _boom)
+    monitor.start()
+    time.sleep(2.5)
+    try:
+        assert monitor.is_running
+    finally:
+        monitor.stop()
+    db.close()
+
+
+def test_twitch_fetch_exception_increments_strike_when_was_live(
+    monkeypatch, tmp_path,
+) -> None:
+    """Fetch exceptions while LIVE count toward offline strikes (not frozen)."""
+    fetcher = FakeTwitchFetcherReadings([True])
+    calls = {"n": 0}
+    orig_get = fetcher.get_stream_info
+
+    def flaky_get(channel_name: str):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return orig_get(channel_name)
+        raise RuntimeError("parse error")
+
+    monkeypatch.setattr(fetcher, "get_stream_info", flaky_get)
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._last_status["twitch:hello"].status is True
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._last_status["twitch:hello"].status is True
+        assert monitor._offline_strikes.get("twitch:hello|_") == 1
+    db.close()
+
+
+def test_post_resume_grace_skips_fetch_none_strike(
+    monkeypatch, tmp_path, caplog,
+) -> None:
+    """After a long poll gap, fetch failures must not accumulate strikes."""
+    fetcher = FakeTwitchFetcherReadings([True, None])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hello"}],
+        interval=60,
+        db=db,
+    )
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        assert monitor._last_status["twitch:hello"].status is True
+
+    monitor._poll_post_resume_grace = True
+    caplog.set_level(logging.INFO)
+    _check_and_commit(monitor, entry)
+
+    with monitor._lock:
+        assert monitor._last_status["twitch:hello"].status is True
+        assert monitor._offline_strikes.get("twitch:hello|_") is None
+    assert any("post_resume_grace" in r.message for r in caplog.records)
+    db.close()
+
+
+def test_youtube_tidus_fetch_failure_counts_strike_not_fallback(
+    monkeypatch, tmp_path,
+) -> None:
+    """TIDUS HTTP failure (None) must not be treated as an empty feed."""
+    fetcher = FakeYouTubeFetcher(items_batches=[])
+    monkeypatch.setattr(
+        fetcher,
+        "get_channel_items",
+        lambda _name, **kwargs: None,
+    )
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(
+            status=True,
+            url="https://www.youtube.com/watch?v=live1",
+            title="Live Stream",
+        )
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        snap = monitor._probe_snapshots.get(entry.key)
+        assert snap is None or not snap.youtube_fallback
+        assert monitor._last_status[entry.key].status is True
+        assert monitor._offline_strikes.get("youtube:yt|_") == 1
+    db.close()

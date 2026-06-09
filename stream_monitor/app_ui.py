@@ -107,6 +107,7 @@ def _status_bar_text_width() -> int:
         "status.trigger_running",
         "status.watching",
         "status.stopped",
+        "status.monitor_restarted",
     )
     return max(96, max(_measure_text(tr(k)) for k in keys) + 16)
 

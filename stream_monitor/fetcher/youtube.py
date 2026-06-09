@@ -128,7 +128,16 @@ class YouTubeFetcher(StreamFetcher):
                 if attempt < _MAX_RETRIES:
                     time.sleep(_RETRY_DELAY)
             except requests.RequestException as exc:
-                logger.warning("YouTube request failed for %s: %s", url, exc)
+                logger.warning(
+                    "YouTube request failed for %s: %s (attempt %d/%d)",
+                    url,
+                    exc,
+                    attempt + 1,
+                    _MAX_RETRIES + 1,
+                )
+                if attempt < _MAX_RETRIES:
+                    time.sleep(_RETRY_DELAY)
+                    continue
                 return None
         return None
 
@@ -429,11 +438,11 @@ class YouTubeFetcher(StreamFetcher):
     # ------------------------------------------------------------------
     def get_channel_items(
         self, channel_name: str, *, fill_timing: bool = True
-    ) -> list[VideoItem]:
+    ) -> list[VideoItem] | None:
         base = _channel_url(channel_name)
         html = self._fetch_page(f"{base}/streams")
         if html is None:
-            return []
+            return None
 
         data = self._extract_json_var(html, "ytInitialData")
         if not isinstance(data, dict):
@@ -600,6 +609,8 @@ class YouTubeFetcher(StreamFetcher):
 
     def get_latest_finished_vod(self, channel_name: str) -> FinishedVod | None:
         items = self.get_channel_items(channel_name)
+        if not items:
+            return None
         best: FinishedVod | None = None
         best_ended: datetime | None = None
         fallback: FinishedVod | None = None

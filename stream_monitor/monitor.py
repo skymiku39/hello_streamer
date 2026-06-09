@@ -44,6 +44,10 @@ _STYLE_TO_STATUS = {
 # just opened. Requiring two consecutive misses makes both problems go away
 # while still bounding worst-case latency to two poll intervals.
 _OFFLINE_STRIKE_THRESHOLD = 2
+# After a long poll gap (e.g. system sleep), skip strike accumulation for
+# fetch failures on the first poll back — network may not be ready yet.
+_POST_RESUME_GAP_MULTIPLIER = 2
+_FETCH_FAILURE_REASONS = frozenset({"fetch returned None", "fetch exception"})
 # Log unchanged channel status every N poll cycles (per channel) for diagnostics.
 _STABLE_STATUS_LOG_EVERY = 20
 _CONFIRMED_FUTURE_SLACK = timedelta(minutes=5)
@@ -238,6 +242,8 @@ class Monitor:
         self._poll_cycle = 0
         self._stable_status_polls: dict[str, int] = {}
         self._probe_snapshots: dict[str, _ProbeSnapshot] = {}
+        self._last_poll_ended: float = 0.0
+        self._poll_post_resume_grace = False
 
     @property
     def is_running(self) -> bool:
@@ -343,129 +349,175 @@ class Monitor:
     def _run(self) -> None:
         while not self._stop_event.is_set():
             poll_started = time.monotonic()
-            self._poll_cycle += 1
-            with self._lock:
-                entries = list(self._entries)
-                self._pending_offline_events.clear()
-                self._probe_snapshots.clear()
+            elapsed = 0.0
+            try:
+                elapsed = self._execute_poll_cycle(poll_started)
+            except Exception:
+                logger.exception("Poll cycle failed unexpectedly, continuing")
+                elapsed = time.monotonic() - poll_started
+            self._last_poll_ended = time.monotonic()
+            self._stop_event.wait(max(0.0, self._interval - elapsed))
 
-            enabled_entries = [e for e in entries if e.enabled]
-            enabled_count = len(enabled_entries)
-            offline_count = 0
-            went_live_count = 0
-            commits: list[Callable[[], None]] = []
+    def _execute_poll_cycle(self, poll_started: float) -> float:
+        if self._last_poll_ended > 0:
+            gap = poll_started - self._last_poll_ended
+            grace_threshold = self._interval * _POST_RESUME_GAP_MULTIPLIER
+            self._poll_post_resume_grace = gap > grace_threshold
+            if self._poll_post_resume_grace:
+                logger.info(
+                    "post_resume_grace: gap=%.1fs > %.1fs, "
+                    "fetch failures won't count strikes this poll",
+                    gap,
+                    grace_threshold,
+                )
+        else:
+            self._poll_post_resume_grace = False
 
-            def _dispatch_live(
-                events: list[tuple[ChannelEntry, StreamInfo]],
-            ) -> None:
-                nonlocal went_live_count
-                for entry, info in events:
-                    went_live_count += 1
-                    if self._on_status_change:
-                        try:
-                            self._on_status_change(entry, info)
-                        except Exception:
-                            logger.exception(
-                                "on_status_change callback error for %s",
-                                entry.key,
-                            )
+        self._poll_cycle += 1
+        with self._lock:
+            entries = list(self._entries)
+            self._pending_offline_events.clear()
+            self._probe_snapshots.clear()
 
-            tier1_started = time.monotonic()
-            if (
-                enabled_entries
-                and self._max_concurrent > 1
-                and len(enabled_entries) > 1
-            ):
-                workers = min(self._max_concurrent, len(enabled_entries))
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    probe_futures = [
-                        pool.submit(self._probe_live, entry)
-                        for entry in enabled_entries
-                    ]
-                    for future in as_completed(probe_futures):
-                        if self._stop_event.is_set():
-                            break
-                        _dispatch_live(future.result())
-            else:
-                for entry in enabled_entries:
-                    if self._stop_event.is_set():
-                        break
-                    _dispatch_live(self._probe_live(entry))
+        enabled_entries = [e for e in entries if e.enabled]
+        enabled_count = len(enabled_entries)
+        offline_count = 0
+        went_live_count = 0
+        commits: list[Callable[[], None]] = []
 
-            if self._stop_event.is_set():
-                break
-
-            tier1_elapsed = time.monotonic() - tier1_started
-
-            if (
-                enabled_entries
-                and self._max_concurrent > 1
-                and len(enabled_entries) > 1
-            ):
-                workers = min(self._max_concurrent, len(enabled_entries))
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    refresh_futures = [
-                        pool.submit(self._refresh_details, entry)
-                        for entry in enabled_entries
-                    ]
-                    for future in as_completed(refresh_futures):
-                        if self._stop_event.is_set():
-                            break
-                        commits.append(future.result())
-            else:
-                for entry in enabled_entries:
-                    if self._stop_event.is_set():
-                        break
-                    commits.append(self._refresh_details(entry))
-
-            if self._stop_event.is_set():
-                break
-
-            for commit in commits:
-                if self._stop_event.is_set():
-                    break
-                commit()
-
-            if self._stop_event.is_set():
-                break
-
-            # Dispatch went-offline events *after* went-live so the UI sees
-            # transitions in a sensible order if both occur in the same poll.
-            with self._lock:
-                offline_batch = list(self._pending_offline_events)
-            offline_count = len(offline_batch)
-            for entry, offline_info in offline_batch:
-                if self._stop_event.is_set():
-                    break
-                if self._on_went_offline:
+        def _dispatch_live(
+            events: list[tuple[ChannelEntry, StreamInfo]],
+        ) -> None:
+            nonlocal went_live_count
+            for entry, info in events:
+                went_live_count += 1
+                if self._on_status_change:
                     try:
-                        self._on_went_offline(entry, offline_info)
+                        self._on_status_change(entry, info)
                     except Exception:
                         logger.exception(
-                            "on_went_offline callback error for %s", entry.key
+                            "on_status_change callback error for %s",
+                            entry.key,
                         )
 
+        tier1_started = time.monotonic()
+        if (
+            enabled_entries
+            and self._max_concurrent > 1
+            and len(enabled_entries) > 1
+        ):
+            workers = min(self._max_concurrent, len(enabled_entries))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                probe_futures = [
+                    pool.submit(self._probe_live, entry)
+                    for entry in enabled_entries
+                ]
+                for future in as_completed(probe_futures):
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        _dispatch_live(future.result())
+                    except Exception:
+                        logger.exception(
+                            "Tier-1 probe failed for a channel, skipping"
+                        )
+        else:
+            for entry in enabled_entries:
+                if self._stop_event.is_set():
+                    break
+                try:
+                    _dispatch_live(self._probe_live(entry))
+                except Exception:
+                    logger.exception(
+                        "Tier-1 probe failed for %s, skipping", entry.key
+                    )
+
+        if self._stop_event.is_set():
+            return time.monotonic() - poll_started
+
+        tier1_elapsed = time.monotonic() - tier1_started
+
+        if (
+            enabled_entries
+            and self._max_concurrent > 1
+            and len(enabled_entries) > 1
+        ):
+            workers = min(self._max_concurrent, len(enabled_entries))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                refresh_futures = [
+                    pool.submit(self._refresh_details, entry)
+                    for entry in enabled_entries
+                ]
+                for future in as_completed(refresh_futures):
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        commits.append(future.result())
+                    except Exception:
+                        logger.exception(
+                            "Tier-2 refresh failed for a channel, skipping"
+                        )
+        else:
+            for entry in enabled_entries:
+                if self._stop_event.is_set():
+                    break
+                try:
+                    commits.append(self._refresh_details(entry))
+                except Exception:
+                    logger.exception(
+                        "Tier-2 refresh failed for %s, skipping", entry.key
+                    )
+
+        if self._stop_event.is_set():
+            return time.monotonic() - poll_started
+
+        for commit in commits:
             if self._stop_event.is_set():
                 break
+            try:
+                commit()
+            except Exception:
+                logger.exception("Tier-2 commit failed, skipping")
 
-            if self._on_poll_complete:
+        if self._stop_event.is_set():
+            return time.monotonic() - poll_started
+
+        # Dispatch went-offline events *after* went-live so the UI sees
+        # transitions in a sensible order if both occur in the same poll.
+        with self._lock:
+            offline_batch = list(self._pending_offline_events)
+        offline_count = len(offline_batch)
+        for entry, offline_info in offline_batch:
+            if self._stop_event.is_set():
+                break
+            if self._on_went_offline:
                 try:
-                    self._on_poll_complete()
+                    self._on_went_offline(entry, offline_info)
                 except Exception:
-                    logger.exception("on_poll_complete callback error")
+                    logger.exception(
+                        "on_went_offline callback error for %s", entry.key
+                    )
 
-            elapsed = time.monotonic() - poll_started
-            logger.info(
-                "Poll complete: enabled=%d went_live=%d went_offline=%d "
-                "tier1=%.2fs total=%.2fs",
-                enabled_count,
-                went_live_count,
-                offline_count,
-                tier1_elapsed,
-                elapsed,
-            )
+        if self._stop_event.is_set():
+            return time.monotonic() - poll_started
 
-            self._stop_event.wait(max(0.0, self._interval - elapsed))
+        if self._on_poll_complete:
+            try:
+                self._on_poll_complete()
+            except Exception:
+                logger.exception("on_poll_complete callback error")
+
+        elapsed = time.monotonic() - poll_started
+        logger.info(
+            "Poll complete: enabled=%d went_live=%d went_offline=%d "
+            "tier1=%.2fs total=%.2fs",
+            enabled_count,
+            went_live_count,
+            offline_count,
+            tier1_elapsed,
+            elapsed,
+        )
+        return elapsed
 
     # ------------------------------------------------------------------
     # Dispatch
@@ -489,6 +541,18 @@ class Monitor:
         """
         if prev_status is not True:
             return "noop"
+        if (
+            self._poll_post_resume_grace
+            and reason in _FETCH_FAILURE_REASONS
+        ):
+            logger.info(
+                "%s %s: post_resume_grace skipping strike reason=%s "
+                "prev_status=True kept=True",
+                label,
+                entry.key,
+                reason,
+            )
+            return "hold"
         strikes = self._offline_strikes.get(live_key, 0) + 1
         if strikes < _OFFLINE_STRIKE_THRESHOLD:
             self._offline_strikes[live_key] = strikes
@@ -544,6 +608,8 @@ class Monitor:
             items = fetcher.get_channel_items(entry.name)
         except Exception:
             logger.exception("Failed to fetch YouTube channel items for %s", entry.key)
+            return None
+        if items is None:
             return None
         return self._pick_youtube_upcoming_from_items(items)
 
@@ -939,6 +1005,7 @@ class Monitor:
         *,
         label: str,
         snap: _ProbeSnapshot | None = None,
+        reason: str = "fetch returned None",
     ) -> list[tuple[ChannelEntry, StreamInfo]]:
         """Treat fetch failures like offline misses when we still believe LIVE."""
         live_key = _live_cache_key(entry.key)
@@ -953,14 +1020,15 @@ class Monitor:
                     live_key,
                     prev_status,
                     label=label,
-                    reason="fetch returned None",
+                    reason=reason,
                 )
                 if miss == "hold":
                     logger.warning(
-                        "%s %s: fetch returned None, treating as offline miss "
+                        "%s %s: %s, treating as offline miss "
                         "(%d/%d) prev_status=True kept=True",
                         label,
                         entry.key,
+                        reason,
                         self._offline_strikes.get(live_key, 0),
                         _OFFLINE_STRIKE_THRESHOLD,
                     )
@@ -984,9 +1052,10 @@ class Monitor:
                 return []
 
             logger.warning(
-                "%s %s: fetch returned None, keeping prev_status=%s strikes=%s",
+                "%s %s: %s, keeping prev_status=%s strikes=%s",
                 label,
                 entry.key,
+                reason,
                 prev_status,
                 strikes_before,
             )
@@ -1042,7 +1111,9 @@ class Monitor:
                     info = retry
         except Exception:
             logger.exception("Error fetching %s", entry.key)
-            return []
+            return self._handle_fetch_unavailable(
+                entry, label="Twitch", snap=snap, reason="fetch exception"
+            )
 
         if info is None:
             return self._handle_fetch_unavailable(
@@ -1193,7 +1264,14 @@ class Monitor:
             items = fetcher.get_channel_items(entry.name, fill_timing=False)
         except Exception:
             logger.exception("Error fetching %s", entry.key)
-            return []
+            return self._handle_fetch_unavailable(
+                entry, label="YouTube", snap=snap, reason="fetch exception"
+            )
+
+        if items is None:
+            return self._handle_fetch_unavailable(
+                entry, label="YouTube", snap=snap
+            )
 
         snap.fetcher = fetcher
         snap.youtube_items = items

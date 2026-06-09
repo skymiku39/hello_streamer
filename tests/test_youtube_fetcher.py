@@ -275,10 +275,10 @@ class TestGetChannelItemsIntegration:
         assert items[0].video_id == "xyz"
         assert items[0].display_name == "Creator"
 
-    def test_returns_empty_on_fetch_failure(self, monkeypatch) -> None:
+    def test_returns_none_on_fetch_failure(self, monkeypatch) -> None:
         fetcher = YouTubeFetcher()
         monkeypatch.setattr(fetcher, "_fetch_page", lambda url: None)
-        assert fetcher.get_channel_items("nobody") == []
+        assert fetcher.get_channel_items("nobody") is None
 
     def test_fill_timing_false_skips_live_watch_page(self, monkeypatch) -> None:
         fetcher = YouTubeFetcher()

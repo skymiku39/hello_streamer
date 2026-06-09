@@ -776,6 +776,7 @@ class App(ctk.CTk):
         self._populate_channels()
         self._poll_events()
         self._tick_elapsed_labels()
+        self.after(30_000, self._monitor_health_check)
 
         self._unsub_i18n = i18n.subscribe(self._on_language_changed)
 
@@ -1471,6 +1472,23 @@ class App(ctk.CTk):
         for row in self._channel_rows:
             row.refresh_elapsed_display()
         self.after(30_000, self._tick_elapsed_labels)
+
+    def _monitor_health_check(self) -> None:
+        """Restart the background monitor if its thread died unexpectedly."""
+        if self._monitor_mode in ("trigger", "watch"):
+            if self._monitor is not None and not self._monitor.is_running:
+                logger.warning(
+                    "Monitor thread died unexpectedly (mode=%s), restarting",
+                    self._monitor_mode,
+                )
+                if self._ensure_monitor_running():
+                    if self._monitor_mode == "trigger":
+                        self._set_status_text("status.monitor_restarted", _CLR_LIVE)
+                        self._tray.update_tooltip_key("tray.tooltip.trigger")
+                    else:
+                        self._set_status_text("status.monitor_restarted", "#64b5f6")
+                        self._tray.update_tooltip_key("tray.tooltip.watch")
+        self.after(30_000, self._monitor_health_check)
 
     def _poll_events(self) -> None:
         live_events: list[tuple[ChannelEntry, StreamInfo]] = []

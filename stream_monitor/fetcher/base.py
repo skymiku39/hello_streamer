@@ -61,7 +61,7 @@ class StreamFetcher(ABC):
 
     def get_channel_items(
         self, channel_name: str, *, fill_timing: bool = True
-    ) -> list[VideoItem]:
+    ) -> list[VideoItem] | None:
         """Return video items from channel page.
 
         YouTube-only (TIDUS /streams feed). Twitch uses boolean live checks
