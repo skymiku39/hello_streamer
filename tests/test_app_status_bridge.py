@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-import customtkinter as ctk
+import pytest
 
 from stream_monitor.app import ChannelRow
 from stream_monitor.monitor import ChannelStatus
 
 
-def _make_row() -> tuple[ctk.CTk, ChannelRow]:
-    root = ctk.CTk()
-    root.withdraw()
+def _make_row():
+    try:
+        import customtkinter as ctk
+
+        root = ctk.CTk()
+        root.withdraw()
+    except Exception as exc:  # noqa: BLE001 — Tcl/Tk missing on headless CI
+        pytest.skip(f"Tk unavailable in this environment: {exc}")
     channel = {"platform": "twitch", "name": "hello", "enabled": True}
     row = ChannelRow(
         root,
