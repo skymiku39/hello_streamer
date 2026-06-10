@@ -16,9 +16,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
+from urllib.parse import unquote, urlparse
 
 import requests
 
@@ -60,6 +62,12 @@ _MAX_RETRIES = 2
 _RETRY_DELAY = 3
 _WATCH_DETAILS_CACHE_TTL = 300
 _WATCH_DETAILS_CACHE_MAX = 256
+_MAX_LIVE_TIMING_ENRICH = 3
+_MAX_UPCOMING_TIMING_ENRICH = 2
+_MAX_VOD_WATCH_PROBE = 2
+_TIER1_PROBE_TIMEOUT = 10
+_MIN_REQUEST_INTERVAL = 1.0
+_HTTP_BACKOFF_SECONDS = 120.0
 
 # lockupViewModel badge/metadata text fragments (multilingual).
 _LOCKUP_UPCOMING_MARKERS = (
@@ -108,6 +116,30 @@ def _unix_to_iso(ts: str) -> str:
 class YouTubeFetcher(StreamFetcher):
     platform = "youtube"
     _watch_details_cache: dict[str, tuple[float, _WatchDetails]] = {}
+    _rate_lock = threading.Lock()
+    _last_request_at = 0.0
+    _backoff_until = 0.0
+
+    @classmethod
+    def http_backoff_active(cls) -> bool:
+        with cls._rate_lock:
+            return time.monotonic() < cls._backoff_until
+
+    def _wait_for_request_slot(self) -> bool:
+        with type(self)._rate_lock:
+            now = time.monotonic()
+            if now < type(self)._backoff_until:
+                return False
+            wait = _MIN_REQUEST_INTERVAL - (now - type(self)._last_request_at)
+            if wait > 0:
+                time.sleep(wait)
+            type(self)._last_request_at = time.monotonic()
+        return True
+
+    @classmethod
+    def _note_rate_limited(cls) -> None:
+        with cls._rate_lock:
+            cls._backoff_until = time.monotonic() + _HTTP_BACKOFF_SECONDS
 
     @classmethod
     def _prune_watch_details_cache_unlocked(
@@ -161,24 +193,40 @@ class YouTubeFetcher(StreamFetcher):
 
     def __init__(self) -> None:
         super().__init__()
-        self._session = requests.Session()
-        self._session.headers.update(_HEADERS)
-        self._session.cookies.set("CONSENT", "PENDING+987", domain=".youtube.com")
-        self._session.cookies.set(
-            "SOCS", "CAESEwgDEgk2NDcwMTcxMjQaAmVuIAEaBgiA_LyaBg",
-            domain=".youtube.com",
-        )
+        self._thread_local = threading.local()
+
+    def _session_for_thread(self) -> requests.Session:
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update(_HEADERS)
+            session.cookies.set("CONSENT", "PENDING+987", domain=".youtube.com")
+            session.cookies.set(
+                "SOCS", "CAESEwgDEgk2NDcwMTcxMjQaAmVuIAEaBgiA_LyaBg",
+                domain=".youtube.com",
+            )
+            self._thread_local.session = session
+        return session
 
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
-    def _fetch_page(self, url: str) -> str | None:
+    def _fetch_page(self, url: str, *, timeout: float = 15) -> str | None:
+        if not self._wait_for_request_slot():
+            logger.debug("YouTube HTTP skipped (backoff) for %s", url)
+            return None
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                with self._http_lock:
-                    resp = self._session.get(url, timeout=15)
+                resp = self._session_for_thread().get(url, timeout=timeout)
                 if resp.status_code == 404:
                     logger.warning("YouTube page not found: %s", url)
+                    return None
+                if resp.status_code == 429:
+                    self._note_rate_limited()
+                    logger.warning(
+                        "YouTube rate limited (429) for %s, skipping",
+                        url,
+                    )
                     return None
                 if resp.status_code >= 500:
                     logger.warning(
@@ -525,10 +573,17 @@ class YouTubeFetcher(StreamFetcher):
     # Public API: get_channel_items (TIDUS)
     # ------------------------------------------------------------------
     def get_channel_items(
-        self, channel_name: str, *, fill_timing: bool = True
+        self,
+        channel_name: str,
+        *,
+        fill_timing: bool = True,
+        timeout: float | None = None,
     ) -> list[VideoItem] | None:
         base = channel_page_url("youtube", channel_name)
-        html = self._fetch_page(f"{base}/streams")
+        fetch_timeout = timeout if timeout is not None else 15
+        if not fill_timing:
+            fetch_timeout = min(fetch_timeout, _TIER1_PROBE_TIMEOUT)
+        html = self._fetch_page(f"{base}/streams", timeout=fetch_timeout)
         if html is None:
             return None
 
@@ -545,16 +600,39 @@ class YouTubeFetcher(StreamFetcher):
         """Tier-2 helper: fill missing UPCOMING/LIVE timing on cached items."""
         self._fill_live_timing_details(items)
 
+    def enrich_live_for_details(self, items: list[VideoItem]) -> None:
+        """Tier-2: fetch watch page for LIVE missing started_at (one per channel)."""
+        if self.http_backoff_active():
+            return
+        for item in items:
+            if item.style != "LIVE" or item.started_at:
+                continue
+            details = self._get_watch_details(item.video_id)
+            if details.started_at:
+                item.started_at = details.started_at
+            return
+
+    def enrich_upcoming_for_details(self, items: list[VideoItem]) -> None:
+        """Tier-2 lite: only fetch watch pages for UPCOMING missing startTime."""
+        self._fill_upcoming_timing_details(items)
+
     def _fill_upcoming_timing_details(self, items: list[VideoItem]) -> None:
         """Poll-path helper: fetch watch page only for UPCOMING missing startTime."""
+        if self.http_backoff_active():
+            return
+        enriched = 0
         for item in items:
+            if enriched >= _MAX_UPCOMING_TIMING_ENRICH:
+                break
             if item.style != "UPCOMING" or item.scheduled_start:
                 continue
+            enriched += 1
             details = self._get_watch_details(item.video_id)
             if details.scheduled_start:
                 item.scheduled_start = details.scheduled_start
 
     def _fill_live_timing_details(self, items: list[VideoItem]) -> None:
+        live_enriched = 0
         for item in items:
             if item.style not in {"LIVE", "UPCOMING"}:
                 continue
@@ -562,13 +640,88 @@ class YouTubeFetcher(StreamFetcher):
                 continue
             if item.style == "LIVE" and item.started_at:
                 continue
+            if item.style == "LIVE" and live_enriched >= _MAX_LIVE_TIMING_ENRICH:
+                continue
             details = self._get_watch_details(item.video_id)
             if item.style == "UPCOMING" and details.scheduled_start:
                 item.scheduled_start = details.scheduled_start
             elif item.style == "LIVE" and details.started_at:
                 item.started_at = details.started_at
+                live_enriched += 1
+
+    def _resolve_channel_from_oembed(
+        self, video_id: str
+    ) -> tuple[str, str] | None:
+        """Lightweight fallback when watch-page HTML is blocked (e.g. HTTP 429)."""
+        try:
+            resp = self._session_for_thread().get(
+                "https://www.youtube.com/oembed",
+                params={"url": _watch_url(video_id), "format": "json"},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+        except (requests.RequestException, ValueError):
+            return None
+
+        author_url = (data.get("author_url") or "").strip()
+        display = (data.get("author_name") or "").strip()
+        if not author_url:
+            return None
+        path = unquote(urlparse(author_url).path)
+        handle_match = re.search(r"/@([^/]+)", path)
+        if handle_match:
+            handle = unquote(handle_match.group(1)).strip()
+            return handle, display or handle
+        channel_match = re.search(r"/channel/([A-Za-z0-9_\-]+)", path)
+        if channel_match:
+            channel_id = channel_match.group(1)
+            return channel_id, display or channel_id
+        return None
+
+    def resolve_channel_from_video(
+        self, video_id: str
+    ) -> tuple[str, str] | None:
+        """Map a watch-page video id to (channel config name, display name)."""
+        video_id = (video_id or "").strip()
+        if not video_id:
+            return None
+        html = self._fetch_page(_watch_url(video_id))
+        if html is not None:
+            player = self._extract_json_var(html, "ytInitialPlayerResponse")
+            if isinstance(player, dict):
+                video_details = player.get("videoDetails")
+                if isinstance(video_details, dict):
+                    channel_id = (video_details.get("channelId") or "").strip()
+                    display = (video_details.get("author") or "").strip()
+                    handle = ""
+                    handle_match = re.search(
+                        r'"canonicalBaseUrl":"https?:\\?/\\?/www\.youtube\.com/@([^"\\]+)"',
+                        html,
+                    )
+                    if handle_match:
+                        handle = unquote(handle_match.group(1)).strip()
+                    microformat = player.get("microformat")
+                    renderer = {}
+                    if isinstance(microformat, dict):
+                        renderer = microformat.get(
+                            "playerMicroformatRenderer", {}
+                        ) or {}
+                    if isinstance(renderer, dict):
+                        custom = (renderer.get("customUrl") or "").strip()
+                        if custom.startswith("@"):
+                            handle = handle or custom[1:]
+                    name = handle or channel_id
+                    if name:
+                        return name, display or name
+        return self._resolve_channel_from_oembed(video_id)
 
     def _get_watch_details(self, video_id: str) -> _WatchDetails:
+        if self.http_backoff_active():
+            return _WatchDetails()
         now = time.time()
         with self._http_lock:
             cached = self._watch_details_cache.get(video_id)
@@ -716,19 +869,17 @@ class YouTubeFetcher(StreamFetcher):
             return None
         best: FinishedVod | None = None
         best_ended: datetime | None = None
-        fallback: FinishedVod | None = None
+        defaults = [item for item in items if item.style == "DEFAULT"]
 
-        for item in items:
-            if item.style != "DEFAULT":
-                continue
+        for item in defaults[:_MAX_VOD_WATCH_PROBE]:
+            if self.http_backoff_active():
+                break
             details = self._get_watch_details(item.video_id)
             candidate = FinishedVod(
                 url=item.url,
                 ended_at=details.ended_at,
                 title=item.title,
             )
-            if fallback is None:
-                fallback = candidate
             if not details.ended_at:
                 continue
             ended_dt = parse_iso_datetime(details.ended_at)
@@ -738,7 +889,11 @@ class YouTubeFetcher(StreamFetcher):
                 best = candidate
                 best_ended = ended_dt
 
-        return best or fallback
+        if best is not None:
+            return best
+        if defaults:
+            return FinishedVod(url=defaults[0].url, title=defaults[0].title)
+        return None
 
     # ------------------------------------------------------------------
     # Public API: get_stream_info (used by AddChannelDialog validation)

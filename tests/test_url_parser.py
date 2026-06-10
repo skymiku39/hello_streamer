@@ -83,7 +83,23 @@ def test_parse_youtube_url_with_raw_unicode_handle() -> None:
     ) == ParsedChannel(platform="youtube", name="\u9cf6\u51a5\u00b7\u7fe0\u96b1")
 
 
-def test_parse_rejects_youtube_live_and_video_pages() -> None:
-    assert parse_url("https://www.youtube.com/watch?v=abc123") is None
+def test_parse_youtube_watch_url_resolves_channel(monkeypatch) -> None:
+    class _FakeFetcher:
+        def resolve_channel_from_video(self, video_id: str):
+            if video_id == "abc123":
+                return ("LofiGirl", "Lofi Girl")
+            return None
+
+    monkeypatch.setattr(
+        "stream_monitor.fetcher.youtube.YouTubeFetcher",
+        _FakeFetcher,
+    )
+    assert parse_url("https://www.youtube.com/watch?v=abc123") == ParsedChannel(
+        platform="youtube",
+        name="LofiGirl",
+    )
+
+
+def test_parse_rejects_youtube_shorts_and_live_pages() -> None:
     assert parse_url("https://www.youtube.com/shorts/abc123") is None
     assert parse_url("https://www.youtube.com/live/abc123") is None

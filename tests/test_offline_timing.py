@@ -23,6 +23,13 @@ def test_merge_uses_vod_even_when_older_than_confirmed() -> None:
     assert source == "vod"
 
 
+def test_merge_uses_vod_when_confirmed_empty() -> None:
+    vod_end = "2020-01-01T00:00:00+00:00"
+    ended, source = _merge_offline_ended_at("", vod_end)
+    assert ended == vod_end
+    assert source == "vod"
+
+
 def test_merge_keeps_confirmed_when_vod_in_future() -> None:
     confirmed_dt = datetime.now(timezone.utc)
     confirmed = confirmed_dt.isoformat()

@@ -88,7 +88,11 @@ _ZH_TW: dict[str, str] = {
 
     # Bottom status bar
     "status.idle": "尚未啟動",
+    "status.awaiting_start": "等待啟動",
     "status.trigger_running": "監聽+觸發中…",
+    "status.poll_checking": "檢查 {name}…",
+    "status.poll_refreshing": "更新 {name}…",
+    "status.poll_waiting": "等待下一輪…",
     "status.watching": "只監測中…",
     "status.stopped": "已停止",
     "status.monitor_restarted": "監控已自動恢復…",
@@ -102,6 +106,8 @@ _ZH_TW: dict[str, str] = {
     "status.row.time.live": "已開播 {elapsed}",
     "status.row.time.offline": "已下播 {elapsed}",
     "status.row.time.starts_in": "{countdown} 後開始",
+    "status.row.time.no_data": "無時間資料",
+    "status.row.time.pending_detail": "未開播，待深度檢查",
 
     # Tray
     "tray.show": "顯示主畫面",
@@ -311,7 +317,11 @@ _ZH_CN: dict[str, str] = {
 
     # Bottom status bar
     "status.idle": "尚未启动",
+    "status.awaiting_start": "等待启动",
     "status.trigger_running": "监听+触发中…",
+    "status.poll_checking": "检查 {name}…",
+    "status.poll_refreshing": "更新 {name}…",
+    "status.poll_waiting": "等待下一轮…",
     "status.watching": "仅监测中…",
     "status.stopped": "已停止",
     "status.empty_hint": "尚无频道，请点击「＋ 新增频道」开始",
@@ -324,6 +334,8 @@ _ZH_CN: dict[str, str] = {
     "status.row.time.live": "已开播 {elapsed}",
     "status.row.time.offline": "已下播 {elapsed}",
     "status.row.time.starts_in": "{countdown} 后开始",
+    "status.row.time.no_data": "无时间资料",
+    "status.row.time.pending_detail": "未开播，待深度检查",
 
     # Tray
     "tray.show": "显示主界面",
@@ -524,7 +536,11 @@ _EN: dict[str, str] = {
     "tooltip.row.status.offline_elapsed_confirmed": "⏱ Offline for {elapsed} (since detected)",
 
     "status.idle": "Not started",
+    "status.awaiting_start": "Waiting to start",
     "status.trigger_running": "Monitor + Trigger…",
+    "status.poll_checking": "Checking {name}…",
+    "status.poll_refreshing": "Refreshing {name}…",
+    "status.poll_waiting": "Waiting for next poll…",
     "status.watching": "Watch Only…",
     "status.stopped": "Stopped",
     "status.monitor_restarted": "Monitor auto-recovered…",
@@ -538,6 +554,8 @@ _EN: dict[str, str] = {
     "status.row.time.live": "Live {elapsed}",
     "status.row.time.offline": "Off {elapsed}",
     "status.row.time.starts_in": "in {countdown}",
+    "status.row.time.no_data": "No time data",
+    "status.row.time.pending_detail": "Not live, pending detail check",
 
     "tray.show": "Show main window",
     "tray.trigger_active": "✓ Monitor + Trigger",
@@ -730,7 +748,11 @@ _JA: dict[str, str] = {
     "tooltip.row.status.offline_elapsed_confirmed": "⏱ 配信終了から {elapsed}（検知時刻）",
 
     "status.idle": "未開始",
+    "status.awaiting_start": "開始待ち",
     "status.trigger_running": "監視＋実行中…",
+    "status.poll_checking": "{name} を確認中…",
+    "status.poll_refreshing": "{name} を更新中…",
+    "status.poll_waiting": "次の確認まで待機中…",
     "status.watching": "監視のみ中…",
     "status.stopped": "停止しました",
     "status.monitor_restarted": "監視を自動再開しました…",
@@ -744,6 +766,8 @@ _JA: dict[str, str] = {
     "status.row.time.live": "配信中 {elapsed}",
     "status.row.time.offline": "終了 {elapsed}",
     "status.row.time.starts_in": "{countdown} 後開始",
+    "status.row.time.no_data": "時間情報なし",
+    "status.row.time.pending_detail": "未配信、詳細確認待ち",
 
     "tray.show": "メイン画面を表示",
     "tray.trigger_active": "✓ 監視＋実行中",
@@ -936,7 +960,11 @@ _KO: dict[str, str] = {
     "tooltip.row.status.offline_elapsed_confirmed": "⏱ {elapsed} 전 종료 (감지 시각)",
 
     "status.idle": "시작 전",
+    "status.awaiting_start": "시작 대기",
     "status.trigger_running": "감시 + 트리거 중…",
+    "status.poll_checking": "{name} 확인 중…",
+    "status.poll_refreshing": "{name} 업데이트 중…",
+    "status.poll_waiting": "다음 확인 대기 중…",
     "status.watching": "감시만 진행 중…",
     "status.stopped": "정지됨",
     "status.monitor_restarted": "모니터가 자동으로 복구되었습니다…",
@@ -950,6 +978,8 @@ _KO: dict[str, str] = {
     "status.row.time.live": "방송 {elapsed}",
     "status.row.time.offline": "종료 {elapsed}",
     "status.row.time.starts_in": "{countdown} 후 시작",
+    "status.row.time.no_data": "시간 정보 없음",
+    "status.row.time.pending_detail": "미방송, 상세 확인 대기",
 
     "tray.show": "메인 화면 표시",
     "tray.trigger_active": "✓ 감시 + 트리거 중",

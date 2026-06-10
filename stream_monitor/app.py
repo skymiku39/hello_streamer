@@ -51,7 +51,7 @@ from stream_monitor.app_ui import (
     _format_elapsed,
     _format_row_time,
     _language_icon,
-    _status_bar_text_width,
+    _truncate_status_name,
     _status_row_label_width,
     _tooltip,
     _tooltip_tr,
@@ -568,9 +568,7 @@ class ChannelRow(ctk.CTkFrame):
             self._vod_url = (detail.vod_url if detail else "") or ""
             self._upcoming_url = (detail.upcoming_url if detail else "") or ""
             self._active_url = ""
-            self._ended_at_source = (
-                detail.ended_at_source if detail else ""
-            ) or "confirmed"
+            self._ended_at_source = (detail.ended_at_source if detail else "") or ""
             sched = (detail.scheduled_start if detail else "") or ""
             self._status_scheduled_start = sched
             self._status_countdown = (
@@ -584,22 +582,30 @@ class ChannelRow(ctk.CTkFrame):
     def _compose_time_label_text(self) -> str:
         """Build i18n time label from cached status timestamps."""
         state = self._status_state
+        result = ""
         if state == "live":
             self._status_elapsed = _format_elapsed(self._status_timestamp)
-            return _format_row_time("live", self._status_elapsed)
-        if state == "upcoming":
+            result = _format_row_time("live", self._status_elapsed)
+        elif state == "upcoming":
             self._status_countdown = _format_countdown(self._status_timestamp)
-            return _format_row_time("upcoming", self._status_countdown)
-        if state == "offline":
-            if self._upcoming_url and self._status_scheduled_start:
+            result = _format_row_time("upcoming", self._status_countdown)
+        elif state == "offline":
+            if self._ended_at_source == "pending":
+                result = tr("status.row.time.pending_detail")
+            elif self._upcoming_url and self._status_scheduled_start:
                 self._status_countdown = _format_countdown(
                     self._status_scheduled_start
                 )
                 if self._status_countdown:
-                    return _format_row_time("countdown", self._status_countdown)
-            self._status_elapsed = _format_elapsed(self._status_timestamp)
-            return _format_row_time("offline", self._status_elapsed)
-        return ""
+                    result = _format_row_time("countdown", self._status_countdown)
+            if not result:
+                self._status_elapsed = _format_elapsed(self._status_timestamp)
+                result = _format_row_time(
+                    "offline",
+                    self._status_elapsed,
+                    ended_at_source=self._ended_at_source,
+                )
+        return result
 
     def refresh_elapsed_display(self) -> None:
         """Recompute time_label from cached ISO timestamp (live/offline/upcoming)."""
@@ -754,6 +760,7 @@ class App(ctk.CTk):
         self._db = SeenVideoDB()
         self._monitor: Monitor | None = None
         self._channel_rows: list[ChannelRow] = []
+        self._ui_status_pending: dict[str, Any] = {}
         self._silent = silent
         self._truly_quitting = False
         # monitor mode: "idle" | "trigger" | "watch"
@@ -987,7 +994,7 @@ class App(ctk.CTk):
 
         toolbar = ctk.CTkFrame(ctrl, fg_color="transparent")
         toolbar.pack(fill="x", padx=14, pady=10)
-        toolbar.grid_columnconfigure(2, weight=1)
+        toolbar.grid_columnconfigure(1, weight=1)
 
         left = ctk.CTkFrame(toolbar, fg_color="transparent")
         left.grid(row=0, column=0, sticky="w")
@@ -1041,21 +1048,38 @@ class App(ctk.CTk):
         self.stop_btn.pack(side="left")
         _tooltip_tr(self.stop_btn, "tooltip.stop")
 
+        self._status_frame = ctk.CTkFrame(toolbar, fg_color="transparent")
+        self._status_frame.grid(row=0, column=1, sticky="ew", padx=(14, 8))
         self.status_text = ctk.CTkLabel(
-            toolbar,
+            self._status_frame,
             text=tr("status.idle"),
             font=_font(13),
             text_color=_CLR_OFFLINE,
-            width=_status_bar_text_width(),
             anchor="w",
+            justify="left",
         )
-        self.status_text.grid(row=0, column=1, sticky="w", padx=(14, 8))
+        self.status_text.pack(anchor="w", fill="x")
+        self.status_sub_text = ctk.CTkLabel(
+            self._status_frame,
+            text="",
+            font=_font(11),
+            text_color="#9aa0b4",
+            anchor="w",
+            justify="left",
+        )
+        self.status_sub_text.pack(anchor="w", fill="x")
         # Cache for the status-text key so language switches can refresh it.
         self._status_text_key = "status.idle"
         self._status_text_color = _CLR_OFFLINE
+        self._status_subline_key = "status.awaiting_start"
+        self._status_subline_kwargs: dict[str, str] = {}
+        self._render_status_text()
 
-        interval_group = ctk.CTkFrame(toolbar, fg_color="transparent")
-        interval_group.grid(row=0, column=3, sticky="w", padx=(12, 0))
+        right_toolbar = ctk.CTkFrame(toolbar, fg_color="transparent")
+        right_toolbar.grid(row=0, column=2, sticky="e")
+
+        interval_group = ctk.CTkFrame(right_toolbar, fg_color="transparent")
+        interval_group.pack(side="left", padx=(12, 18))
         self._interval_caption = ctk.CTkLabel(
             interval_group,
             text=tr("toolbar.check_interval"),
@@ -1086,8 +1110,8 @@ class App(ctk.CTk):
         )
         self._interval_unit.pack(side="left", padx=(6, 0))
 
-        action_group = ctk.CTkFrame(toolbar, fg_color="transparent")
-        action_group.grid(row=0, column=4, sticky="w", padx=(18, 0))
+        action_group = ctk.CTkFrame(right_toolbar, fg_color="transparent")
+        action_group.pack(side="left")
         self._action_caption = ctk.CTkLabel(
             action_group,
             text=tr("toolbar.action_label"),
@@ -1155,9 +1179,7 @@ class App(ctk.CTk):
             size=14,
             weight="bold",
         )
-        status_text = tr(self._status_text_key)
-        _fit_label_width(self.status_text, status_text, min_width=96)
-        self.status_text.configure(text_color=self._status_text_color)
+        self._render_status_text()
         _fit_option_menu(self.action_menu, _action_displays(), min_width=200)
 
     # ------------------------------------------------------------------
@@ -1366,22 +1388,130 @@ class App(ctk.CTk):
                 on_status_change=self._on_channel_live,
                 on_poll_complete=self._on_poll_done,
                 on_went_offline=self._on_channel_offline,
+                on_poll_activity=self._on_poll_activity,
+                on_partial_snapshot=self._on_partial_snapshot,
                 db=self._db,
             )
             self._monitor.start()
         return True
 
+    def _render_status_text(self) -> None:
+        main = tr(self._status_text_key)
+        self.status_text.configure(text=main, text_color=self._status_text_color)
+        if self._status_subline_key:
+            sub = tr(self._status_subline_key, **self._status_subline_kwargs)
+            self.status_sub_text.configure(text=sub)
+        else:
+            self.status_sub_text.configure(text="")
+
     def _set_status_text(self, key: str, color: str) -> None:
         """Update the bottom-toolbar status text + cache for retranslation."""
         self._status_text_key = key
         self._status_text_color = color
-        _fit_label_width(self.status_text, tr(key), min_width=96)
-        self.status_text.configure(text_color=color)
+        self._render_status_text()
+
+    def _channel_display_name(self, entry: ChannelEntry) -> str:
+        if self._monitor:
+            names = self._monitor.snapshot_display_names()
+            display = (names.get(entry.key) or "").strip()
+            if display:
+                return display
+        for ch in self.config.get("channels", []):
+            if channel_key(ch["platform"], ch["name"]) == entry.key:
+                display = (ch.get("display_name") or "").strip()
+                if display:
+                    return display
+        return entry.name
+
+    def _update_poll_subline(
+        self, entry: ChannelEntry, phase: str, display_name: str = ""
+    ) -> None:
+        if self._monitor_mode not in ("trigger", "watch"):
+            return
+        name = _truncate_status_name(display_name or entry.name)
+        sub_key = (
+            "status.poll_refreshing"
+            if phase == "refresh"
+            else "status.poll_checking"
+        )
+        self._status_subline_key = sub_key
+        self._status_subline_kwargs = {"name": name}
+        self._render_status_text()
+
+    @staticmethod
+    def _pending_status_is_live(status: Any) -> bool:
+        if isinstance(status, ChannelStatus):
+            return status.status is True
+        return status is True
+
+    @staticmethod
+    def _prefer_richer_offline_status(old: Any, new: Any) -> Any:
+        """Drop tier-1 pending previews that would erase tier-2 offline timing."""
+        if not isinstance(new, ChannelStatus) or new.status is not False:
+            return new
+        if new.ended_at_source != "pending":
+            return new
+        if (
+            isinstance(old, ChannelStatus)
+            and old.status is False
+            and old.ended_at_source != "pending"
+        ):
+            return old
+        return new
+
+    @staticmethod
+    def _row_has_richer_offline_detail(row: ChannelRow, status: Any) -> bool:
+        if not isinstance(status, ChannelStatus) or status.status is not False:
+            return False
+        if status.ended_at_source != "pending":
+            return False
+        return (
+            row._status_state == "offline"
+            and row._ended_at_source != "pending"
+        )
+
+    def _apply_pending_status_updates(self, *, limit: int = 3) -> int:
+        """Apply queued row status updates in small batches to keep UI responsive."""
+        applied = 0
+        keys = list(self._ui_status_pending.keys())
+        live_keys = [
+            key
+            for key in keys
+            if self._pending_status_is_live(self._ui_status_pending[key])
+        ]
+        ordered = live_keys + [key for key in keys if key not in live_keys]
+        for key in ordered:
+            if applied >= limit:
+                break
+            if key not in self._ui_status_pending:
+                continue
+            status = self._ui_status_pending.pop(key)
+            for row in self._channel_rows:
+                if row.key == key:
+                    if self._row_has_richer_offline_detail(row, status):
+                        break
+                    row.set_status(status)
+                    applied += 1
+                    break
+        return applied
+
+    def _set_poll_subline_waiting(self) -> None:
+        if self._monitor_mode not in ("trigger", "watch"):
+            return
+        self._status_subline_key = "status.poll_waiting"
+        self._status_subline_kwargs = {}
+        self._render_status_text()
+
+    def _set_awaiting_start_subline(self) -> None:
+        self._status_subline_key = "status.awaiting_start"
+        self._status_subline_kwargs = {}
+        self._render_status_text()
 
     def _on_start(self) -> None:
-        if not self._ensure_monitor_running():
-            return
         self._monitor_mode = "trigger"
+        if not self._ensure_monitor_running():
+            self._monitor_mode = "idle"
+            return
         self.config["monitor_mode"] = "trigger"
         self._save_config()
         self._apply_monitor_mode_buttons()
@@ -1389,9 +1519,10 @@ class App(ctk.CTk):
         self._tray.update_tooltip_key("tray.tooltip.trigger")
 
     def _on_watch(self) -> None:
-        if not self._ensure_monitor_running():
-            return
         self._monitor_mode = "watch"
+        if not self._ensure_monitor_running():
+            self._monitor_mode = "idle"
+            return
         self.config["monitor_mode"] = "watch"
         self._save_config()
         self._apply_monitor_mode_buttons()
@@ -1408,9 +1539,11 @@ class App(ctk.CTk):
                 self._event_queue.get_nowait()
         except queue.Empty:
             pass
+        self._ui_status_pending.clear()
         self._monitor_mode = "idle"
         self._apply_monitor_mode_buttons()
         self._set_status_text("status.stopped", _CLR_OFFLINE)
+        self._set_awaiting_start_subline()
         self._tray.update_tooltip_key("tray.tooltip.stopped")
 
         # close_on_stop fires only when the user explicitly hit Stop — never
@@ -1494,10 +1627,21 @@ class App(ctk.CTk):
         # which we don't want to invoke from the monitor's polling thread.
         self._event_queue.put(("offline", (entry, offline_info)))
 
+    def _on_poll_activity(
+        self, entry: ChannelEntry, phase: str, display_name: str
+    ) -> None:
+        self._event_queue.put(("poll_activity", (entry, phase, display_name)))
+
+    def _on_partial_snapshot(
+        self, statuses: dict[str, Any], display_names: dict[str, str]
+    ) -> None:
+        self._event_queue.put(("partial_status_update", (statuses, display_names)))
+
     def _on_poll_done(self) -> None:
         if self._monitor:
             statuses = self._monitor.snapshot_statuses()
             display_names = self._monitor.snapshot_display_names()
+            self._event_queue.put(("poll_waiting", None))
             self._event_queue.put(("status_update", (statuses, display_names)))
 
     def _tick_elapsed_labels(self) -> None:
@@ -1529,21 +1673,74 @@ class App(ctk.CTk):
             self._tray.update_tooltip_key("tray.tooltip.watch")
 
     def _poll_events(self) -> None:
+        self.after(80, self._poll_events)
+
         live_events: list[tuple[ChannelEntry, StreamInfo]] = []
         offline_events: list[tuple[ChannelEntry, Any]] = []
-        latest_status_update: tuple[dict, dict] | None = None
+        poll_complete = False
+        latest_poll_activity: tuple[ChannelEntry, str, str] | None = None
+        pending_names: dict[str, str] = {}
+        max_events_per_tick = 12
+        events_processed = 0
+        buffered: list[tuple[str, Any]] = []
 
         try:
             while True:
-                kind, data = self._event_queue.get_nowait()
-                if kind == "live":
-                    live_events.append(data)
-                elif kind == "offline":
-                    offline_events.append(data)
-                elif kind == "status_update":
-                    latest_status_update = data
+                buffered.append(self._event_queue.get_nowait())
         except queue.Empty:
             pass
+
+        other_events: list[tuple[str, Any]] = []
+        for kind, data in buffered:
+            if kind == "poll_activity":
+                latest_poll_activity = data
+            else:
+                other_events.append((kind, data))
+
+        for index, (kind, data) in enumerate(other_events):
+            if events_processed >= max_events_per_tick:
+                for rest_kind, rest_data in other_events[index:]:
+                    self._event_queue.put((rest_kind, rest_data))
+                break
+            events_processed += 1
+            if kind == "live":
+                live_events.append(data)
+            elif kind == "offline":
+                offline_events.append(data)
+            elif kind == "poll_waiting":
+                self._set_poll_subline_waiting()
+            elif kind == "partial_status_update":
+                statuses, display_names = data
+                for key, status in statuses.items():
+                    merged = self._prefer_richer_offline_status(
+                        self._ui_status_pending.get(key), status
+                    )
+                    self._ui_status_pending[key] = merged
+                pending_names.update(display_names)
+            elif kind == "status_update":
+                statuses, display_names = data
+                pending_names.update(display_names)
+                for row in self._channel_rows:
+                    if row.key in statuses:
+                        self._ui_status_pending[row.key] = statuses[row.key]
+                    elif row._status_state in ("live", "offline", "upcoming"):
+                        self._ui_status_pending[row.key] = None
+                poll_complete = True
+
+        if pending_names:
+            self._apply_display_names(pending_names)
+
+        if latest_poll_activity is not None:
+            entry, phase, display_name = latest_poll_activity
+            self._update_poll_subline(entry, phase, display_name)
+
+        applied = self._apply_pending_status_updates(limit=3)
+        if applied:
+            logger.info(
+                "UI status flush: %d row(s), %d queued",
+                applied,
+                len(self._ui_status_pending),
+            )
 
         # 只監測 (watch) mode is observe-only: it refreshes the UI status but
         # must never open *or* close player windows. Every window-closing side
@@ -1554,23 +1751,7 @@ class App(ctk.CTk):
         # close the very window the user switched modes to keep watching.
         trigger_enabled = self._monitor_mode == "trigger"
 
-        if latest_status_update is not None:
-            statuses, display_names = latest_status_update
-            self._apply_display_names(display_names)
-            for row in self._channel_rows:
-                status = statuses.get(row.key)
-                if status is None:
-                    if row._status_state in ("live", "offline", "upcoming"):
-                        logger.warning(
-                            "status_update missing snapshot for %s (row state=%s)",
-                            row.key,
-                            row._status_state,
-                        )
-                        continue
-                    row.set_status(None)
-                else:
-                    row.set_status(status)
-
+        if poll_complete:
             # A monitor poll just completed — this is the natural cadence at
             # which to sweep tracked browser windows for "off-topic" drift.
             # We only run when the user opted in, and we tolerate the call
@@ -1612,7 +1793,7 @@ class App(ctk.CTk):
             # it carries upcoming_url / vod_url that StreamInfo edges lack.
             # Applying a coarse StreamInfo mapping after the snapshot was
             # overwriting YouTube UPCOMING/OFFLINE rows as LIVE.
-            if latest_status_update is None:
+            if not poll_complete:
                 self._apply_live_row_status(entry, info)
 
             if not trigger_enabled:
@@ -1675,7 +1856,6 @@ class App(ctk.CTk):
             self._quit_app()
 
         self._maybe_restart_dead_monitor()
-        self.after(500, self._poll_events)
 
     def _handle_channel_offline(
         self, entry: ChannelEntry, offline_info: Any

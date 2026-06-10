@@ -289,7 +289,7 @@ class TestGetChannelItemsIntegration:
         data = _make_initial_data([vr], "Creator")
         html = _html_with_initial_data(data)
 
-        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: html)
         items = fetcher.get_channel_items("creator")
 
         assert len(items) == 1
@@ -298,7 +298,7 @@ class TestGetChannelItemsIntegration:
 
     def test_returns_none_on_fetch_failure(self, monkeypatch) -> None:
         fetcher = YouTubeFetcher()
-        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: None)
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: None)
         assert fetcher.get_channel_items("nobody") is None
 
     def test_fill_timing_false_skips_live_watch_page(self, monkeypatch) -> None:
@@ -308,7 +308,7 @@ class TestGetChannelItemsIntegration:
         html = _html_with_initial_data(data)
         watch_calls: list[str] = []
 
-        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: html)
         monkeypatch.setattr(
             fetcher,
             "_get_watch_details",
@@ -327,7 +327,7 @@ class TestGetChannelItemsIntegration:
         html = _html_with_initial_data(data)
         watch_calls: list[str] = []
 
-        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: html)
         monkeypatch.setattr(
             fetcher,
             "_get_watch_details",
@@ -375,7 +375,7 @@ class TestGetChannelItemsIntegration:
             }
             """
         )
-        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: html)
 
         details = fetcher._fetch_watch_details("weekly1")
 
@@ -392,7 +392,7 @@ class TestGetStreamInfo:
         data = _make_initial_data([vr], "Streamer")
         html = _html_with_initial_data(data)
 
-        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: html)
         info = fetcher.get_stream_info("streamer")
 
         assert info is not None
@@ -415,7 +415,7 @@ class TestGetStreamInfo:
         data = _make_initial_data([vr], "Streamer")
         html = _html_with_initial_data(data)
 
-        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: html)
         info = fetcher.get_stream_info("streamer")
 
         assert info is not None
@@ -430,7 +430,7 @@ class TestGetStreamInfo:
         data = _make_initial_data([vr], "Streamer")
         html = _html_with_initial_data(data)
 
-        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: html)
         info = fetcher.get_stream_info("streamer")
 
         assert info is not None
@@ -438,7 +438,7 @@ class TestGetStreamInfo:
 
     def test_falls_back_on_fetch_failure(self, monkeypatch) -> None:
         fetcher = YouTubeFetcher()
-        monkeypatch.setattr(fetcher, "_fetch_page", lambda url: None)
+        monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: None)
         info = fetcher.get_stream_info("nobody")
         assert info is None
 
@@ -664,7 +664,7 @@ def test_get_latest_finished_vod_prefers_broadcast_over_upload(monkeypatch) -> N
             return _WatchDetails(ended_at="2026-06-05T12:00:00+00:00")
         return _WatchDetails()
 
-    monkeypatch.setattr(fetcher, "_fetch_page", lambda url: html)
+    monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: html)
     monkeypatch.setattr(fetcher, "_get_watch_details", fake_watch_details)
 
     vod = fetcher.get_latest_finished_vod("streamer")

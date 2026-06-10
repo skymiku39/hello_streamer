@@ -144,6 +144,55 @@ def test_format_row_time_live_offline_upcoming() -> None:
     assert _format_row_time("upcoming", "1h 0m") == "1h 0m 後開始"
     assert _format_row_time("countdown", "45m") == "45m 後開始"
     assert _format_row_time("live", "") == ""
+    assert _format_row_time("offline", "") == "無時間資料"
+    assert (
+        _format_row_time("offline", "", ended_at_source="pending")
+        == "未開播，待深度檢查"
+    )
+
+
+def test_prefer_richer_offline_status_keeps_resolved_empty_over_pending() -> None:
+    resolved = ChannelStatus(status=False, ended_at="", ended_at_source="")
+    pending = ChannelStatus(status=False, ended_at_source="pending")
+    assert App._prefer_richer_offline_status(resolved, pending) is resolved
+
+
+def test_prefer_richer_offline_status_keeps_vod_over_pending() -> None:
+    rich = ChannelStatus(
+        status=False,
+        ended_at="2020-01-01T12:00:00+00:00",
+        ended_at_source="vod",
+        vod_url="https://www.twitch.tv/videos/1",
+    )
+    pending = ChannelStatus(status=False, ended_at_source="pending")
+    assert App._prefer_richer_offline_status(rich, pending) is rich
+
+
+def test_row_skips_pending_downgrade_when_resolved_empty() -> None:
+    root, row = _make_row()
+    try:
+        row.set_status(ChannelStatus(status=False, ended_at="", ended_at_source=""))
+        pending = ChannelStatus(status=False, ended_at_source="pending")
+        assert App._row_has_richer_offline_detail(row, pending) is True
+    finally:
+        root.destroy()
+
+
+def test_row_skips_pending_downgrade_when_vod_detail_present() -> None:
+    root, row = _make_row()
+    try:
+        row.set_status(
+            ChannelStatus(
+                status=False,
+                ended_at="2020-01-01T12:00:00+00:00",
+                ended_at_source="vod",
+                vod_url="https://www.twitch.tv/videos/1",
+            )
+        )
+        pending = ChannelStatus(status=False, ended_at_source="pending")
+        assert App._row_has_richer_offline_detail(row, pending) is True
+    finally:
+        root.destroy()
 
 
 def test_status_snapshot_guard_preserves_existing_state() -> None:

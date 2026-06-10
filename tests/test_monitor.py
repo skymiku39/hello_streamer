@@ -40,7 +40,11 @@ class FakeTwitchFetcher:
         )
 
     def get_channel_items(
-        self, channel_name: str, *, fill_timing: bool = True
+        self,
+        channel_name: str,
+        *,
+        fill_timing: bool = True,
+        timeout: float | None = None,
     ) -> list[VideoItem]:
         return []
 
@@ -70,7 +74,11 @@ class FakeTwitchFetcherCalls:
         )
 
     def get_channel_items(
-        self, channel_name: str, *, fill_timing: bool = True
+        self,
+        channel_name: str,
+        *,
+        fill_timing: bool = True,
+        timeout: float | None = None,
     ) -> list[VideoItem]:
         return []
 
@@ -109,7 +117,11 @@ class FakeTwitchFetcherReadings:
         )
 
     def get_channel_items(
-        self, channel_name: str, *, fill_timing: bool = True
+        self,
+        channel_name: str,
+        *,
+        fill_timing: bool = True,
+        timeout: float | None = None,
     ) -> list[VideoItem]:
         return []
 
@@ -132,13 +144,26 @@ class FakeYouTubeFetcher:
         return None
 
     def get_channel_items(
-        self, channel_name: str, *, fill_timing: bool = True
+        self,
+        channel_name: str,
+        *,
+        fill_timing: bool = True,
+        timeout: float | None = None,
     ) -> list[VideoItem]:
         if self.items_batches:
             self._last_items = self.items_batches.pop(0)
         return list(self._last_items)
 
+    def http_backoff_active(self) -> bool:
+        return False
+
     def enrich_items_for_details(self, items: list[VideoItem]) -> None:
+        return None
+
+    def enrich_live_for_details(self, items: list[VideoItem]) -> None:
+        return None
+
+    def enrich_upcoming_for_details(self, items: list[VideoItem]) -> None:
         return None
 
     def get_latest_finished_vod(
@@ -150,6 +175,74 @@ class FakeYouTubeFetcher:
 # ─────────────────────────────────────────────
 # Twitch: boolean edge-trigger (unchanged)
 # ─────────────────────────────────────────────
+def test_tier1_offline_preview_preserves_tier2_resolved_empty_detail() -> None:
+    cached = ChannelStatus(
+        status=False,
+        url="https://www.twitch.tv/karlylinnea",
+        ended_at="",
+        ended_at_source="",
+        vod_url="",
+    )
+    pending = ChannelStatus(
+        status=False,
+        url="https://www.twitch.tv/karlylinnea",
+        ended_at_source="pending",
+    )
+    merged = Monitor._coalesce_tier1_offline_preview(pending, cached)
+    assert merged.ended_at_source == ""
+    assert merged.ended_at == ""
+
+
+def test_tier1_offline_preview_preserves_tier2_vod_detail() -> None:
+    cached = ChannelStatus(
+        status=False,
+        ended_at="2026-06-10T08:00:00+00:00",
+        ended_at_source="vod",
+        vod_url="https://www.twitch.tv/videos/1",
+        url="https://www.twitch.tv/hello",
+    )
+    pending = ChannelStatus(
+        status=False,
+        url="https://www.twitch.tv/hello",
+        ended_at_source="pending",
+    )
+    merged = Monitor._coalesce_tier1_offline_preview(pending, cached)
+    assert merged.ended_at_source == "vod"
+    assert merged.ended_at == cached.ended_at
+    assert merged.vod_url == cached.vod_url
+
+
+def test_twitch_live_tier1_preview_does_not_deadlock(
+    monkeypatch, tmp_path
+) -> None:
+    """LIVE tier-1 preview must not re-acquire Monitor._lock (non-reentrant)."""
+    fetcher = FakeTwitchFetcher([True])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hayabi_zr"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="twitch", name="hayabi_zr")
+    result: list[str] = []
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            monitor._probe_live(entry)
+            result.append("ok")
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=3.0)
+    assert not worker.is_alive(), "twitch live tier-1 preview deadlocked"
+    assert result == ["ok"]
+    assert not errors
+    db.close()
+
+
 def test_twitch_triggers_only_on_live_transition(monkeypatch, tmp_path) -> None:
     # Sequence chosen to exercise *confirmed* offline transitions only —
     # the anti-flap guard requires two consecutive "not live" readings
@@ -289,7 +382,7 @@ def test_youtube_upcoming_poll_fills_missing_schedule(
     )
 
     class FetcherFillsUpcoming(FakeYouTubeFetcher):
-        def enrich_items_for_details(self, items: list[VideoItem]) -> None:
+        def enrich_upcoming_for_details(self, items: list[VideoItem]) -> None:
             for item in items:
                 if item.style == "UPCOMING" and not item.scheduled_start:
                     item.scheduled_start = soon
@@ -419,6 +512,149 @@ def test_youtube_upcoming_status_uses_nearest_scheduled_start(
     assert status.status is False
     assert status.upcoming_url == "https://youtube.com/watch?v=sooner_waiting"
     assert status.scheduled_start == sooner_start
+    db.close()
+
+
+def test_youtube_live_without_feed_started_at_uses_session_cache(
+    monkeypatch, tmp_path,
+) -> None:
+    """LIVE rows must show elapsed time even when tier-1 skips watch pages."""
+    live = VideoItem(
+        video_id="G8YqTVg0IUQ",
+        title="Live Now",
+        style="LIVE",
+        url="https://www.youtube.com/watch?v=G8YqTVg0IUQ",
+    )
+
+    class EnrichLiveFetcher(FakeYouTubeFetcher):
+        def enrich_live_for_details(self, items: list[VideoItem]) -> None:
+            for item in items:
+                if item.style == "LIVE" and not item.started_at:
+                    item.started_at = "2026-06-10T08:00:00+00:00"
+
+    fetcher = EnrichLiveFetcher([[live]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "fukuri_1017"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="fukuri_1017")
+
+    _check_and_commit(monitor, entry)
+
+    status = monitor.snapshot_statuses()["youtube:fukuri_1017"]
+    assert isinstance(status, ChannelStatus)
+    assert status.status is True
+    assert status.started_at == "2026-06-10T08:00:00+00:00"
+    db.close()
+
+
+def test_youtube_tier1_live_preview_sets_started_at_without_watch(
+    monkeypatch, tmp_path,
+) -> None:
+    """Tier-1 preview must show elapsed time before tier-2 watch enrichment."""
+    live = VideoItem(
+        video_id="G8YqTVg0IUQ",
+        title="Live Now",
+        style="LIVE",
+        url="https://www.youtube.com/watch?v=G8YqTVg0IUQ",
+    )
+    fetcher = FakeYouTubeFetcher([[live]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    partial: dict[str, ChannelStatus] = {}
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "fukuri_1017"}],
+        db=db,
+        on_partial_snapshot=lambda statuses, _names: partial.update(statuses),
+    )
+    entry = ChannelEntry(platform="youtube", name="fukuri_1017")
+
+    monitor._probe_live(entry)
+
+    row = partial["youtube:fukuri_1017"]
+    assert row.status is True
+    assert row.started_at != ""
+    db.close()
+
+
+def test_youtube_session_fallback_upgrades_to_platform_start_time(
+    monkeypatch, tmp_path,
+) -> None:
+    """Tier-1 first-seen must not block tier-2 watch enrich for real start time."""
+    live = VideoItem(
+        video_id="G8YqTVg0IUQ",
+        title="Live Now",
+        style="LIVE",
+        url="https://www.youtube.com/watch?v=G8YqTVg0IUQ",
+    )
+    enrich_calls = 0
+
+    class PlatformFetcher(FakeYouTubeFetcher):
+        def enrich_live_for_details(self, items: list[VideoItem]) -> None:
+            nonlocal enrich_calls
+            enrich_calls += 1
+            for item in items:
+                if item.style == "LIVE" and not item.started_at:
+                    item.started_at = "2026-06-10T09:31:07+00:00"
+
+    fetcher = PlatformFetcher([[live]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "fukuri_1017"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="fukuri_1017")
+
+    _check_and_commit(monitor, entry)
+
+    assert enrich_calls == 1
+    status = monitor.snapshot_statuses()["youtube:fukuri_1017"]
+    assert isinstance(status, ChannelStatus)
+    assert status.started_at == "2026-06-10T09:31:07+00:00"
+    live_key = "youtube:fukuri_1017|G8YqTVg0IUQ"
+    with monitor._lock:
+        assert live_key in monitor._live_platform_started_at
+    db.close()
+
+
+def test_youtube_stable_live_skips_watch_enrich_on_second_poll(
+    monkeypatch, tmp_path,
+) -> None:
+    live = VideoItem(
+        video_id="G8YqTVg0IUQ",
+        title="Live Now",
+        style="LIVE",
+        url="https://www.youtube.com/watch?v=G8YqTVg0IUQ",
+    )
+    enrich_calls = 0
+
+    class CountingFetcher(FakeYouTubeFetcher):
+        def enrich_live_for_details(self, items: list[VideoItem]) -> None:
+            nonlocal enrich_calls
+            enrich_calls += 1
+            for item in items:
+                if item.style == "LIVE" and not item.started_at:
+                    item.started_at = "2026-06-10T08:00:00+00:00"
+
+    fetcher = CountingFetcher([[live], [live]])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "fukuri_1017"}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="fukuri_1017")
+
+    _check_and_commit(monitor, entry)
+    _check_and_commit(monitor, entry)
+
+    assert enrich_calls == 1
+    status = monitor.snapshot_statuses()["youtube:fukuri_1017"]
+    assert isinstance(status, ChannelStatus)
+    assert status.started_at == "2026-06-10T08:00:00+00:00"
     db.close()
 
 
@@ -1288,6 +1524,109 @@ def test_twitch_cold_offline_stale_vod_uses_archive_elapsed(
     db.close()
 
 
+def test_youtube_cold_offline_rejects_merge_confirmed_from_future_vod(
+    tmp_path,
+) -> None:
+    """Future/invalid VOD end must not become a poll-time offline elapsed."""
+    from datetime import datetime, timedelta, timezone
+
+    future_end = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+
+    class FutureVodFetcher(FakeYouTubeFetcher):
+        def get_latest_finished_vod(
+            self, channel_name: str, *, items=None
+        ) -> FinishedVod | None:
+            return FinishedVod(
+                url="https://www.youtube.com/watch?v=bad",
+                ended_at=future_end,
+                title="Bad timing",
+            )
+
+    fetcher = FutureVodFetcher([])
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    offline = monitor._build_youtube_offline_channel_status(
+        entry,
+        datetime.now(timezone.utc).isoformat(),
+        fetcher=fetcher,
+        payload=None,
+        prev_cs=None,
+    )
+
+    assert offline.ended_at == ""
+    assert offline.ended_at_source == ""
+    assert offline.vod_url == "https://www.youtube.com/watch?v=bad"
+    db.close()
+
+
+def test_youtube_cold_offline_feed_vod_without_end_time_shows_no_elapsed(
+    tmp_path,
+) -> None:
+    """Never-live YouTube channels must not show poll time as ended_at."""
+    from datetime import datetime, timezone
+
+    class FeedVodOnlyFetcher(FakeYouTubeFetcher):
+        def get_latest_finished_vod(
+            self, channel_name: str, *, items=None
+        ) -> FinishedVod | None:
+            return FinishedVod(
+                url="https://www.youtube.com/watch?v=hy_5pf6-des",
+                title="Past stream",
+            )
+
+    fetcher = FeedVodOnlyFetcher([])
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+    confirmed = datetime.now(timezone.utc).isoformat()
+
+    offline = monitor._build_youtube_offline_channel_status(
+        entry,
+        confirmed,
+        fetcher=fetcher,
+        payload=None,
+        prev_cs=None,
+        extra_vod_url="https://www.youtube.com/watch?v=hy_5pf6-des",
+    )
+
+    assert offline.status is False
+    assert offline.vod_url == "https://www.youtube.com/watch?v=hy_5pf6-des"
+    assert offline.ended_at == ""
+    assert offline.ended_at_source == ""
+    db.close()
+
+
+def test_twitch_tier2_clears_pending_without_archive(
+    monkeypatch, tmp_path,
+) -> None:
+    """After tier-2, cold offline Twitch rows must leave pending state."""
+    partial: dict[str, ChannelStatus] = {}
+
+    def on_partial(statuses: dict[str, ChannelStatus], _names: dict[str, str]) -> None:
+        partial.update(statuses)
+
+    fetcher = FakeTwitchFetcher([False, False])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "karlylinnea"}],
+        db=db,
+        on_partial_snapshot=on_partial,
+    )
+    entry = ChannelEntry(platform="twitch", name="karlylinnea")
+
+    _check_and_commit(monitor, entry)
+
+    with monitor._lock:
+        row = monitor._last_status["twitch:karlylinnea"]
+        assert isinstance(row, ChannelStatus)
+        assert row.ended_at_source != "pending"
+        assert row.ended_at == ""
+    db.close()
+
+
 def test_twitch_cold_offline_shows_confirmed_without_archive(
     monkeypatch, tmp_path
 ) -> None:
@@ -1304,7 +1643,8 @@ def test_twitch_cold_offline_shows_confirmed_without_archive(
         offline = monitor._last_status["twitch:hello"]
         assert isinstance(offline, ChannelStatus)
         assert offline.status is False
-        assert offline.ended_at_source == "confirmed"
+        assert offline.ended_at == ""
+        assert offline.ended_at_source == ""
         assert offline.vod_url == ""
     db.close()
 
@@ -1965,7 +2305,11 @@ class SlowFetcher:
         )
 
     def get_channel_items(
-        self, channel_name: str, *, fill_timing: bool = True
+        self,
+        channel_name: str,
+        *,
+        fill_timing: bool = True,
+        timeout: float | None = None,
     ) -> list[VideoItem]:
         return []
 
@@ -1986,7 +2330,11 @@ class CountingTwitchFetcher:
         )
 
     def get_channel_items(
-        self, channel_name: str, *, fill_timing: bool = True
+        self,
+        channel_name: str,
+        *,
+        fill_timing: bool = True,
+        timeout: float | None = None,
     ) -> list[VideoItem]:
         return []
 
@@ -2118,10 +2466,16 @@ def test_youtube_poll_passes_fill_timing_false(monkeypatch, tmp_path) -> None:
 
     class TimingAwareFetcher(FakeYouTubeFetcher):
         def get_channel_items(
-            self, channel_name: str, *, fill_timing: bool = True
+            self,
+            channel_name: str,
+            *,
+            fill_timing: bool = True,
+            timeout: float | None = None,
         ) -> list[VideoItem]:
             captured.append(fill_timing)
-            return super().get_channel_items(channel_name, fill_timing=fill_timing)
+            return super().get_channel_items(
+                channel_name, fill_timing=fill_timing, timeout=timeout
+            )
 
     live = VideoItem(
         video_id="vid1",
@@ -2159,10 +2513,17 @@ def test_youtube_offline_reuses_channel_items() -> None:
         platform = "youtube"
 
         def get_channel_items(
-            self, channel_name: str, *, fill_timing: bool = True
+            self,
+            channel_name: str,
+            *,
+            fill_timing: bool = True,
+            timeout: float | None = None,
         ) -> list[VideoItem]:
             fetch_calls.append(channel_name)
             return []
+
+        def enrich_upcoming_for_details(self, items: list[VideoItem]) -> None:
+            return None
 
         def get_latest_finished_vod(
         self, channel_name: str, *, items=None
@@ -2621,7 +2982,10 @@ def test_restart_thread_runs_maintenance(monkeypatch, tmp_path) -> None:
         "_run_maintenance",
         lambda *, force=False: calls.append(force),
     )
-    monkeypatch.setattr(monitor, "_run", lambda: None)
+    def _run_once() -> None:
+        monitor._run_maintenance(force=True)
+
+    monkeypatch.setattr(monitor, "_run", _run_once)
     monitor.stop()
     monitor.restart_thread()
     assert calls == [True]
@@ -2743,7 +3107,8 @@ def test_youtube_fetch_unavailable_cold_start_writes_offline(
         row = monitor._last_status["youtube:yt"]
         assert isinstance(row, ChannelStatus)
         assert row.status is False
-        assert row.ended_at_source == "confirmed"
+        assert row.ended_at_source == "pending"
+        assert row.ended_at == ""
     db.close()
 
 
@@ -2866,7 +3231,11 @@ def test_execute_poll_cycle_dispatches_all_live_before_poll_complete(
             )
 
         def get_channel_items(
-            self, channel_name: str, *, fill_timing: bool = True
+            self,
+            channel_name: str,
+            *,
+            fill_timing: bool = True,
+            timeout: float | None = None,
         ) -> list[VideoItem]:
             return []
 

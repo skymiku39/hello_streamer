@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 _TWITCH_PATTERNS = [
     re.compile(r"^/([A-Za-z0-9_]+)(?:/.*)?$"),
@@ -47,6 +47,16 @@ def parse_url(text: str) -> ParsedChannel | None:
         return None
 
     if host in {"youtube.com", "www.youtube.com"}:
+        if path in {"/watch", "/watch/"} or path.startswith("/watch"):
+            video_id = (parse_qs(parsed.query).get("v") or [""])[0].strip()
+            if video_id:
+                from stream_monitor.fetcher.youtube import YouTubeFetcher
+
+                resolved = YouTubeFetcher().resolve_channel_from_video(video_id)
+                if resolved is not None:
+                    return ParsedChannel(platform="youtube", name=resolved[0])
+            return None
+
         decoded_path = unquote(path)
         handle_match = _YOUTUBE_HANDLE_RE.search(decoded_path)
         if handle_match:

@@ -60,7 +60,11 @@ class StreamFetcher(ABC):
         ...
 
     def get_channel_items(
-        self, channel_name: str, *, fill_timing: bool = True
+        self,
+        channel_name: str,
+        *,
+        fill_timing: bool = True,
+        timeout: float | None = None,
     ) -> list[VideoItem] | None:
         """Return video items from channel page.
 

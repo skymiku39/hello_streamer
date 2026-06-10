@@ -101,6 +101,18 @@ def _status_row_label_width() -> int:
     )
 
 
+_STATUS_NAME_MAX_LEN = 22 * 3
+
+
+def _truncate_status_name(
+    name: str, *, max_len: int = _STATUS_NAME_MAX_LEN
+) -> str:
+    name = (name or "").strip()
+    if len(name) <= max_len:
+        return name
+    return name[: max(0, max_len - 1)] + "…"
+
+
 def _status_bar_text_width() -> int:
     keys = (
         "status.idle",
@@ -108,8 +120,15 @@ def _status_bar_text_width() -> int:
         "status.watching",
         "status.stopped",
         "status.monitor_restarted",
+        "status.poll_checking",
     )
-    return max(96, max(_measure_text(tr(k)) for k in keys) + 16)
+    sample = tr("status.poll_checking", name="RunRunLuna")
+    two_line = f"{tr('status.trigger_running')}\n{sample}"
+    return max(
+        96,
+        max(_measure_text(tr(k)) for k in keys) + 16,
+        _measure_text(two_line) + 16,
+    )
 
 
 def _language_icon(size: int = 20) -> ctk.CTkImage:
@@ -185,9 +204,15 @@ def _format_elapsed(started_at: str) -> str:
     return _format_minutes_delta((datetime.now(timezone.utc) - dt).total_seconds())
 
 
-def _format_row_time(state: str, duration: str) -> str:
+def _format_row_time(
+    state: str, duration: str, *, ended_at_source: str = ""
+) -> str:
     """Wrap a formatted duration with a row-level i18n label."""
     if not duration:
+        if state == "offline":
+            if ended_at_source == "pending":
+                return tr("status.row.time.pending_detail")
+            return tr("status.row.time.no_data")
         return ""
     if state == "live":
         return tr("status.row.time.live", elapsed=duration)

@@ -1,117 +1,25 @@
-# Hello Streamer v0.9.16
+# Hello Streamer v0.9.17
 
-## 頻道列時間說明
+## YouTube 監測與輪詢
 
-- **時間欄位加上文案**：LIVE 顯示「已開播」、OFFLINE 顯示「已下播」、待機室顯示「N 後開始」，五語系同步；tooltip 仍保留錄播／監聽確認等細節
+- **LIVE 真實開播時間**：Tier-2 會從 watch 頁讀取 `startTimestamp`；首次偵測的暫時時間不會阻擋後續補正
+- **穩定輪詢精簡**：已確認 LIVE／離線狀態的頻道，後續輪詢省略 VOD 重查、upcoming／LIVE watch enrich 等重操作
+- **Tier-1 先 YouTube**：兩梯次輪詢改為先完成所有 YouTube probe，再跑 Twitch，減少 worker 搶占
+- **429 限速**：YouTube 全局限速與 cooldown，降低大量頻道時的 rate limit
+- **watch?v= 新增頻道**：貼上影片網址可透過 oEmbed／watch 頁解析頻道名稱
 
-## 文件
+## 狀態顯示修正
 
-- **README 輪詢說明**：補充檢查間隔、兩梯次輪詢，以及 Twitch / YouTube 單頻道典型 HTTP 耗時
-
-## 發布流程
-
-- **Release 說明**：GitHub Release 改為只使用 `RELEASE_NOTES.md` 內容，不再附加自動產生的 release notes
-
-## 下載檔案
-
-- Windows 請下載 `HelloStreamer-v0.9.16-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.9.16-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.16-linux-arm64.tar.gz`
-
-## 升級提醒
-
-- 從 v0.9.15 升級可直接覆蓋執行檔；`config.json` 無需變更。
-
----
-
-# Hello Streamer v0.9.15
-
-## YouTube 狀態顯示修正
-
-- **待機室不再誤顯 LIVE**：開播邊緣回呼正確區分 upcoming / live / offline；若同一輪已有 Tier-2 快照，不再用粗糙的 `StreamInfo` 覆寫待機室或離線列（修復 v0.9.14 待機室被標成 LIVE）
-- **回放不再誤判直播**：YouTube lockup 的 LIVE 僅依縮圖 badge 判斷；metadata 中的「直播時間：N 週前」等回放描述不再觸發 LIVE
-
-## 喚醒驗證
-
-- **TIDUS 待機室 bucket 對齊**：offline row 上的 `upcoming_url` 在喚醒驗證時歸類為 upcoming，與 probe 一致，避免穩定待機室狀態被不必要地 deferred
+- **離線時間**：修正 VOD 下播時間被輪詢當下時間覆蓋、冷啟動誤顯「已下播」等問題
+- **深度檢查文案**：Tier-2 完成後清除 `pending`；穩定離線列不再與「待深度檢查」來回跳動
+- **只監測 UI**：狀態列副行顯示目前檢查中的頻道；頻道列即時 partial 更新不再死鎖
 
 ## 下載檔案
 
-- Windows 請下載 `HelloStreamer-v0.9.15-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.9.15-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.15-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v0.9.17-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.9.17-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.17-linux-arm64.tar.gz`
 
 ## 升級提醒
 
-- 從 v0.9.14 升級可直接覆蓋執行檔；`config.json` 無需變更。
-
----
-
-# Hello Streamer v0.9.14
-
-## 多頻道觸發與狀態顯示
-
-- **批次派發開播事件**：同一輪輪詢中，所有頻道的開播事件會在 Tier-2 狀態提交後一次送出，避免「開啟並保持監聽」只開第一個頻道就停止，或「開啟並停止」在其他人尚未開啟前就結束監聽
-- **即時更新列表狀態**：不論觸發模式或只監測模式，偵測到開播時立即更新頻道列 LIVE 標籤與標題，不必等到整輪輪詢完成
-
-## 下載檔案
-
-- Windows 請下載 `HelloStreamer-v0.9.14-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.9.14-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.14-linux-arm64.tar.gz`
-
-## 升級提醒
-
-- 從 v0.9.13 升級可直接覆蓋執行檔；`config.json` 無需變更。
-
----
-
-# Hello Streamer v0.9.13
-
-## 長期運行維護
-
-- **YouTube watch 頁快取**：上限 256 筆，過期（5 分鐘）與超量時自動修剪，避免長期監聽記憶體緩慢累積
-- **定期 housekeeping**：啟動、執行緒重啟與每 24 小時輪詢後，清理 `seen_videos.db` 超過 30 天的紀錄並修剪 YouTube 快取
-
-## 瀏覽器自動關閉安全
-
-- **隔離檢查**：未啟用獨立 Profile 時，跳過離題頁 prune，且下播關窗不使用標題關鍵字 fallback（只關 Hello Streamer 追蹤到的 HWND）
-- **自訂瀏覽器啟動失敗**：若已勾選自動關閉相關選項，改走系統瀏覽器時會封鎖 title fallback，降低誤關其他分頁的風險
-- **分頁模式誠實提示**：未勾選「獨立視窗」且未啟用 App Mode 時，程式**無法**登記 HWND／追蹤記憶體／自動關閉；設定介面會停用相關選項並顯示說明
-- **YouTube lockup 多語言**：改善英文 LIVE、日文配信予定等 badge 的直播／待機室判斷
-
-## 下載檔案
-
-- Windows 請下載 `HelloStreamer-v0.9.13-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.9.13-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.13-linux-arm64.tar.gz`
-
-## 升級提醒
-
-- 從 v0.9.12 升級可直接覆蓋執行檔；`config.json` 無需變更。
-- 若使用「直播結束自動關閉」或「只保留直播相關視窗」，建議確認已啟用獨立 Profile（儲存瀏覽器設定時會自動修復）。
-
----
-
-# Hello Streamer v0.9.12
-
-## 休眠／喚醒穩定性
-
-- **喚醒驗證輪詢**：偵測長時間暫停（如睡眠）後，先多問一次 API；結果與現狀相同才刷新 UI，不同或無回應則保留狀態等下一輪正式輪詢
-- **監控執行緒存活**：poll 例外不再終止背景 thread；dead thread 每 10 秒或即時自動重啟，且**保留** `_last_status`、strikes 等記憶體狀態
-- **fetch 失敗統一**：`fetch exception` 與 `None` 同樣計入離線防抖，不再永久凍結在 LIVE
-- **RequestException 重試**：Twitch / YouTube HTTP 短暫失敗會重試（與 Timeout 對齊）
-- **TIDUS 失敗分流**：HTTP 失敗回 `None`（計 strike），真空白 feed 才走 fallback
-- **close_on_offline 保護**：喚醒驗證輪期間不關閉播放器
-
-## 下載檔案
-
-- Windows 請下載 `HelloStreamer-v0.9.12-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.9.12-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.12-linux-arm64.tar.gz`
-
-## 升級提醒
-
-- 從 v0.9.11 升級可直接覆蓋執行檔；`config.json` 無需變更。
-- 喚醒後可在 log 搜尋 `wake_verify_confirmed` / `wake_verify_deferred` 觀察驗證行為。
-- 監聽頻道較多時，建議檢查間隔維持 ≥30 秒，以降低 Twitch rate limit 風險。
+- 從 v0.9.16 升級可直接覆蓋執行檔；`config.json` 無需變更。
