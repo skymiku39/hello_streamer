@@ -44,17 +44,16 @@ from stream_monitor.app_ui import (
     _button_width,
     _clamped_window_geometry,
     _fit_button,
-    _fit_label_width,
     _fit_option_menu,
     _font,
     _format_countdown,
     _format_elapsed,
     _format_row_time,
     _language_icon,
-    _truncate_status_name,
     _status_row_label_width,
     _tooltip,
     _tooltip_tr,
+    _truncate_status_name,
 )
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo

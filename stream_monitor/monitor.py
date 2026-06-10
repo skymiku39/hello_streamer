@@ -2164,21 +2164,21 @@ class Monitor:
                 self._offline_strikes.pop(_live_cache_key(entry.key, vid), None)
 
             if has_live:
-                keep_live_key = (
-                    lambda key: (
-                        _entry_key_from_live_cache_key(key) != entry.key
-                        or key.rsplit("|", 1)[-1] in active_live_ids
-                    )
-                )
                 self._live_started_at = {
                     key: value
                     for key, value in self._live_started_at.items()
-                    if keep_live_key(key)
+                    if (
+                        _entry_key_from_live_cache_key(key) != entry.key
+                        or key.rsplit("|", 1)[-1] in active_live_ids
+                    )
                 }
                 self._live_platform_started_at = {
                     key
                     for key in self._live_platform_started_at
-                    if keep_live_key(key)
+                    if (
+                        _entry_key_from_live_cache_key(key) != entry.key
+                        or key.rsplit("|", 1)[-1] in active_live_ids
+                    )
                 }
             elif has_strike_pending:
                 pass
