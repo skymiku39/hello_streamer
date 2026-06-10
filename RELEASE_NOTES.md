@@ -1,3 +1,29 @@
+# Hello Streamer v0.9.16
+
+## 頻道列時間說明
+
+- **時間欄位加上文案**：LIVE 顯示「已開播」、OFFLINE 顯示「已下播」、待機室顯示「N 後開始」，五語系同步；tooltip 仍保留錄播／監聽確認等細節
+
+## 文件
+
+- **README 輪詢說明**：補充檢查間隔、兩梯次輪詢，以及 Twitch / YouTube 單頻道典型 HTTP 耗時
+
+## 發布流程
+
+- **Release 說明**：GitHub Release 改為只使用 `RELEASE_NOTES.md` 內容，不再附加自動產生的 release notes
+
+## 下載檔案
+
+- Windows 請下載 `HelloStreamer-v0.9.16-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.9.16-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.16-linux-arm64.tar.gz`
+
+## 升級提醒
+
+- 從 v0.9.15 升級可直接覆蓋執行檔；`config.json` 無需變更。
+
+---
+
 # Hello Streamer v0.9.15
 
 ## YouTube 狀態顯示修正

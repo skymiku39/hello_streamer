@@ -99,6 +99,9 @@ _ZH_TW: dict[str, str] = {
     "status.row.live": " ● LIVE ",
     "status.row.offline": " OFFLINE ",
     "status.row.elapsed.under_one_min": "<1m",
+    "status.row.time.live": "已開播 {elapsed}",
+    "status.row.time.offline": "已下播 {elapsed}",
+    "status.row.time.starts_in": "{countdown} 後開始",
 
     # Tray
     "tray.show": "顯示主畫面",
@@ -318,6 +321,9 @@ _ZH_CN: dict[str, str] = {
     "status.row.live": " ● LIVE ",
     "status.row.offline": " OFFLINE ",
     "status.row.elapsed.under_one_min": "<1m",
+    "status.row.time.live": "已开播 {elapsed}",
+    "status.row.time.offline": "已下播 {elapsed}",
+    "status.row.time.starts_in": "{countdown} 后开始",
 
     # Tray
     "tray.show": "显示主界面",
@@ -529,6 +535,9 @@ _EN: dict[str, str] = {
     "status.row.live": " ● LIVE ",
     "status.row.offline": " OFFLINE ",
     "status.row.elapsed.under_one_min": "<1m",
+    "status.row.time.live": "Live {elapsed}",
+    "status.row.time.offline": "Off {elapsed}",
+    "status.row.time.starts_in": "in {countdown}",
 
     "tray.show": "Show main window",
     "tray.trigger_active": "✓ Monitor + Trigger",
@@ -732,6 +741,9 @@ _JA: dict[str, str] = {
     "status.row.live": " ● LIVE ",
     "status.row.offline": " OFFLINE ",
     "status.row.elapsed.under_one_min": "<1分",
+    "status.row.time.live": "配信中 {elapsed}",
+    "status.row.time.offline": "終了 {elapsed}",
+    "status.row.time.starts_in": "{countdown} 後開始",
 
     "tray.show": "メイン画面を表示",
     "tray.trigger_active": "✓ 監視＋実行中",
@@ -935,6 +947,9 @@ _KO: dict[str, str] = {
     "status.row.live": " ● LIVE ",
     "status.row.offline": " OFFLINE ",
     "status.row.elapsed.under_one_min": "<1분",
+    "status.row.time.live": "방송 {elapsed}",
+    "status.row.time.offline": "종료 {elapsed}",
+    "status.row.time.starts_in": "{countdown} 후 시작",
 
     "tray.show": "메인 화면 표시",
     "tray.trigger_active": "✓ 감시 + 트리거 중",

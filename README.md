@@ -34,9 +34,9 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 | 平台 | 檔案 |
 | --- | --- |
-| Windows x64 | `HelloStreamer-v0.9.15-windows-x64.exe` |
-| Linux x64 | `HelloStreamer-v0.9.15-linux-x64.tar.gz` |
-| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v0.9.15-linux-arm64.tar.gz` |
+| Windows x64 | `HelloStreamer-v0.9.16-windows-x64.exe` |
+| Linux x64 | `HelloStreamer-v0.9.16-linux-x64.tar.gz` |
+| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v0.9.16-linux-arm64.tar.gz` |
 
 Windows 第一次執行時可能會顯示安全提示，請確認來源是本專案的 GitHub Release。
 
@@ -93,6 +93,19 @@ YouTube 預定直播會強制走「只通知」，避免尚未開播時就自動
 - YouTube fallback 監控與 TIDUS 清單恢復時產生錯誤離線事件。
 
 v0.9.13 起，程式會在啟動、監控執行緒重啟與每 24 小時自動清理 `seen_videos.db` 舊紀錄，並修剪 YouTube watch 頁快取，適合長期常駐監聽。
+
+### 檢查間隔與單輪耗時
+
+主視窗的「檢查間隔」（預設 60 秒、最低 10 秒）決定**多久輪詢一次**；從主播開播到你看到 LIVE，通常約 **1 個檢查間隔 + 單輪 HTTP 耗時**。離線事件需連續兩次確認，最慢約 **2 × 檢查間隔**。
+
+每輪採兩梯次：先並行探測開播（Tier 1），再並行更新離線／待機室細節（Tier 2）。多頻道預設最多 4 路並行，N 個頻道的牆鐘時間約為 `ceil(N/4) × 單頻道耗時`（兩個 tier 相加）。
+
+| 平台 | 單頻道典型 HTTP（每輪） | 主要請求 |
+| --- | --- | --- |
+| Twitch | 約 0.5–2 秒（通常 1 次 GQL） | `StreamStatus`；冷啟動離線時可能再查 ARCHIVE 錄播 |
+| YouTube | 約 1–4 秒（1 次 streams 頁 + 0–1 watch 頁） | `/@channel/streams`；Tier 2 可能補抓 watch 頁取得開播／待機時間 |
+
+Twitch 建議檢查間隔 ≥30 秒，以降低 rate limit 風險。若單輪耗時超過檢查間隔，log 會出現 `Poll slower than interval` 警告。
 
 ## 介面語言
 

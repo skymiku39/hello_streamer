@@ -49,6 +49,7 @@ from stream_monitor.app_ui import (
     _font,
     _format_countdown,
     _format_elapsed,
+    _format_row_time,
     _language_icon,
     _status_bar_text_width,
     _status_row_label_width,
@@ -186,9 +187,9 @@ class ChannelRow(ctk.CTkFrame):
         self.time_label = ctk.CTkLabel(
             self,
             text="",
-            width=72,
+            width=120,
             anchor="e",
-            font=_font(12, "bold"),
+            font=_font(11, "bold"),
             text_color="#aab3d5",
         )
         self.time_label.pack(side="left", padx=(6, 0), pady=8)
@@ -580,26 +581,31 @@ class ChannelRow(ctk.CTkFrame):
 
         self._render_status_visuals()
 
-    def refresh_elapsed_display(self) -> None:
-        """Recompute time_label from cached ISO timestamp (live/offline/upcoming)."""
-        if not self.channel.get("enabled", True):
-            return
+    def _compose_time_label_text(self) -> str:
+        """Build i18n time label from cached status timestamps."""
         state = self._status_state
         if state == "live":
             self._status_elapsed = _format_elapsed(self._status_timestamp)
-            self.time_label.configure(text=self._status_elapsed)
-        elif state == "offline":
+            return _format_row_time("live", self._status_elapsed)
+        if state == "upcoming":
+            self._status_countdown = _format_countdown(self._status_timestamp)
+            return _format_row_time("upcoming", self._status_countdown)
+        if state == "offline":
             if self._upcoming_url and self._status_scheduled_start:
                 self._status_countdown = _format_countdown(
                     self._status_scheduled_start
                 )
-                self.time_label.configure(text=self._status_countdown)
-            else:
-                self._status_elapsed = _format_elapsed(self._status_timestamp)
-                self.time_label.configure(text=self._status_elapsed)
-        elif state == "upcoming":
-            self._status_countdown = _format_countdown(self._status_timestamp)
-            self.time_label.configure(text=self._status_countdown)
+                if self._status_countdown:
+                    return _format_row_time("countdown", self._status_countdown)
+            self._status_elapsed = _format_elapsed(self._status_timestamp)
+            return _format_row_time("offline", self._status_elapsed)
+        return ""
+
+    def refresh_elapsed_display(self) -> None:
+        """Recompute time_label from cached ISO timestamp (live/offline/upcoming)."""
+        if not self.channel.get("enabled", True):
+            return
+        self.time_label.configure(text=self._compose_time_label_text())
 
     def _render_status_visuals(self) -> None:
         """Apply the cached status data onto the visible widgets (i18n-aware)."""
@@ -622,7 +628,7 @@ class ChannelRow(ctk.CTkFrame):
             return
 
         if state == "upcoming":
-            self.time_label.configure(text=self._status_countdown)
+            self.time_label.configure(text=self._compose_time_label_text())
             self.status_label.configure(
                 text=tr("status.row.upcoming"),
                 text_color="white",
@@ -634,7 +640,7 @@ class ChannelRow(ctk.CTkFrame):
             return
 
         if state == "live":
-            self.time_label.configure(text=self._status_elapsed)
+            self.time_label.configure(text=self._compose_time_label_text())
             self.status_label.configure(
                 text=tr("status.row.live"),
                 text_color="white",
@@ -646,10 +652,7 @@ class ChannelRow(ctk.CTkFrame):
             return
 
         # offline — elapsed since end, or countdown when waiting room is linked
-        if self._upcoming_url and self._status_countdown:
-            self.time_label.configure(text=self._status_countdown)
-        else:
-            self.time_label.configure(text=self._status_elapsed)
+        self.time_label.configure(text=self._compose_time_label_text())
         self.status_label.configure(
             text=tr("status.row.offline"),
             text_color="#999999",

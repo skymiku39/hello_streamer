@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from stream_monitor import i18n
 from stream_monitor.app import App, ChannelRow
+from stream_monitor.app_ui import _format_row_time
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelStatus
 
@@ -133,6 +135,15 @@ def test_channel_status_from_stream_info_never_maps_upcoming_as_live() -> None:
     status = App._channel_status_from_stream_info(info)
     assert status.status == "upcoming"
     assert status.status is not True
+
+
+def test_format_row_time_live_offline_upcoming() -> None:
+    i18n.set_language("zh_TW", notify=False)
+    assert _format_row_time("live", "2h 15m") == "已開播 2h 15m"
+    assert _format_row_time("offline", "30m") == "已下播 30m"
+    assert _format_row_time("upcoming", "1h 0m") == "1h 0m 後開始"
+    assert _format_row_time("countdown", "45m") == "45m 後開始"
+    assert _format_row_time("live", "") == ""
 
 
 def test_status_snapshot_guard_preserves_existing_state() -> None:

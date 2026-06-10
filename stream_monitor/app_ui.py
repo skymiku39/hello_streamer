@@ -185,6 +185,19 @@ def _format_elapsed(started_at: str) -> str:
     return _format_minutes_delta((datetime.now(timezone.utc) - dt).total_seconds())
 
 
+def _format_row_time(state: str, duration: str) -> str:
+    """Wrap a formatted duration with a row-level i18n label."""
+    if not duration:
+        return ""
+    if state == "live":
+        return tr("status.row.time.live", elapsed=duration)
+    if state == "offline":
+        return tr("status.row.time.offline", elapsed=duration)
+    if state in ("upcoming", "countdown"):
+        return tr("status.row.time.starts_in", countdown=duration)
+    return duration
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------

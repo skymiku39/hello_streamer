@@ -156,6 +156,5 @@ jobs:
         with:
           files: release/*
           body_path: RELEASE_NOTES.md
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
