@@ -233,6 +233,21 @@ class TestParseChannelItems:
         assert len(items) == 1
         assert items[0].style == "DEFAULT"
 
+    def test_lockup_past_stream_metadata_is_not_live(self) -> None:
+        """Ended broadcast replays: duration badge + 'streamed ago' metadata."""
+        fetcher = YouTubeFetcher()
+        lockup = _make_lockup_view_model(
+            "vid_replay",
+            "Past Keynote",
+            badge_text="58:48",
+            metadata_text="直播時間：2 週前",
+        )
+        data = _make_initial_data_with_lockups([lockup])
+        items, _ = fetcher._parse_channel_items(data, "chan")
+
+        assert len(items) == 1
+        assert items[0].style == "DEFAULT"
+
     def test_extracts_default_video(self) -> None:
         fetcher = YouTubeFetcher()
         vr = _make_video_renderer("vid3", "Regular Video", "DEFAULT")

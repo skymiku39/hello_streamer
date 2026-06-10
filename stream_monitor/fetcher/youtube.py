@@ -433,11 +433,14 @@ class YouTubeFetcher(StreamFetcher):
         searchable = " ".join(combined).upper()
         if "UPCOMING" in searchable or "PREMIERE" in searchable:
             return "UPCOMING"
-        for text in combined:
+        # LIVE must come from thumbnail badges (e.g. "直播", "LIVE").
+        # Metadata often says "直播時間：2 週前" for ended broadcasts — matching
+        # "直播" there would mark every past stream replay as LIVE.
+        for text in badge_texts:
             low = text.lower()
             if any(marker in low for marker in _LOCKUP_LIVE_MARKERS):
                 return "LIVE"
-        if "LIVE" in searchable:
+        if "LIVE" in " ".join(badge_texts).upper():
             return "LIVE"
         return "DEFAULT"
 

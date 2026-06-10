@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from stream_monitor.app import ChannelRow
+from stream_monitor.app import App, ChannelRow
+from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelStatus
 
 
@@ -85,6 +86,53 @@ def test_channel_row_none_resets_placeholder() -> None:
         assert row._status_state is None
     finally:
         root.destroy()
+
+
+def test_channel_status_from_stream_info_maps_live_fields() -> None:
+    info = StreamInfo(
+        channel="hello",
+        platform="twitch",
+        is_live=True,
+        title="Stream title",
+        url="https://www.twitch.tv/hello",
+        started_at="2020-01-01T12:00:00+00:00",
+    )
+    status = App._channel_status_from_stream_info(info)
+    assert status.status is True
+    assert status.title == "Stream title"
+    assert status.url == "https://www.twitch.tv/hello"
+    assert status.started_at == "2020-01-01T12:00:00+00:00"
+
+
+def test_channel_status_from_stream_info_maps_youtube_upcoming() -> None:
+    info = StreamInfo(
+        channel="ytchan",
+        platform="youtube",
+        is_live=False,
+        title="Waiting room",
+        url="https://www.youtube.com/watch?v=up1",
+        stream_status="upcoming",
+        scheduled_start="2099-01-01T12:00:00+00:00",
+    )
+    status = App._channel_status_from_stream_info(info)
+    assert status.status == "upcoming"
+    assert status.scheduled_start == "2099-01-01T12:00:00+00:00"
+
+
+def test_channel_status_from_stream_info_never_maps_upcoming_as_live() -> None:
+    """Regression: v0.9.14 edge handler used status=True for every StreamInfo."""
+    info = StreamInfo(
+        channel="ytchan",
+        platform="youtube",
+        is_live=False,
+        title="Waiting room",
+        url="https://www.youtube.com/watch?v=up1",
+        stream_status="upcoming",
+        scheduled_start="2099-01-01T12:00:00+00:00",
+    )
+    status = App._channel_status_from_stream_info(info)
+    assert status.status == "upcoming"
+    assert status.status is not True
 
 
 def test_status_snapshot_guard_preserves_existing_state() -> None:

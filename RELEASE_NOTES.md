@@ -1,3 +1,45 @@
+# Hello Streamer v0.9.15
+
+## YouTube 狀態顯示修正
+
+- **待機室不再誤顯 LIVE**：開播邊緣回呼正確區分 upcoming / live / offline；若同一輪已有 Tier-2 快照，不再用粗糙的 `StreamInfo` 覆寫待機室或離線列（修復 v0.9.14 待機室被標成 LIVE）
+- **回放不再誤判直播**：YouTube lockup 的 LIVE 僅依縮圖 badge 判斷；metadata 中的「直播時間：N 週前」等回放描述不再觸發 LIVE
+
+## 喚醒驗證
+
+- **TIDUS 待機室 bucket 對齊**：offline row 上的 `upcoming_url` 在喚醒驗證時歸類為 upcoming，與 probe 一致，避免穩定待機室狀態被不必要地 deferred
+
+## 下載檔案
+
+- Windows 請下載 `HelloStreamer-v0.9.15-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.9.15-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.15-linux-arm64.tar.gz`
+
+## 升級提醒
+
+- 從 v0.9.14 升級可直接覆蓋執行檔；`config.json` 無需變更。
+
+---
+
+# Hello Streamer v0.9.14
+
+## 多頻道觸發與狀態顯示
+
+- **批次派發開播事件**：同一輪輪詢中，所有頻道的開播事件會在 Tier-2 狀態提交後一次送出，避免「開啟並保持監聽」只開第一個頻道就停止，或「開啟並停止」在其他人尚未開啟前就結束監聽
+- **即時更新列表狀態**：不論觸發模式或只監測模式，偵測到開播時立即更新頻道列 LIVE 標籤與標題，不必等到整輪輪詢完成
+
+## 下載檔案
+
+- Windows 請下載 `HelloStreamer-v0.9.14-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v0.9.14-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.14-linux-arm64.tar.gz`
+
+## 升級提醒
+
+- 從 v0.9.13 升級可直接覆蓋執行檔；`config.json` 無需變更。
+
+---
+
 # Hello Streamer v0.9.13
 
 ## 長期運行維護

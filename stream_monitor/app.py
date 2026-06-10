@@ -1453,6 +1453,36 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
     # Event bridge (monitor thread -> UI thread)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _channel_status_from_stream_info(info: StreamInfo) -> ChannelStatus:
+        stream_status = info.stream_status or ("live" if info.is_live else "offline")
+        if stream_status == "upcoming":
+            return ChannelStatus(
+                status="upcoming",
+                url=info.url,
+                title=info.title,
+                scheduled_start=info.scheduled_start or "",
+            )
+        if stream_status == "live" or info.is_live:
+            return ChannelStatus(
+                status=True,
+                url=info.url,
+                title=info.title,
+                started_at=info.started_at or "",
+            )
+        return ChannelStatus(
+            status=False,
+            url=info.url,
+            title=info.title,
+            vod_url=info.url if stream_status == "video" else "",
+        )
+
+    def _apply_live_row_status(self, entry: ChannelEntry, info: StreamInfo) -> None:
+        for row in self._channel_rows:
+            if row.key == entry.key:
+                row.set_status(self._channel_status_from_stream_info(info))
+                break
+
     def _on_channel_live(self, entry: ChannelEntry, info: StreamInfo) -> None:
         self._event_queue.put(("live", (entry, info)))
 
@@ -1575,6 +1605,12 @@ class App(ctk.CTk):
         for entry, info in live_events:
             if info.display_name:
                 self._apply_display_names({entry.key: info.display_name})
+            # Tier-2 snapshot (status_update) is authoritative when present —
+            # it carries upcoming_url / vod_url that StreamInfo edges lack.
+            # Applying a coarse StreamInfo mapping after the snapshot was
+            # overwriting YouTube UPCOMING/OFFLINE rows as LIVE.
+            if latest_status_update is None:
+                self._apply_live_row_status(entry, info)
 
             if not trigger_enabled:
                 continue

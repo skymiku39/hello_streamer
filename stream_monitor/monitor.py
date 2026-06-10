@@ -439,21 +439,7 @@ class Monitor:
         offline_count = 0
         went_live_count = 0
         commits: list[Callable[[], None]] = []
-
-        def _dispatch_live(
-            events: list[tuple[ChannelEntry, StreamInfo]],
-        ) -> None:
-            nonlocal went_live_count
-            for entry, info in events:
-                went_live_count += 1
-                if self._on_status_change:
-                    try:
-                        self._on_status_change(entry, info)
-                    except Exception:
-                        logger.exception(
-                            "on_status_change callback error for %s",
-                            entry.key,
-                        )
+        live_batch: list[tuple[ChannelEntry, StreamInfo]] = []
 
         tier1_started = time.monotonic()
         if (
@@ -471,7 +457,7 @@ class Monitor:
                     if self._stop_event.is_set():
                         break
                     try:
-                        _dispatch_live(future.result())
+                        live_batch.extend(future.result())
                     except Exception:
                         logger.exception(
                             "Tier-1 probe failed for a channel, skipping"
@@ -481,7 +467,7 @@ class Monitor:
                 if self._stop_event.is_set():
                     break
                 try:
-                    _dispatch_live(self._probe_live(entry))
+                    live_batch.extend(self._probe_live(entry))
                 except Exception:
                     logger.exception(
                         "Tier-1 probe failed for %s, skipping", entry.key
@@ -536,6 +522,21 @@ class Monitor:
 
         if self._stop_event.is_set():
             return time.monotonic() - poll_started
+
+        # Dispatch went-live only after tier-2 commits so the UI receives a
+        # complete snapshot in the same poll tick. Firing live callbacks
+        # during tier-1 allowed the UI thread to open/stop on the first
+        # channel while other probes were still running.
+        for entry, info in live_batch:
+            went_live_count += 1
+            if self._on_status_change:
+                try:
+                    self._on_status_change(entry, info)
+                except Exception:
+                    logger.exception(
+                        "on_status_change callback error for %s",
+                        entry.key,
+                    )
 
         # Dispatch went-offline events *after* went-live so the UI sees
         # transitions in a sensible order if both occur in the same poll.
@@ -601,6 +602,15 @@ class Monitor:
         if prev is None:
             return "offline"
         if isinstance(prev, ChannelStatus):
+            # TIDUS stores schedulable waiting rooms on the offline row
+            # (status=False + upcoming_url); fallback uses status="upcoming".
+            # Align buckets so wake verification does not defer a stable row.
+            if (
+                prev.status is False
+                and prev.upcoming_url
+                and _youtube_upcoming_is_usable(prev.scheduled_start)
+            ):
+                return "upcoming"
             return self._status_bucket(prev.status)
         return self._status_bucket(prev)
 

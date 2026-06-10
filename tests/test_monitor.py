@@ -2547,6 +2547,43 @@ def test_wake_verify_fetch_none_deferred(
     db.close()
 
 
+def test_youtube_tidus_upcoming_wake_bucket_matches_probe(
+    monkeypatch, tmp_path, caplog,
+) -> None:
+    """TIDUS offline+upcoming_url must bucket as upcoming for wake verify."""
+    from datetime import datetime, timedelta, timezone
+
+    soon = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
+    items = [
+        VideoItem(
+            video_id="vid_up",
+            title="Waiting Room",
+            style="UPCOMING",
+            url="https://youtube.com/watch?v=vid_up",
+            scheduled_start=soon,
+        )
+    ]
+    fetcher = FakeYouTubeFetcher([items])
+    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    _check_and_commit(monitor, entry)
+    with monitor._lock:
+        row = monitor._last_status["youtube:yt"]
+        assert row.status is False
+        assert row.upcoming_url
+
+    assert monitor._cached_status_bucket(entry) == "upcoming"
+    assert monitor._probe_channel_status(entry) == "upcoming"
+
+    caplog.set_level(logging.INFO)
+    monitor._run_wake_verification([entry], time.monotonic())
+    assert any("wake_verify_confirmed" in r.message for r in caplog.records)
+    db.close()
+
+
 def test_run_maintenance_cleans_db_and_youtube_cache(tmp_path) -> None:
     from stream_monitor.fetcher.youtube import YouTubeFetcher, _WatchDetails
 
@@ -2807,4 +2844,58 @@ def test_snapshot_readable_during_slow_youtube_offline_refresh(
     worker.join(timeout=2)
     assert not refresh_error
     assert elapsed < 0.2
+    db.close()
+
+
+def test_execute_poll_cycle_dispatches_all_live_before_poll_complete(
+    monkeypatch, tmp_path,
+) -> None:
+    """Went-live callbacks must batch until tier-2 commits, before poll_complete."""
+    order: list[str] = []
+
+    class MultiLiveTwitchFetcher:
+        platform = "twitch"
+
+        def get_stream_info(self, channel_name: str) -> StreamInfo:
+            return StreamInfo(
+                channel=channel_name,
+                platform="twitch",
+                is_live=True,
+                title=f"Live {channel_name}",
+                url=f"https://www.twitch.tv/{channel_name}",
+            )
+
+        def get_channel_items(
+            self, channel_name: str, *, fill_timing: bool = True
+        ) -> list[VideoItem]:
+            return []
+
+        def get_latest_finished_vod(
+            self, channel_name: str, *, items=None
+        ) -> FinishedVod | None:
+            return None
+
+    monkeypatch.setattr(
+        monitor_module, "get_fetcher", lambda _p: MultiLiveTwitchFetcher()
+    )
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[
+            {"platform": "twitch", "name": "a"},
+            {"platform": "twitch", "name": "b"},
+            {"platform": "twitch", "name": "c"},
+        ],
+        max_concurrent=4,
+        on_status_change=lambda entry, _info: order.append(f"live:{entry.name}"),
+        on_poll_complete=lambda: order.append("poll_complete"),
+        db=db,
+    )
+    monitor._execute_poll_cycle(time.monotonic())
+
+    assert order[-1] == "poll_complete"
+    assert {e for e in order if e != "poll_complete"} == {
+        "live:a",
+        "live:b",
+        "live:c",
+    }
     db.close()
