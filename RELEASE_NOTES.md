@@ -1,25 +1,35 @@
-# Hello Streamer v0.9.17
+# Hello Streamer v1.0.0
 
-## YouTube 監測與輪詢
+## 正式版
 
-- **LIVE 真實開播時間**：Tier-2 會從 watch 頁讀取 `startTimestamp`；首次偵測的暫時時間不會阻擋後續補正
-- **穩定輪詢精簡**：已確認 LIVE／離線狀態的頻道，後續輪詢省略 VOD 重查、upcoming／LIVE watch enrich 等重操作
-- **Tier-1 先 YouTube**：兩梯次輪詢改為先完成所有 YouTube probe，再跑 Twitch，減少 worker 搶占
-- **429 限速**：YouTube 全局限速與 cooldown，降低大量頻道時的 rate limit
-- **watch?v= 新增頻道**：貼上影片網址可透過 oEmbed／watch 頁解析頻道名稱
+Hello Streamer 1.0.0 為首個正式版里程碑，涵蓋 Twitch / YouTube 監聽、通知、瀏覽器自動開啟與長期常駐所需的穩定性改進。
 
-## 狀態顯示修正
+## 瀏覽器設定改版
 
-- **離線時間**：修正 VOD 下播時間被輪詢當下時間覆蓋、冷啟動誤顯「已下播」等問題
-- **深度檢查文案**：Tier-2 完成後清除 `pending`；穩定離線列不再與「待深度檢查」來回跳動
-- **只監測 UI**：狀態列副行顯示目前檢查中的頻道；頻道列即時 partial 更新不再死鎖
+- 單頁流程取代舊版「使用者 / 開發者」分頁，以「如何開啟直播頁」「使用哪個帳號」「視窗位置與大小」「自動整理」等區塊引導設定。
+- 不可用選項會隱藏而非僅灰掉，減少誤解。
+- 自動整理（下播關窗、停止時關閉等）僅在程式專用帳號搭配獨立視窗時可用。
+
+## YouTube 監測與輪詢（延續 v0.9.17）
+
+- LIVE 真實開播時間：Tier-2 從 watch 頁讀取 `startTimestamp`。
+- 穩定輪詢精簡：已確認 LIVE／離線的頻道省略重操作。
+- Tier-1 先 YouTube，再跑 Twitch。
+- 429 限速與 cooldown。
+- `watch?v=` 網址可解析頻道名稱。
+
+## 長期運作
+
+- Log 自動輪替（約 12 MB 上限）。
+- 每 24 小時清理 `seen_videos.db` 舊紀錄與 YouTube watch 快取。
+- 移除頻道時同步清理監控記憶體狀態。
 
 ## 下載檔案
 
-- Windows 請下載 `HelloStreamer-v0.9.17-windows-x64.exe`
-- Linux x64 請下載 `HelloStreamer-v0.9.17-linux-x64.tar.gz`
-- Raspberry Pi 64-bit 請下載 `HelloStreamer-v0.9.17-linux-arm64.tar.gz`
+- Windows 請下載 `HelloStreamer-v1.0.0-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v1.0.0-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v1.0.0-linux-arm64.tar.gz`
 
 ## 升級提醒
 
-- 從 v0.9.16 升級可直接覆蓋執行檔；`config.json` 無需變更。
+- 從 v0.9.x 升級可直接覆蓋執行檔；`config.json` 會自動遷移，無需手動修改。

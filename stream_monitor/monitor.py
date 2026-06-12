@@ -333,6 +333,11 @@ class Monitor:
             self._twitch_seen_live = {
                 key for key in self._twitch_seen_live if key in keys
             }
+            self._stable_status_polls = {
+                key: value
+                for key, value in self._stable_status_polls.items()
+                if key in keys
+            }
             for entry in self._entries:
                 if entry.enabled and not old_enabled.get(entry.key, True):
                     self._last_status.pop(entry.key, None)

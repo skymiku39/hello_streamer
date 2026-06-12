@@ -15,10 +15,9 @@ def _migrated_defaults() -> dict:
     """Return ``DEFAULT_CONFIG`` with the same migrations ``load()`` applies.
 
     Several legacy tests pre-date :func:`_migrate_browser_settings`, which
-    fills in ``user_data_dir`` whenever ``per_channel_profile=True`` (the
-    out-of-box default) so the on-disk schema cannot drift back into the
-    cross-window HWND contamination pitfall. Use this helper instead of
-    comparing against ``DEFAULT_CONFIG`` literally.
+    may fill in ``user_data_dir`` when ``per_channel_profile=True`` with an
+    empty path. Use this helper instead of comparing against
+    ``DEFAULT_CONFIG`` literally.
     """
     expected = deepcopy(config_manager.DEFAULT_CONFIG)
     config_manager._migrate_browser_settings(expected["browser_settings"])

@@ -1991,6 +1991,26 @@ def test_youtube_tidus_single_missing_video_id_is_absorbed(
     db.close()
 
 
+def test_update_channels_prunes_stable_status_polls(tmp_path) -> None:
+    """Removing a channel drops its stable-status poll counter."""
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[
+            {"platform": "twitch", "name": "alice"},
+            {"platform": "twitch", "name": "bob"},
+        ],
+        db=db,
+    )
+    with monitor._lock:
+        monitor._stable_status_polls = {"twitch:alice": 5, "twitch:bob": 3}
+
+    monitor.update_channels([{"platform": "twitch", "name": "alice"}])
+
+    with monitor._lock:
+        assert monitor._stable_status_polls == {"twitch:alice": 5}
+    db.close()
+
+
 def test_update_channels_clears_strikes_for_removed_entries(tmp_path) -> None:
     """Removing a channel from the watch list also drops its pending strikes."""
     db = SeenVideoDB(tmp_path / "test.db")

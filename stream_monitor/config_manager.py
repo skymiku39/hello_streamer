@@ -9,9 +9,9 @@ from typing import Any
 from stream_monitor import base_dir, default_browser_profile_dir, i18n
 
 DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
-    "enabled": False,
+    "enabled": True,
     "browser_path": "chrome",
-    "new_window": True,
+    "new_window": False,
     "app_mode": False,
     # When False the X/Y/Width/Height fields are ignored entirely and the
     # browser decides where/how big to draw the window (system default).
