@@ -6,6 +6,7 @@ import logging
 import logging.handlers
 import queue
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -1529,10 +1530,8 @@ class App(ctk.CTk):
         self._tray.update_tooltip_key("tray.tooltip.watch")
 
     def _on_stop(self, *, is_user_action: bool = True) -> None:
-        if self._monitor:
-            self._monitor.stop()
-            if not self._monitor.is_running:
-                self._monitor = None
+        monitor = self._monitor
+        self._monitor = None
         try:
             while True:
                 self._event_queue.get_nowait()
@@ -1544,6 +1543,10 @@ class App(ctk.CTk):
         self._set_status_text("status.stopped", _CLR_OFFLINE)
         self._set_awaiting_start_subline()
         self._tray.update_tooltip_key("tray.tooltip.stopped")
+
+        if monitor is not None:
+            monitor.request_stop()
+            threading.Thread(target=monitor.stop, daemon=True).start()
 
         # close_on_stop fires only when the user explicitly hit Stop — never
         # on the auto-stop produced by open_and_stop, because that just
@@ -1643,6 +1646,29 @@ class App(ctk.CTk):
             self._event_queue.put(("poll_waiting", None))
             self._event_queue.put(("status_update", (statuses, display_names)))
 
+    def _execute_live_action(
+        self,
+        action: str,
+        info: StreamInfo,
+        browser_settings: dict[str, Any] | None,
+    ) -> None:
+        """Run notify/open side-effects off the UI thread."""
+        noop = lambda: None  # noqa: E731
+        try:
+            execute_action(
+                action,
+                info,
+                stop_fn=noop,
+                exit_fn=noop,
+                browser_settings=browser_settings,
+            )
+        except Exception:
+            logger.exception(
+                "execute_live_action failed: action=%s url=%s",
+                action,
+                info.url,
+            )
+
     def _tick_elapsed_labels(self) -> None:
         for row in self._channel_rows:
             row.refresh_elapsed_display()
@@ -1673,6 +1699,14 @@ class App(ctk.CTk):
 
     def _poll_events(self) -> None:
         self.after(80, self._poll_events)
+
+        if self._monitor_mode == "idle":
+            try:
+                while True:
+                    self._event_queue.get_nowait()
+            except queue.Empty:
+                pass
+            return
 
         live_events: list[tuple[ChannelEntry, StreamInfo]] = []
         offline_events: list[tuple[ChannelEntry, Any]] = []
@@ -1812,19 +1846,25 @@ class App(ctk.CTk):
             if action is None:
                 continue
 
-            noop = lambda: None  # noqa: E731
-            execute_action(
-                action,
-                info,
-                stop_fn=noop,
-                exit_fn=noop,
-                browser_settings=browser_settings,
-            )
-
-            if action == "open_and_stop":
-                should_stop = True
-            elif action == "open_and_exit":
-                should_exit = True
+            if action in ("open_and_stop", "open_and_keep", "open_and_exit"):
+                threading.Thread(
+                    target=self._execute_live_action,
+                    args=(action, info, browser_settings),
+                    daemon=True,
+                ).start()
+                if action == "open_and_stop":
+                    should_stop = True
+                elif action == "open_and_exit":
+                    should_exit = True
+            else:
+                noop = lambda: None  # noqa: E731
+                execute_action(
+                    action,
+                    info,
+                    stop_fn=noop,
+                    exit_fn=noop,
+                    browser_settings=browser_settings,
+                )
 
         skip_close_on_offline = (
             self._monitor is not None and self._monitor.wake_verify_active

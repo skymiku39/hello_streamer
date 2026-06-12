@@ -3232,11 +3232,13 @@ def test_snapshot_readable_during_slow_youtube_offline_refresh(
     db.close()
 
 
-def test_execute_poll_cycle_dispatches_all_live_before_poll_complete(
+def test_execute_poll_cycle_dispatches_live_during_tier1_before_poll_complete(
     monkeypatch, tmp_path,
 ) -> None:
-    """Went-live callbacks must batch until tier-2 commits, before poll_complete."""
+    """Went-live callbacks fire as tier-1 probes finish, before poll_complete."""
     order: list[str] = []
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
 
     class MultiLiveTwitchFetcher:
         platform = "twitch"
@@ -3264,6 +3266,11 @@ def test_execute_poll_cycle_dispatches_all_live_before_poll_complete(
         ) -> FinishedVod | None:
             return None
 
+    def slow_refresh(entry):
+        refresh_started.set()
+        release_refresh.wait(timeout=2)
+        return lambda: None
+
     monkeypatch.setattr(
         monitor_module, "get_fetcher", lambda _p: MultiLiveTwitchFetcher()
     )
@@ -3279,12 +3286,40 @@ def test_execute_poll_cycle_dispatches_all_live_before_poll_complete(
         on_poll_complete=lambda: order.append("poll_complete"),
         db=db,
     )
-    monitor._execute_poll_cycle(time.monotonic())
+    monkeypatch.setattr(monitor, "_refresh_details", slow_refresh)
 
-    assert order[-1] == "poll_complete"
+    worker = threading.Thread(
+        target=monitor._execute_poll_cycle,
+        args=(time.monotonic(),),
+        daemon=True,
+    )
+    worker.start()
+    assert refresh_started.wait(timeout=2)
+    assert order.count("poll_complete") == 0
     assert {e for e in order if e != "poll_complete"} == {
         "live:a",
         "live:b",
         "live:c",
     }
+    release_refresh.set()
+    worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert order[-1] == "poll_complete"
+    db.close()
+
+
+def test_monitor_request_stop_is_non_blocking(tmp_path) -> None:
+    """request_stop signals the thread without joining."""
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "alice"}],
+        interval=60,
+        db=db,
+    )
+    monitor.start()
+    assert monitor.is_running
+    monitor.request_stop()
+    assert monitor._stop_event.is_set()
+    monitor.stop()
+    assert not monitor.is_running
     db.close()

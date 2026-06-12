@@ -405,8 +405,15 @@ class Monitor:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
+        """Signal the polling thread to exit without blocking the caller."""
         self._stop_event.set()
+
+    def stop(self) -> None:
+        self.request_stop()
+        self._join_thread()
+
+    def _join_thread(self) -> None:
         if self._thread is not None:
             self._thread.join(timeout=5)
             if not self._thread.is_alive():
@@ -463,7 +470,6 @@ class Monitor:
         offline_count = 0
         went_live_count = 0
         commits: list[Callable[[], None]] = []
-        live_batch: list[tuple[ChannelEntry, StreamInfo]] = []
 
         tier1_started = time.monotonic()
         youtube_entries = [
@@ -481,10 +487,10 @@ class Monitor:
         )
         if youtube_entries:
             logger.info("Poll tier-1 youtube phase: %d channel(s)", len(youtube_entries))
-            live_batch.extend(self._tier1_probe_entries(youtube_entries))
+            went_live_count += self._tier1_probe_entries(youtube_entries)
         if not self._stop_event.is_set() and twitch_entries:
             logger.info("Poll tier-1 twitch phase: %d channel(s)", len(twitch_entries))
-            live_batch.extend(self._tier1_probe_entries(twitch_entries))
+            went_live_count += self._tier1_probe_entries(twitch_entries)
 
         if self._stop_event.is_set():
             return time.monotonic() - poll_started
@@ -540,21 +546,6 @@ class Monitor:
 
         if self._stop_event.is_set():
             return time.monotonic() - poll_started
-
-        # Dispatch went-live only after tier-2 commits so the UI receives a
-        # complete snapshot in the same poll tick. Firing live callbacks
-        # during tier-1 allowed the UI thread to open/stop on the first
-        # channel while other probes were still running.
-        for entry, info in live_batch:
-            went_live_count += 1
-            if self._on_status_change:
-                try:
-                    self._on_status_change(entry, info)
-                except Exception:
-                    logger.exception(
-                        "on_status_change callback error for %s",
-                        entry.key,
-                    )
 
         # Dispatch went-offline events *after* went-live so the UI sees
         # transitions in a sensible order if both occur in the same poll.
@@ -1523,13 +1514,30 @@ class Monitor:
         commit = self._refresh_details(entry)
         return events, commit
 
-    def _tier1_probe_entries(
-        self, entries: list[ChannelEntry]
-    ) -> list[tuple[ChannelEntry, StreamInfo]]:
-        """Run tier-1 probes for a batch (YouTube or Twitch)."""
-        live_batch: list[tuple[ChannelEntry, StreamInfo]] = []
+    def _dispatch_went_live_events(
+        self, events: list[tuple[ChannelEntry, StreamInfo]]
+    ) -> int:
+        """Notify listeners as soon as tier-1 confirms a new live edge."""
+        for entry, info in events:
+            if self._on_status_change:
+                try:
+                    self._on_status_change(entry, info)
+                except Exception:
+                    logger.exception(
+                        "on_status_change callback error for %s",
+                        entry.key,
+                    )
+        return len(events)
+
+    def _tier1_probe_entries(self, entries: list[ChannelEntry]) -> int:
+        """Run tier-1 probes for a batch (YouTube or Twitch).
+
+        Dispatches went-live callbacks immediately as each probe finishes so
+        the UI can open players without waiting for tier-2 detail refresh.
+        """
+        went_live_count = 0
         if not entries:
-            return live_batch
+            return went_live_count
         if self._max_concurrent > 1 and len(entries) > 1:
             workers = min(self._max_concurrent, len(entries))
             with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1540,7 +1548,9 @@ class Monitor:
                     if self._stop_event.is_set():
                         break
                     try:
-                        live_batch.extend(future.result())
+                        went_live_count += self._dispatch_went_live_events(
+                            future.result()
+                        )
                     except Exception:
                         logger.exception(
                             "Tier-1 probe failed for a channel, skipping"
@@ -1550,12 +1560,14 @@ class Monitor:
                 if self._stop_event.is_set():
                     break
                 try:
-                    live_batch.extend(self._probe_live(entry))
+                    went_live_count += self._dispatch_went_live_events(
+                        self._probe_live(entry)
+                    )
                 except Exception:
                     logger.exception(
                         "Tier-1 probe failed for %s, skipping", entry.key
                     )
-        return live_batch
+        return went_live_count
 
     def _notify_poll_activity(self, entry: ChannelEntry, phase: str) -> None:
         with self._lock:
