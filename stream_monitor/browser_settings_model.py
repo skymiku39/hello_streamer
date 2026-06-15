@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass, fields
 from typing import Any
 
 LAUNCH_SYSTEM = "system"
@@ -26,20 +27,79 @@ PLACEMENT_CHOICES: tuple[str, ...] = (
 )
 
 
-def infer_launch_mode(settings: dict[str, Any]) -> str:
-    return LAUNCH_PROGRAM if settings.get("enabled") else LAUNCH_SYSTEM
+@dataclass
+class BrowserSettings:
+    """Typed browser launch settings (DIP — replaces raw dict at boundaries)."""
+
+    enabled: bool = False
+    browser_path: str = "chrome"
+    new_window: bool = False
+    app_mode: bool = False
+    apply_geometry: bool = True
+    x: int = 0
+    y: int = 0
+    width: int = 1280
+    height: int = 720
+    minimized: bool = False
+    user_data_dir: str = ""
+    per_channel_profile: bool = True
+    close_on_offline: bool = False
+    close_on_stop: bool = False
+    close_off_topic_pages: bool = False
+    hide_from_taskbar: bool = False
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any] | None) -> BrowserSettings:
+        if not raw:
+            return cls()
+        kwargs: dict[str, Any] = {}
+        valid = {field.name for field in fields(cls)}
+        for key in valid:
+            if key in raw:
+                kwargs[key] = raw[key]
+        return cls(**kwargs)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Dict-like access for gradual migration from ``dict`` settings."""
+        return getattr(self, key, default)
 
 
-def infer_identity_mode(settings: dict[str, Any]) -> str:
-    if (settings.get("user_data_dir") or "").strip():
+def coerce_browser_settings(
+    settings: BrowserSettings | dict[str, Any] | None,
+) -> BrowserSettings | None:
+    if settings is None:
+        return None
+    if isinstance(settings, BrowserSettings):
+        return settings
+    return BrowserSettings.from_dict(settings)
+
+
+def _as_mapping(settings: dict[str, Any] | BrowserSettings) -> dict[str, Any]:
+    if isinstance(settings, BrowserSettings):
+        return settings.to_dict()
+    return settings
+
+
+def infer_launch_mode(settings: dict[str, Any] | BrowserSettings) -> str:
+    mapping = _as_mapping(settings)
+    return LAUNCH_PROGRAM if mapping.get("enabled") else LAUNCH_SYSTEM
+
+
+def infer_identity_mode(settings: dict[str, Any] | BrowserSettings) -> str:
+    mapping = _as_mapping(settings)
+    if (mapping.get("user_data_dir") or "").strip():
         return IDENTITY_DEDICATED
     return IDENTITY_LOCAL
 
 
-def infer_placement_mode(settings: dict[str, Any]) -> str:
-    if bool(settings.get("app_mode")):
+def infer_placement_mode(settings: dict[str, Any] | BrowserSettings) -> str:
+    mapping = _as_mapping(settings)
+    if bool(mapping.get("app_mode")):
         return PLACEMENT_PLAYER
-    if not bool(settings.get("new_window", False)):
+    if not bool(mapping.get("new_window", False)):
         return PLACEMENT_TAB
     return PLACEMENT_WINDOW
 
@@ -151,21 +211,21 @@ def apply_ui_dimensions(
         user_data_dir = ""
         per_channel_profile = False
 
-    return {
-        "enabled": enabled,
-        "browser_path": browser_path or "chrome",
-        "new_window": new_window,
-        "app_mode": app_mode,
-        "apply_geometry": apply_geometry,
-        "x": x,
-        "y": y,
-        "width": width,
-        "height": height,
-        "minimized": minimized if dedicated else False,
-        "user_data_dir": user_data_dir.strip() if dedicated else "",
-        "per_channel_profile": per_channel_profile if dedicated else False,
-        "close_on_offline": close_on_offline if dedicated else False,
-        "close_on_stop": close_on_stop if dedicated else False,
-        "close_off_topic_pages": close_off_topic_pages if dedicated else False,
-        "hide_from_taskbar": hide_from_taskbar if dedicated else False,
-    }
+    return BrowserSettings(
+        enabled=enabled,
+        browser_path=browser_path or "chrome",
+        new_window=new_window,
+        app_mode=app_mode,
+        apply_geometry=apply_geometry,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+        minimized=minimized if dedicated else False,
+        user_data_dir=user_data_dir.strip() if dedicated else "",
+        per_channel_profile=per_channel_profile if dedicated else False,
+        close_on_offline=close_on_offline if dedicated else False,
+        close_on_stop=close_on_stop if dedicated else False,
+        close_off_topic_pages=close_off_topic_pages if dedicated else False,
+        hide_from_taskbar=hide_from_taskbar if dedicated else False,
+    ).to_dict()

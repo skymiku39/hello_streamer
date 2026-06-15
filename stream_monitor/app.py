@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-import queue
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import customtkinter as ctk
 
@@ -24,8 +23,6 @@ from stream_monitor.app_ui import (
     _CLR_ADD_HOVER,
     _CLR_BG_DARK,
     _CLR_CARD,
-    _CLR_CARD_DISABLED,
-    _CLR_DELETE_HOVER,
     _CLR_LINK,
     _CLR_LINK_HOVER,
     _CLR_LIVE,
@@ -34,9 +31,6 @@ from stream_monitor.app_ui import (
     _CLR_START_HOVER,
     _CLR_STOP,
     _CLR_STOP_HOVER,
-    _CLR_TEXT_DISABLED,
-    _CLR_TWITCH,
-    _CLR_YOUTUBE,
     _MIN_WINDOW_HEIGHT,
     _MIN_WINDOW_WIDTH,
     _action_displays,
@@ -47,703 +41,34 @@ from stream_monitor.app_ui import (
     _fit_button,
     _fit_option_menu,
     _font,
-    _format_countdown,
-    _format_elapsed,
-    _format_row_time,
     _language_icon,
-    _status_row_label_width,
-    _tooltip,
     _tooltip_tr,
     _truncate_status_name,
 )
+from stream_monitor.browser_settings_model import BrowserSettings
+from stream_monitor.channel_row import ChannelRow
 from stream_monitor.db import SeenVideoDB
+from stream_monitor.event_bridge import MonitorEventBridge
+from stream_monitor.events import MonitorEventBus
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelEntry, ChannelStatus, Monitor
 from stream_monitor.notifier import (
-    action_for_stream_status,
     browser_window_tracking_available,
     close_all_tracked_windows,
     close_browser_window_for_url,
     execute_action,
-    open_url,
-    prune_off_topic_tracked_windows,
 )
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
 from stream_monitor.tray import TrayIcon
-from stream_monitor.util import channel_key, channel_page_url
+from stream_monitor.util import channel_key
 
 logger = logging.getLogger(__name__)
 
 
-def _is_live_state(state: bool | str | None) -> bool:
-    return state is True or state == "live"
-
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Channel Row
-# ═══════════════════════════════════════════════════════════════════════════
-class ChannelRow(ctk.CTkFrame):
-    """Single row in the channel list."""
-
-    def __init__(
-        self,
-        parent: ctk.CTkFrame,
-        channel: dict[str, str],
-        on_delete: callable,
-        on_move_up: callable,
-        on_move_down: callable,
-        on_toggle_enabled: callable,
-        get_browser_settings: Callable[[], dict[str, Any] | None] | None = None,
-    ) -> None:
-        super().__init__(parent, corner_radius=10, fg_color=_CLR_CARD, height=58)
-        self.channel = channel
-        self._on_toggle_enabled = on_toggle_enabled
-        self._get_browser_settings = get_browser_settings or (lambda: None)
-        self._active_url = ""
-        self._status_title = ""
-        # Cached state so retranslate-on-language-change can rebuild tooltips
-        # without losing the live data (countdown / elapsed / title).
-        self._status_state: str | None = None
-        self._status_countdown: str = ""
-        self._status_elapsed: str = ""
-        self._status_timestamp: str = ""
-        self._status_scheduled_start: str = ""
-        self._vod_url: str = ""
-        self._upcoming_url: str = ""
-        self._ended_at_source: str = ""
-
-        color = _CLR_TWITCH if channel["platform"] == "twitch" else _CLR_YOUTUBE
-        self._platform_color = color
-
-        move_frame = ctk.CTkFrame(self, fg_color="transparent", width=30, height=42)
-        move_frame.pack(side="left", padx=(6, 0), pady=8)
-        move_frame.pack_propagate(False)
-
-        self.up_btn = ctk.CTkButton(
-            move_frame,
-            text="▲",
-            width=30,
-            height=20,
-            corner_radius=4,
-            fg_color="transparent",
-            hover_color="#243052",
-            font=_font(10),
-            command=on_move_up,
-        )
-        self.up_btn.pack(anchor="n")
-
-        self.down_btn = ctk.CTkButton(
-            move_frame,
-            text="▼",
-            width=30,
-            height=20,
-            corner_radius=4,
-            fg_color="transparent",
-            hover_color="#243052",
-            font=_font(10),
-            command=on_move_down,
-        )
-        self.down_btn.pack(anchor="s", side="bottom")
-
-        self.platform_label = ctk.CTkLabel(
-            self,
-            text=channel["platform"].upper(),
-            width=78,
-            fg_color=color,
-            corner_radius=6,
-            text_color="white",
-            font=_font(11, "bold"),
-            cursor="hand2",
-        )
-        self.platform_label.pack(side="left", padx=(4, 6), pady=8)
-        self.platform_label.bind("<Button-1>", lambda _e: self._open_channel_page())
-
-        name_frame = ctk.CTkFrame(self, fg_color="transparent")
-        name_frame.pack(side="left", padx=6, pady=7, fill="x", expand=True)
-
-        self.name_label = ctk.CTkLabel(
-            name_frame,
-            text="",
-            anchor="w",
-            font=_font(15, "bold"),
-        )
-        self.name_label.pack(anchor="w", fill="x")
-
-        self.id_label = ctk.CTkLabel(
-            name_frame,
-            text="",
-            anchor="w",
-            font=_font(11),
-            text_color="#9aa0b4",
-        )
-        self.id_label.pack(anchor="w", fill="x", pady=(1, 0))
-        self._refresh_name_labels()
-
-        self.time_label = ctk.CTkLabel(
-            self,
-            text="",
-            width=120,
-            anchor="e",
-            font=_font(11, "bold"),
-            text_color="#aab3d5",
-        )
-        self.time_label.pack(side="left", padx=(6, 0), pady=8)
-
-        self.status_label = ctk.CTkLabel(
-            self,
-            text=tr("status.row.placeholder"),
-            width=_status_row_label_width(),
-            font=_font(12, "bold"),
-            corner_radius=6,
-        )
-        self.status_label.pack(side="left", padx=6, pady=8)
-        self.status_label.bind("<Button-1>", lambda _event: self._open_active_page())
-
-        self.delete_btn = ctk.CTkButton(
-            self,
-            text="✕",
-            width=32,
-            height=32,
-            corner_radius=6,
-            fg_color="transparent",
-            hover_color=_CLR_DELETE_HOVER,
-            font=_font(14),
-            command=on_delete,
-        )
-        self.delete_btn.pack(side="right", padx=(0, 10), pady=8)
-
-        self.toggle_btn = ctk.CTkButton(
-            self,
-            text="⏸",
-            width=30,
-            height=30,
-            corner_radius=6,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#3c4566",
-            hover_color="#243052",
-            font=_font(13, "bold"),
-            command=self._on_toggle_click,
-        )
-        self.toggle_btn.pack(side="right", padx=(0, 4), pady=8)
-
-        # Monitor-only ("eye") button. Sits next to the pause/resume toggle.
-        # When enabled, the row keeps polling and updating the UI but the
-        # app suppresses notifications / browser open / close_on_offline for
-        # this channel. Coupled to the pause/resume toggle:
-        #   • clicking the eye while paused → unpauses straight into monitor-only
-        #   • clicking the eye while triggering → switches to monitor-only
-        #   • clicking the eye while monitor-only → switches back to triggering
-        #   • clicking pause/resume always clears monitor-only (resume = full)
-        self.monitor_only_btn = ctk.CTkButton(
-            self,
-            text="👁",
-            width=30,
-            height=30,
-            corner_radius=6,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#3c4566",
-            hover_color="#243052",
-            font=_font(13),
-            command=self._on_monitor_only_click,
-        )
-        self.monitor_only_btn.pack(side="right", padx=(0, 4), pady=8)
-
-        self.link_btn = ctk.CTkButton(
-            self,
-            text="🔗",
-            width=30,
-            height=30,
-            corner_radius=6,
-            fg_color="transparent",
-            hover_color=_CLR_LINK_HOVER,
-            font=_font(12),
-            command=self._open_current_page,
-        )
-        self.link_btn.pack(side="right", padx=(0, 4), pady=8)
-
-        # Tooltips. The static ones use _tooltip_tr to auto-follow language
-        # changes; the link/toggle/status tips are state-driven, so they use
-        # plain _tooltip and are rebuilt by _retranslate_dynamic_tips below.
-        self._link_tip = _tooltip(self.link_btn, tr("tooltip.row.link.default"))
-        self._toggle_tip = _tooltip(self.toggle_btn, "")
-        self._monitor_only_tip = _tooltip(self.monitor_only_btn, "")
-        _tooltip_tr(self.up_btn, "tooltip.row.up")
-        _tooltip_tr(self.down_btn, "tooltip.row.down")
-        _tooltip_tr(self.delete_btn, "tooltip.row.delete")
-        self._platform_tip = _tooltip_tr(self.platform_label, "tooltip.row.link.default")
-        self._status_tip = _tooltip(self.status_label, "")
-
-        self._apply_enabled_visual()
-
-        self._unsub_i18n = i18n.subscribe(self._on_language_changed)
-        self.bind("<Destroy>", self._on_destroy, add="+")
-
-    def _on_destroy(self, event: Any = None) -> None:
-        if event is not None and event.widget is not self:
-            return
-        if getattr(self, "_unsub_i18n", None):
-            self._unsub_i18n()
-            self._unsub_i18n = None
-
-    def _on_language_changed(self) -> None:
-        """Rebuild any text the row computed manually (status, dynamic tips)."""
-        try:
-            self._retranslate_dynamic_text()
-        except Exception:  # noqa: BLE001
-            logger.exception("ChannelRow retranslate failed")
-
-    def _retranslate_dynamic_text(self) -> None:
-        self.status_label.configure(width=_status_row_label_width())
-        # Status label (non-static rows) — _render_status_visuals rebuilds it.
-        self._render_status_visuals()
-        # The toggle / monitor-only buttons are icon-only but the tooltips
-        # they own are state-driven, so re-text both.
-        self._refresh_toggle_tip()
-        self._refresh_monitor_only_tip()
-        # Channel ID prefix ("ID: ..." / "ID：..." etc.) follows language too.
-        self._refresh_name_labels()
-        # If currently paused / idle, the status label string is static text
-        # set by _apply_enabled_visual — re-apply so it picks up the new lang.
-        if not self.channel.get("enabled", True):
-            try:
-                self.status_label.configure(text=tr("status.row.paused"))
-            except Exception:  # noqa: BLE001
-                pass
-        elif self._status_state is None:
-            try:
-                self.status_label.configure(text=tr("status.row.placeholder"))
-            except Exception:  # noqa: BLE001
-                pass
-
-    def _channel_url(self) -> str:
-        return channel_page_url(self.channel["platform"], self.channel["name"])
-
-    def _open_channel_page(self) -> None:
-        open_url(self._channel_url(), self._get_browser_settings())
-
-    def _offline_link_url(self) -> str:
-        """Offline link priority — platform-specific."""
-        if self.channel["platform"] == "youtube" and self._upcoming_url:
-            return self._upcoming_url
-        if self._vod_url:
-            return self._vod_url
-        return self._channel_url()
-
-    def _open_current_page(self) -> None:
-        if self._status_state == "offline":
-            open_url(self._offline_link_url(), self._get_browser_settings())
-            return
-        open_url(self._active_url or self._channel_url(), self._get_browser_settings())
-
-    def _open_active_page(self) -> None:
-        if (
-            self._status_state == "offline"
-            and self.channel["platform"] == "youtube"
-            and self._upcoming_url
-        ):
-            open_url(self._upcoming_url, self._get_browser_settings())
-            return
-        if self._active_url:
-            open_url(self._active_url, self._get_browser_settings())
-
-    def _set_link_tip_key(self, key: str) -> None:
-        if hasattr(self, "_link_tip"):
-            self._link_tip.set_text(key=key)
-
-    def _set_link_tip_with_title(self, base_key: str) -> None:
-        """Suffix the link tip with the current stream title when available."""
-        if not hasattr(self, "_link_tip"):
-            return
-        if self._status_title:
-            self._link_tip.set_text(
-                key="tooltip.row.link.with_title",
-                link_text=tr(base_key),
-                title=self._status_title,
-            )
-        else:
-            self._link_tip.set_text(key=base_key)
-
-    def _refresh_toggle_tip(self) -> None:
-        if not hasattr(self, "_toggle_tip"):
-            return
-        if self.channel.get("enabled", True):
-            self._toggle_tip.set_text(key="tooltip.row.toggle.pause")
-        else:
-            self._toggle_tip.set_text(key="tooltip.row.toggle.resume")
-
-    def _refresh_monitor_only_tip(self) -> None:
-        if not hasattr(self, "_monitor_only_tip"):
-            return
-        if self.channel.get("monitor_only", False) and self.channel.get(
-            "enabled", True
-        ):
-            self._monitor_only_tip.set_text(key="tooltip.row.monitor_only.disable")
-        else:
-            self._monitor_only_tip.set_text(key="tooltip.row.monitor_only.enable")
-
-    def _on_toggle_click(self) -> None:
-        enabled = not self.channel.get("enabled", True)
-        self.channel["enabled"] = enabled
-        # Pause/resume always clears monitor-only — resume goes back into
-        # "full triggering" mode and pause resets the next-resume baseline.
-        self.channel["monitor_only"] = False
-        # enabled really changed → we want a clean visual (and the polling
-        # backend is going to give us a fresh status reading anyway).
-        self._apply_enabled_visual(reset_status=True)
-        self._on_toggle_enabled()
-
-    def _on_monitor_only_click(self) -> None:
-        # Toggling the eye always implies the channel must be enabled — if
-        # the user clicks it from a paused state, they're effectively
-        # un-pausing into monitor-only mode.
-        was_enabled = self.channel.get("enabled", True)
-        currently_monitor_only = was_enabled and self.channel.get(
-            "monitor_only", False
-        )
-        if currently_monitor_only:
-            self.channel["enabled"] = True
-            self.channel["monitor_only"] = False
-        else:
-            self.channel["enabled"] = True
-            self.channel["monitor_only"] = True
-        # Crucial: when the channel was *already* enabled, we are only
-        # flipping the trigger-suppression flag — the live/upcoming/offline
-        # display the user is currently watching (and especially the
-        # "live since N min" elapsed clock) is still valid and should NOT
-        # be wiped. Only reset when we just un-paused.
-        self._apply_enabled_visual(reset_status=not was_enabled)
-        self._on_toggle_enabled()
-
-    def _reset_status_cache(self) -> None:
-        """Forget every cached status value so the next paint starts blank."""
-        self._active_url = ""
-        self._vod_url = ""
-        self._upcoming_url = ""
-        self._ended_at_source = ""
-        self._status_title = ""
-        self._status_state = None
-        self._status_countdown = ""
-        self._status_elapsed = ""
-        self.time_label.configure(text="")
-
-    def _apply_enabled_visual(self, reset_status: bool = True) -> None:
-        enabled = self.channel.get("enabled", True)
-        monitor_only = bool(self.channel.get("monitor_only", False)) and enabled
-        if reset_status:
-            self._reset_status_cache()
-        if enabled:
-            self.configure(fg_color=_CLR_CARD)
-            self.platform_label.configure(
-                fg_color=self._platform_color, text_color="white"
-            )
-            self.name_label.configure(text_color=("gray10", "gray90"))
-            self.id_label.configure(text_color="#9aa0b4")
-            if reset_status or self._status_state is None:
-                # No live data to preserve → fall back to the placeholder text.
-                self.status_label.configure(
-                    text=tr("status.row.placeholder"),
-                    text_color="#666677",
-                    fg_color="transparent",
-                )
-                self._set_link_tip_key("tooltip.row.link.default")
-            else:
-                # Preserve the existing live/upcoming/offline display so the
-                # "live since" clock and stream title don't reset when the
-                # user only flipped monitor-only on/off.
-                self._render_status_visuals()
-        else:
-            self.configure(fg_color=_CLR_CARD_DISABLED)
-            self.platform_label.configure(
-                fg_color="#2a2a3a", text_color=_CLR_TEXT_DISABLED
-            )
-            self.name_label.configure(text_color=_CLR_TEXT_DISABLED)
-            self.id_label.configure(text_color=_CLR_TEXT_DISABLED)
-            self.status_label.configure(
-                text=tr("status.row.paused"),
-                text_color=_CLR_TEXT_DISABLED,
-                fg_color="transparent",
-            )
-            self._set_link_tip_key("tooltip.row.link.paused")
-        self._apply_toggle_visual(enabled, monitor_only)
-        self._apply_monitor_only_visual(monitor_only, enabled)
-        self._refresh_toggle_tip()
-        self._refresh_monitor_only_tip()
-        if reset_status and hasattr(self, "_status_tip"):
-            self._status_tip.set_text("")
-
-    def _apply_monitor_only_visual(self, monitor_only: bool, enabled: bool) -> None:
-        """Color the eye button so it stands out when monitor-only is active."""
-        if not hasattr(self, "monitor_only_btn"):
-            return
-        if monitor_only:
-            self.monitor_only_btn.configure(
-                fg_color="#1565c0",
-                text_color="white",
-                border_color="#1565c0",
-                hover_color="#1976d2",
-            )
-        elif enabled:
-            self.monitor_only_btn.configure(
-                fg_color="transparent",
-                text_color=("gray14", "gray86"),
-                border_color="#3c4566",
-                hover_color="#243052",
-            )
-        else:
-            # Paused — keep the button reachable (the user can click it to
-            # jump straight into monitor-only) but visually dim.
-            self.monitor_only_btn.configure(
-                fg_color="transparent",
-                text_color=_CLR_TEXT_DISABLED,
-                border_color="#2a2a3a",
-                hover_color="#243052",
-            )
-
-    def _apply_toggle_visual(self, enabled: bool, monitor_only: bool) -> None:
-        """Pick the pause/resume button's icon + accent so the user can see
-        at a glance that this channel is being "watched but not triggered".
-
-        We keep the regular ⏸ glyph (the channel *is* still monitored) but
-        tint the border with the same blue accent the eye uses. That makes
-        the visual association explicit: blue border on ⏸ ↔ blue eye-fill.
-        """
-        if not hasattr(self, "toggle_btn"):
-            return
-        if not enabled:
-            self.toggle_btn.configure(
-                text="▶",
-                border_color="#3c4566",
-                hover_color="#243052",
-            )
-            return
-        if monitor_only:
-            self.toggle_btn.configure(
-                text="⏸",
-                border_color="#1565c0",
-                hover_color="#1d4d80",
-            )
-        else:
-            self.toggle_btn.configure(
-                text="⏸",
-                border_color="#3c4566",
-                hover_color="#243052",
-            )
-
-    def set_status(self, status: bool | str | ChannelStatus | None) -> None:
-        if not self.channel.get("enabled", True):
-            return
-
-        detail = status if isinstance(status, ChannelStatus) else None
-        state = detail.status if detail else status
-        self._active_url = detail.url if detail else ""
-        self._status_title = detail.title if detail else ""
-
-        if state is None:
-            self._status_state = None
-            self._status_countdown = ""
-            self._status_elapsed = ""
-            self._vod_url = ""
-            self._upcoming_url = ""
-            self._ended_at_source = ""
-        elif state == "upcoming":
-            self._status_state = "upcoming"
-            self._status_timestamp = detail.scheduled_start if detail else ""
-            self._status_countdown = _format_countdown(self._status_timestamp)
-            self._status_elapsed = ""
-        elif _is_live_state(state):
-            self._status_state = "live"
-            self._status_timestamp = detail.started_at if detail else ""
-            self._status_elapsed = _format_elapsed(self._status_timestamp)
-            self._status_countdown = ""
-        else:
-            self._status_state = "offline"
-            self._status_title = detail.title if detail else ""
-            self._vod_url = (detail.vod_url if detail else "") or ""
-            self._upcoming_url = (detail.upcoming_url if detail else "") or ""
-            self._active_url = ""
-            self._ended_at_source = (detail.ended_at_source if detail else "") or ""
-            sched = (detail.scheduled_start if detail else "") or ""
-            self._status_scheduled_start = sched
-            self._status_countdown = (
-                _format_countdown(sched) if self._upcoming_url and sched else ""
-            )
-            self._status_timestamp = detail.ended_at if detail else ""
-            self._status_elapsed = _format_elapsed(self._status_timestamp)
-
-        self._render_status_visuals()
-
-    def _compose_time_label_text(self) -> str:
-        """Build i18n time label from cached status timestamps."""
-        state = self._status_state
-        result = ""
-        if state == "live":
-            self._status_elapsed = _format_elapsed(self._status_timestamp)
-            result = _format_row_time("live", self._status_elapsed)
-        elif state == "upcoming":
-            self._status_countdown = _format_countdown(self._status_timestamp)
-            result = _format_row_time("upcoming", self._status_countdown)
-        elif state == "offline":
-            if self._ended_at_source == "pending":
-                result = tr("status.row.time.pending_detail")
-            elif self._upcoming_url and self._status_scheduled_start:
-                self._status_countdown = _format_countdown(
-                    self._status_scheduled_start
-                )
-                if self._status_countdown:
-                    result = _format_row_time("countdown", self._status_countdown)
-            if not result:
-                self._status_elapsed = _format_elapsed(self._status_timestamp)
-                result = _format_row_time(
-                    "offline",
-                    self._status_elapsed,
-                    ended_at_source=self._ended_at_source,
-                )
-        return result
-
-    def refresh_elapsed_display(self) -> None:
-        """Recompute time_label from cached ISO timestamp (live/offline/upcoming)."""
-        if not self.channel.get("enabled", True):
-            return
-        self.time_label.configure(text=self._compose_time_label_text())
-
-    def _render_status_visuals(self) -> None:
-        """Apply the cached status data onto the visible widgets (i18n-aware)."""
-        if not hasattr(self, "status_label"):
-            return
-        if not self.channel.get("enabled", True):
-            return
-
-        state = self._status_state
-        if state is None:
-            self.time_label.configure(text="")
-            self.status_label.configure(
-                text=tr("status.row.placeholder"),
-                text_color="#666677",
-                fg_color="transparent",
-                cursor="",
-            )
-            self._status_tip.set_text("")
-            self._set_link_tip_key("tooltip.row.link.idle")
-            return
-
-        if state == "upcoming":
-            self.time_label.configure(text=self._compose_time_label_text())
-            self.status_label.configure(
-                text=tr("status.row.upcoming"),
-                text_color="white",
-                fg_color="#e65100",
-                cursor="hand2",
-            )
-            self._status_tip.set_text(self._compose_status_tip(state))
-            self._set_link_tip_with_title("tooltip.row.link.upcoming")
-            return
-
-        if state == "live":
-            self.time_label.configure(text=self._compose_time_label_text())
-            self.status_label.configure(
-                text=tr("status.row.live"),
-                text_color="white",
-                fg_color="#1b5e20",
-                cursor="hand2",
-            )
-            self._status_tip.set_text(self._compose_status_tip(state))
-            self._set_link_tip_with_title("tooltip.row.link.live")
-            return
-
-        # offline — elapsed since end, or countdown when waiting room is linked
-        self.time_label.configure(text=self._compose_time_label_text())
-        self.status_label.configure(
-            text=tr("status.row.offline"),
-            text_color="#999999",
-            fg_color="transparent",
-            cursor=(
-                "hand2"
-                if self.channel["platform"] == "youtube" and self._upcoming_url
-                else ""
-            ),
-        )
-        self._status_tip.set_text(self._compose_status_tip(state))
-        if self._upcoming_url:
-            self._set_link_tip_with_title("tooltip.row.link.upcoming")
-        elif self._vod_url:
-            self._set_link_tip_with_title("tooltip.row.link.vod")
-        else:
-            self._set_link_tip_key("tooltip.row.link.offline")
-
-    def _compose_status_tip(self, state: str) -> str:
-        parts: list[str] = []
-        if self._status_title:
-            parts.append(tr("tooltip.row.status.title", title=self._status_title))
-        if state == "upcoming" and self._status_countdown:
-            parts.append(
-                tr("tooltip.row.status.starts_in", countdown=self._status_countdown)
-            )
-        elif state == "live" and self._status_elapsed:
-            parts.append(
-                tr("tooltip.row.status.live_elapsed", elapsed=self._status_elapsed)
-            )
-        if state == "offline" and self._upcoming_url and self._status_countdown:
-            parts.append(
-                tr(
-                    "tooltip.row.status.starts_in",
-                    countdown=self._status_countdown,
-                )
-            )
-        elif state == "offline" and self._status_elapsed:
-            if self._ended_at_source == "vod":
-                parts.append(
-                    tr(
-                        "tooltip.row.status.offline_elapsed_vod",
-                        elapsed=self._status_elapsed,
-                    )
-                )
-            else:
-                parts.append(
-                    tr(
-                        "tooltip.row.status.offline_elapsed_confirmed",
-                        elapsed=self._status_elapsed,
-                    )
-                )
-        if parts:
-            return "\n".join(parts)
-        if state == "upcoming":
-            return tr("tooltip.row.status.upcoming")
-        if state == "offline":
-            return tr("tooltip.row.status.offline")
-        return tr("tooltip.row.status.live")
-
-    @property
-    def key(self) -> str:
-        return channel_key(self.channel["platform"], self.channel["name"])
-
-    def set_display_name(self, display_name: str | None) -> bool:
-        display_name = (display_name or "").strip()
-        if not display_name or display_name == self.channel.get("display_name"):
-            return False
-        self.channel["display_name"] = display_name
-        self._refresh_name_labels()
-        return True
-
-    def _refresh_name_labels(self) -> None:
-        channel_id = self.channel["name"]
-        display_name = self.channel.get("display_name", "").strip()
-        if display_name and display_name != channel_id:
-            self.name_label.configure(text=display_name)
-            self.id_label.configure(text=tr("channel.id.prefix", id=channel_id))
-        else:
-            self.name_label.configure(text=channel_id)
-            self.id_label.configure(text="")
-
-    def set_move_state(self, can_move_up: bool, can_move_down: bool) -> None:
-        self.up_btn.configure(state="normal" if can_move_up else "disabled")
-        self.down_btn.configure(state="normal" if can_move_down else "disabled")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -756,7 +81,7 @@ class App(ctk.CTk):
         super().__init__()
 
         self.config = config_manager.load()
-        self._event_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._event_bus = MonitorEventBus()
         self._db = SeenVideoDB()
         self._monitor: Monitor | None = None
         self._channel_rows: list[ChannelRow] = []
@@ -765,6 +90,7 @@ class App(ctk.CTk):
         self._truly_quitting = False
         # monitor mode: "idle" | "trigger" | "watch"
         self._monitor_mode: str = "idle"
+        self._event_bridge = MonitorEventBridge(self, self._event_bus)
 
         # Restore the saved language *before* any widget creation so all
         # labels/buttons are constructed in the user's chosen language.
@@ -847,11 +173,12 @@ class App(ctk.CTk):
         else:
             self.after(0, self._on_start)
 
-    def _current_browser_settings(self) -> dict[str, Any] | None:
-        settings = self.config.get("browser_settings")
-        if isinstance(settings, dict) and settings.get("enabled"):
-            return settings
-        return None
+    def _current_browser_settings(self) -> BrowserSettings | None:
+        raw = self.config.get("browser_settings")
+        if not isinstance(raw, dict):
+            return None
+        settings = BrowserSettings.from_dict(raw)
+        return settings if settings.enabled else None
 
     # ------------------------------------------------------------------
     # UI construction
@@ -1385,11 +712,7 @@ class App(ctk.CTk):
             self._monitor = Monitor(
                 channels=channels,
                 interval=interval,
-                on_status_change=self._on_channel_live,
-                on_poll_complete=self._on_poll_done,
-                on_went_offline=self._on_channel_offline,
-                on_poll_activity=self._on_poll_activity,
-                on_partial_snapshot=self._on_partial_snapshot,
+                event_bus=self._event_bus,
                 db=self._db,
             )
             self._monitor.start()
@@ -1438,63 +761,6 @@ class App(ctk.CTk):
         self._status_subline_kwargs = {"name": name}
         self._render_status_text()
 
-    @staticmethod
-    def _pending_status_is_live(status: Any) -> bool:
-        if isinstance(status, ChannelStatus):
-            return status.status is True
-        return status is True
-
-    @staticmethod
-    def _prefer_richer_offline_status(old: Any, new: Any) -> Any:
-        """Drop tier-1 pending previews that would erase tier-2 offline timing."""
-        if not isinstance(new, ChannelStatus) or new.status is not False:
-            return new
-        if new.ended_at_source != "pending":
-            return new
-        if (
-            isinstance(old, ChannelStatus)
-            and old.status is False
-            and old.ended_at_source != "pending"
-        ):
-            return old
-        return new
-
-    @staticmethod
-    def _row_has_richer_offline_detail(row: ChannelRow, status: Any) -> bool:
-        if not isinstance(status, ChannelStatus) or status.status is not False:
-            return False
-        if status.ended_at_source != "pending":
-            return False
-        return (
-            row._status_state == "offline"
-            and row._ended_at_source != "pending"
-        )
-
-    def _apply_pending_status_updates(self, *, limit: int = 3) -> int:
-        """Apply queued row status updates in small batches to keep UI responsive."""
-        applied = 0
-        keys = list(self._ui_status_pending.keys())
-        live_keys = [
-            key
-            for key in keys
-            if self._pending_status_is_live(self._ui_status_pending[key])
-        ]
-        ordered = live_keys + [key for key in keys if key not in live_keys]
-        for key in ordered:
-            if applied >= limit:
-                break
-            if key not in self._ui_status_pending:
-                continue
-            status = self._ui_status_pending.pop(key)
-            for row in self._channel_rows:
-                if row.key == key:
-                    if self._row_has_richer_offline_detail(row, status):
-                        break
-                    row.set_status(status)
-                    applied += 1
-                    break
-        return applied
-
     def _set_poll_subline_waiting(self) -> None:
         if self._monitor_mode not in ("trigger", "watch"):
             return
@@ -1532,11 +798,7 @@ class App(ctk.CTk):
     def _on_stop(self, *, is_user_action: bool = True) -> None:
         monitor = self._monitor
         self._monitor = None
-        try:
-            while True:
-                self._event_queue.get_nowait()
-        except queue.Empty:
-            pass
+        self._event_bus.clear()
         self._ui_status_pending.clear()
         self._monitor_mode = "idle"
         self._apply_monitor_mode_buttons()
@@ -1552,8 +814,10 @@ class App(ctk.CTk):
         # on the auto-stop produced by open_and_stop, because that just
         # opened the very player window the user wants to keep watching.
         if is_user_action:
-            browser_settings = self.config.get("browser_settings") or {}
-            if browser_settings.get("close_on_stop"):
+            browser_settings = BrowserSettings.from_dict(
+                self.config.get("browser_settings") or {}
+            )
+            if browser_settings.close_on_stop:
                 try:
                     closed = close_all_tracked_windows()
                     if closed:
@@ -1621,36 +885,11 @@ class App(ctk.CTk):
                 row.set_status(self._channel_status_from_stream_info(info))
                 break
 
-    def _on_channel_live(self, entry: ChannelEntry, info: StreamInfo) -> None:
-        self._event_queue.put(("live", (entry, info)))
-
-    def _on_channel_offline(self, entry: ChannelEntry, offline_info: Any) -> None:
-        # Forward to the UI thread; the actual close call needs ctypes/Win32
-        # which we don't want to invoke from the monitor's polling thread.
-        self._event_queue.put(("offline", (entry, offline_info)))
-
-    def _on_poll_activity(
-        self, entry: ChannelEntry, phase: str, display_name: str
-    ) -> None:
-        self._event_queue.put(("poll_activity", (entry, phase, display_name)))
-
-    def _on_partial_snapshot(
-        self, statuses: dict[str, Any], display_names: dict[str, str]
-    ) -> None:
-        self._event_queue.put(("partial_status_update", (statuses, display_names)))
-
-    def _on_poll_done(self) -> None:
-        if self._monitor:
-            statuses = self._monitor.snapshot_statuses()
-            display_names = self._monitor.snapshot_display_names()
-            self._event_queue.put(("poll_waiting", None))
-            self._event_queue.put(("status_update", (statuses, display_names)))
-
     def _execute_live_action(
         self,
         action: str,
         info: StreamInfo,
-        browser_settings: dict[str, Any] | None,
+        browser_settings: BrowserSettings | dict[str, Any] | None,
     ) -> None:
         """Run notify/open side-effects off the UI thread."""
         noop = lambda: None  # noqa: E731
@@ -1699,202 +938,7 @@ class App(ctk.CTk):
 
     def _poll_events(self) -> None:
         self.after(80, self._poll_events)
-
-        if self._monitor_mode == "idle":
-            try:
-                while True:
-                    self._event_queue.get_nowait()
-            except queue.Empty:
-                pass
-            return
-
-        live_events: list[tuple[ChannelEntry, StreamInfo]] = []
-        offline_events: list[tuple[ChannelEntry, Any]] = []
-        poll_complete = False
-        latest_poll_activity: tuple[ChannelEntry, str, str] | None = None
-        pending_names: dict[str, str] = {}
-        max_events_per_tick = 12
-        events_processed = 0
-        buffered: list[tuple[str, Any]] = []
-
-        try:
-            while True:
-                buffered.append(self._event_queue.get_nowait())
-        except queue.Empty:
-            pass
-
-        other_events: list[tuple[str, Any]] = []
-        for kind, data in buffered:
-            if kind == "poll_activity":
-                latest_poll_activity = data
-            else:
-                other_events.append((kind, data))
-
-        for index, (kind, data) in enumerate(other_events):
-            if events_processed >= max_events_per_tick:
-                for rest_kind, rest_data in other_events[index:]:
-                    self._event_queue.put((rest_kind, rest_data))
-                break
-            events_processed += 1
-            if kind == "live":
-                live_events.append(data)
-            elif kind == "offline":
-                offline_events.append(data)
-            elif kind == "poll_waiting":
-                self._set_poll_subline_waiting()
-            elif kind == "partial_status_update":
-                statuses, display_names = data
-                for key, status in statuses.items():
-                    merged = self._prefer_richer_offline_status(
-                        self._ui_status_pending.get(key), status
-                    )
-                    self._ui_status_pending[key] = merged
-                pending_names.update(display_names)
-            elif kind == "status_update":
-                statuses, display_names = data
-                pending_names.update(display_names)
-                for row in self._channel_rows:
-                    if row.key in statuses:
-                        self._ui_status_pending[row.key] = statuses[row.key]
-                    elif row._status_state in ("live", "offline", "upcoming"):
-                        self._ui_status_pending[row.key] = None
-                poll_complete = True
-
-        if pending_names:
-            self._apply_display_names(pending_names)
-
-        if latest_poll_activity is not None:
-            entry, phase, display_name = latest_poll_activity
-            self._update_poll_subline(entry, phase, display_name)
-
-        applied = self._apply_pending_status_updates(limit=3)
-        if applied:
-            logger.info(
-                "UI status flush: %d row(s), %d queued",
-                applied,
-                len(self._ui_status_pending),
-            )
-
-        # 只監測 (watch) mode is observe-only: it refreshes the UI status but
-        # must never open *or* close player windows. Every window-closing side
-        # effect below — the off-topic prune and the close_on_offline sweep —
-        # is therefore gated on trigger mode, matching the documented contract
-        # that 只監測 "不執行離線關閉". Without this gate, switching to 只監測
-        # while a player window was open would still let a later offline edge
-        # close the very window the user switched modes to keep watching.
-        trigger_enabled = self._monitor_mode == "trigger"
-
-        if poll_complete:
-            # A monitor poll just completed — this is the natural cadence at
-            # which to sweep tracked browser windows for "off-topic" drift.
-            # We only run when the user opted in, and we tolerate the call
-            # being a no-op on non-Windows (the helper returns 0).
-            raw_browser_settings = self.config.get("browser_settings") or {}
-            if (
-                trigger_enabled
-                and raw_browser_settings.get("enabled")
-                and raw_browser_settings.get("close_off_topic_pages")
-                and browser_window_tracking_available(raw_browser_settings)
-            ):
-                try:
-                    closed = prune_off_topic_tracked_windows()
-                    if closed:
-                        logger.info(
-                            "off-topic prune closed %d window(s)", closed
-                        )
-                except Exception:
-                    logger.exception("off-topic prune failed")
-            elif (
-                trigger_enabled
-                and raw_browser_settings.get("close_off_topic_pages")
-                and not browser_window_tracking_available(raw_browser_settings)
-            ):
-                logger.debug(
-                    "Skipped off-topic prune: HWND window tracking unavailable "
-                    "(need dedicated profile and app mode or separate window)"
-                )
-
-        configured_action = self.config.get("action", "open_and_stop")
-        browser_settings = self._current_browser_settings()
-        should_stop = False
-        should_exit = False
-
-        for entry, info in live_events:
-            if info.display_name:
-                self._apply_display_names({entry.key: info.display_name})
-            # Tier-2 snapshot (status_update) is authoritative when present —
-            # it carries upcoming_url / vod_url that StreamInfo edges lack.
-            # Applying a coarse StreamInfo mapping after the snapshot was
-            # overwriting YouTube UPCOMING/OFFLINE rows as LIVE.
-            if not poll_complete:
-                self._apply_live_row_status(entry, info)
-
-            if not trigger_enabled:
-                continue
-
-            # Monitor-only channels: keep the LIVE label / status_update flow
-            # but suppress every downstream side-effect (toast, browser open,
-            # stop/exit-after-trigger). The user explicitly asked us to look
-            # but not act on this channel.
-            if getattr(entry, "monitor_only", False):
-                logger.info(
-                    "Skipped action for %s (monitor_only)", entry.key
-                )
-                continue
-
-            action = action_for_stream_status(configured_action, info)
-            if action is None:
-                continue
-
-            if action in ("open_and_stop", "open_and_keep", "open_and_exit"):
-                threading.Thread(
-                    target=self._execute_live_action,
-                    args=(action, info, browser_settings),
-                    daemon=True,
-                ).start()
-                if action == "open_and_stop":
-                    should_stop = True
-                elif action == "open_and_exit":
-                    should_exit = True
-            else:
-                noop = lambda: None  # noqa: E731
-                execute_action(
-                    action,
-                    info,
-                    stop_fn=noop,
-                    exit_fn=noop,
-                    browser_settings=browser_settings,
-                )
-
-        skip_close_on_offline = (
-            self._monitor is not None and self._monitor.wake_verify_active
-        )
-        if (
-            trigger_enabled
-            and offline_events
-            and browser_settings
-            and browser_settings.get("close_on_offline")
-            and browser_window_tracking_available(browser_settings)
-            and not skip_close_on_offline
-        ):
-            for entry, offline_info in offline_events:
-                # close_on_offline must respect monitor-only too — we never
-                # opened a window for this channel, so we shouldn't try to
-                # hunt for one to close (which could match an unrelated tab
-                # the user opened themselves).
-                if getattr(entry, "monitor_only", False):
-                    continue
-                self._handle_channel_offline(entry, offline_info)
-
-        if should_stop:
-            # auto-stop fired by open_and_stop — we just opened a player
-            # window the user wants to keep watching, so don't fire the
-            # close_on_stop sweep here.
-            self._on_stop(is_user_action=False)
-        elif should_exit:
-            self._quit_app()
-
-        self._maybe_restart_dead_monitor()
+        self._event_bridge.tick()
 
     def _handle_channel_offline(
         self, entry: ChannelEntry, offline_info: Any

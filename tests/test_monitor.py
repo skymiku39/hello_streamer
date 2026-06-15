@@ -1,11 +1,21 @@
-import logging
+﻿import logging
 import threading
 import time
 
-from stream_monitor import monitor as monitor_module
 from stream_monitor.db import SeenVideoDB
+from stream_monitor.events import (
+    ChannelWentLive,
+    ChannelWentOffline,
+    MonitorEvent,
+    MonitorEventBus,
+    PartialStatusUpdate,
+    PollStatusUpdate,
+)
 from stream_monitor.fetcher.base import FinishedVod, StreamInfo, VideoItem
 from stream_monitor.monitor import ChannelEntry, ChannelStatus, Monitor
+from stream_monitor.monitor import deps as monitor_deps
+from stream_monitor.monitor import types as monitor_types
+from stream_monitor.monitor.probes import get_platform_probe
 
 
 def _check_and_commit(monitor: Monitor, entry: ChannelEntry):
@@ -13,6 +23,27 @@ def _check_and_commit(monitor: Monitor, entry: ChannelEntry):
     events, commit = monitor._check_channel(entry)
     commit()
     return events
+
+
+def _collect_partial(bus: MonitorEventBus) -> dict[str, ChannelStatus]:
+    partial: dict[str, ChannelStatus] = {}
+    for event in bus.drain():
+        if isinstance(event, PartialStatusUpdate):
+            partial.update(event.statuses)
+    return partial
+
+
+def _track_live_and_poll_order(bus: MonitorEventBus) -> list[str]:
+    order: list[str] = []
+
+    def on_event(event: MonitorEvent) -> None:
+        if isinstance(event, ChannelWentLive):
+            order.append(f"live:{event.entry.name}")
+        elif isinstance(event, PollStatusUpdate):
+            order.append("poll_complete")
+
+    bus.subscribe(on_event)
+    return order
 
 
 class FakeTwitchFetcher:
@@ -172,9 +203,9 @@ class FakeYouTubeFetcher:
         return None
 
 
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 # Twitch: boolean edge-trigger (unchanged)
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 def test_tier1_offline_preview_preserves_tier2_resolved_empty_detail() -> None:
     cached = ChannelStatus(
         status=False,
@@ -217,7 +248,7 @@ def test_twitch_live_tier1_preview_does_not_deadlock(
 ) -> None:
     """LIVE tier-1 preview must not re-acquire Monitor._lock (non-reentrant)."""
     fetcher = FakeTwitchFetcher([True])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
         channels=[{"platform": "twitch", "name": "hayabi_zr"}],
@@ -244,10 +275,10 @@ def test_twitch_live_tier1_preview_does_not_deadlock(
 
 
 def test_twitch_triggers_only_on_live_transition(monkeypatch, tmp_path) -> None:
-    # Sequence chosen to exercise *confirmed* offline transitions only —
+    # Sequence chosen to exercise *confirmed* offline transitions only ??
     # the anti-flap guard requires two consecutive "not live" readings
     # before it commits to the offline edge (see _OFFLINE_STRIKE_THRESHOLD).
-    # Stable-offline polls issue one GQL call; live→offline edges double-check.
+    # Stable-offline polls issue one GQL call; live?ffline edges double-check.
     fetcher = FakeTwitchFetcherCalls(
         [
             False,  # poll 1: stable offline
@@ -256,16 +287,15 @@ def test_twitch_triggers_only_on_live_transition(monkeypatch, tmp_path) -> None:
             False,
             False,  # poll 4: offline edge (double-check)
             False,
-            False,  # poll 5: offline edge (double-check) → confirmed offline
+            False,  # poll 5: offline edge (double-check) ??confirmed offline
             True,  # poll 6: went live again
         ]
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     events: list[tuple[str, str]] = []
     monitor = Monitor(
         channels=[{"platform": "twitch", "name": "hello"}],
-        on_status_change=lambda entry, info: events.append((entry.key, info.title)),
         db=db,
     )
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -290,7 +320,7 @@ def test_twitch_triggers_only_on_live_transition(monkeypatch, tmp_path) -> None:
 def test_check_channel_does_not_filter_by_enabled_flag(monkeypatch, tmp_path) -> None:
     """_check_channel processes the entry regardless of enabled; filtering is _run()'s job."""
     fetcher = FakeTwitchFetcher([True])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
         channels=[{"platform": "twitch", "name": "hello", "enabled": False}],
@@ -307,9 +337,9 @@ def test_check_channel_does_not_filter_by_enabled_flag(monkeypatch, tmp_path) ->
     db.close()
 
 
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 # YouTube: TIDUS videoId dedup
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 def test_youtube_new_video_triggers_event(monkeypatch, tmp_path) -> None:
     items = [
         VideoItem(
@@ -321,7 +351,7 @@ def test_youtube_new_video_triggers_event(monkeypatch, tmp_path) -> None:
         )
     ]
     fetcher = FakeYouTubeFetcher([items])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -348,7 +378,7 @@ def test_youtube_duplicate_video_skipped(monkeypatch, tmp_path) -> None:
         display_name="YT Chan",
     )
     fetcher = FakeYouTubeFetcher([[item], [item]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -388,7 +418,7 @@ def test_youtube_upcoming_poll_fills_missing_schedule(
                     item.scheduled_start = soon
 
     fetcher = FetcherFillsUpcoming([[bare_upcoming]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
         channels=[{"platform": "youtube", "name": "ytchan"}],
@@ -422,7 +452,7 @@ def test_youtube_past_upcoming_does_not_set_upcoming_status(
         )
     ]
     fetcher = FakeYouTubeFetcher([items])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "ytchan"}], db=db)
     entry = ChannelEntry(platform="youtube", name="ytchan")
@@ -451,7 +481,7 @@ def test_youtube_upcoming_sets_status(monkeypatch, tmp_path) -> None:
         )
     ]
     fetcher = FakeYouTubeFetcher([items])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -496,7 +526,7 @@ def test_youtube_upcoming_status_uses_nearest_scheduled_start(
         scheduled_start=sooner_start,
     )
     fetcher = FakeYouTubeFetcher([[later, sooner]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -533,7 +563,7 @@ def test_youtube_live_without_feed_started_at_uses_session_cache(
                     item.started_at = "2026-06-10T08:00:00+00:00"
 
     fetcher = EnrichLiveFetcher([[live]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
         channels=[{"platform": "youtube", "name": "fukuri_1017"}],
@@ -561,18 +591,19 @@ def test_youtube_tier1_live_preview_sets_started_at_without_watch(
         url="https://www.youtube.com/watch?v=G8YqTVg0IUQ",
     )
     fetcher = FakeYouTubeFetcher([[live]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
-    partial: dict[str, ChannelStatus] = {}
+    bus = MonitorEventBus()
     monitor = Monitor(
         channels=[{"platform": "youtube", "name": "fukuri_1017"}],
         db=db,
-        on_partial_snapshot=lambda statuses, _names: partial.update(statuses),
+        event_bus=bus,
     )
     entry = ChannelEntry(platform="youtube", name="fukuri_1017")
 
     monitor._probe_live(entry)
 
+    partial = _collect_partial(bus)
     row = partial["youtube:fukuri_1017"]
     assert row.status is True
     assert row.started_at != ""
@@ -600,7 +631,7 @@ def test_youtube_session_fallback_upgrades_to_platform_start_time(
                     item.started_at = "2026-06-10T09:31:07+00:00"
 
     fetcher = PlatformFetcher([[live]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
         channels=[{"platform": "youtube", "name": "fukuri_1017"}],
@@ -640,7 +671,7 @@ def test_youtube_stable_live_skips_watch_enrich_on_second_poll(
                     item.started_at = "2026-06-10T08:00:00+00:00"
 
     fetcher = CountingFetcher([[live], [live]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
         channels=[{"platform": "youtube", "name": "fukuri_1017"}],
@@ -678,7 +709,7 @@ def test_youtube_live_status_uses_longest_running_stream(
         started_at="2026-05-06T12:00:00+00:00",
     )
     fetcher = FakeYouTubeFetcher([[newer, older]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -709,7 +740,7 @@ def test_youtube_mixed_styles_in_single_poll(monkeypatch, tmp_path) -> None:
         ),
     ]
     fetcher = FakeYouTubeFetcher([items])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -749,7 +780,7 @@ def test_youtube_upcoming_then_live_same_video_triggers_live(
         display_name="YT Chan",
     )
     fetcher = FakeYouTubeFetcher([[upcoming], [live]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -794,7 +825,7 @@ def test_youtube_new_upcoming_after_baseline_triggers_notify_event(
         scheduled_start=later,
     )
     fetcher = FakeYouTubeFetcher([[old], [old, new]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -831,7 +862,7 @@ def test_youtube_default_items_are_marked_but_never_emit_events(
         display_name="YT Chan",
     )
     fetcher = FakeYouTubeFetcher([[old], [old, new]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -858,7 +889,7 @@ def test_youtube_empty_items_uses_live_fallback(monkeypatch, tmp_path) -> None:
         display_name="YT Chan",
     )
     fetcher = FakeYouTubeFetcher([[]], [fallback])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -899,7 +930,7 @@ def test_youtube_fallback_then_tidus_recovery_no_duplicate(
         items_batches=[[], [live_item]],
         info_batches=[fallback_info],
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -949,7 +980,7 @@ def test_youtube_fallback_suppression_only_consumes_one_live(
         items_batches=[[], [live_a, live_b]],
         info_batches=[fallback_info],
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -997,7 +1028,7 @@ def test_youtube_fallback_no_title_match_multiple_items_suppresses_none(
         items_batches=[[], [live_a, live_b]],
         info_batches=[fallback_info],
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -1016,7 +1047,7 @@ def test_youtube_fallback_no_title_match_multiple_items_suppresses_none(
 def test_twitch_re_enable_clears_last_status(monkeypatch, tmp_path) -> None:
     """Re-enabling a channel clears _last_status so new LIVE is detected."""
     fetcher = FakeTwitchFetcher([True, True])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -1051,7 +1082,7 @@ def test_youtube_stop_discards_uncommitted_seen(monkeypatch, tmp_path) -> None:
         display_name="Chan",
     )
     fetcher = FakeYouTubeFetcher([[item]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -1097,7 +1128,7 @@ def test_youtube_fallback_marker_preserved_across_nonlive_tidus(
         items_batches=[[], [default_item], [live_item]],
         info_batches=[fallback_info],
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
@@ -1118,9 +1149,9 @@ def test_youtube_fallback_marker_preserved_across_nonlive_tidus(
     db.close()
 
 
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 # General
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 def test_update_channels_replaces_entries(tmp_path) -> None:
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "old"}], db=db)
@@ -1149,17 +1180,17 @@ def test_update_channels_preserves_enabled_flag(tmp_path) -> None:
     db.close()
 
 
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 # Went-offline edge events
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 def test_twitch_emits_went_offline_after_live(monkeypatch, tmp_path) -> None:
-    """Live → offline edge must enqueue a went-offline event with the prior URL.
+    """Live ??offline edge must enqueue a went-offline event with the prior URL.
 
     The anti-flap guard requires two consecutive "not live" readings before
     committing to the offline edge, so the sequence here is [True, False, False].
     """
     fetcher = FakeTwitchFetcher([True, False, False])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
         channels=[{"platform": "twitch", "name": "hello"}],
@@ -1172,12 +1203,12 @@ def test_twitch_emits_went_offline_after_live(monkeypatch, tmp_path) -> None:
     with monitor._lock:
         assert monitor._pending_offline_events == []
 
-    # Poll 2: first "not live" reading — treated as transient noise.
+    # Poll 2: first "not live" reading ??treated as transient noise.
     _check_and_commit(monitor, entry)
     with monitor._lock:
         assert monitor._pending_offline_events == []
 
-    # Poll 3: second consecutive "not live" — now committed to offline.
+    # Poll 3: second consecutive "not live" ??now committed to offline.
     _check_and_commit(monitor, entry)
     with monitor._lock:
         assert len(monitor._pending_offline_events) == 1
@@ -1214,7 +1245,7 @@ def test_twitch_offline_status_sets_vod_url_from_archive(
             )
 
     fetcher = FetcherWithArchive([True, False, False])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -1313,7 +1344,7 @@ def test_youtube_offline_clears_expired_upcoming_url(tmp_path) -> None:
 
 def test_twitch_offline_never_sets_upcoming_url(monkeypatch, tmp_path) -> None:
     fetcher = FakeTwitchFetcher([True, False, False])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -1416,7 +1447,7 @@ def test_youtube_fallback_sets_upcoming_status(monkeypatch, tmp_path) -> None:
         fetcher, "get_channel_items", lambda _name, **kwargs: []
     )
     monkeypatch.setattr(fetcher, "get_stream_info", fake_get_stream_info)
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
 
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
@@ -1435,7 +1466,7 @@ def test_youtube_fallback_sets_upcoming_status(monkeypatch, tmp_path) -> None:
 
 def test_twitch_no_went_offline_when_never_was_live(monkeypatch, tmp_path) -> None:
     fetcher = FakeTwitchFetcher([False, False])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -1468,7 +1499,7 @@ def test_twitch_cold_offline_shows_vod_when_archive_available(
             )
 
     fetcher = FetcherWithArchive([False, False])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -1505,7 +1536,7 @@ def test_twitch_cold_offline_stale_vod_uses_archive_elapsed(
             )
 
     fetcher = FetcherWithStaleArchive([False])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -1602,18 +1633,12 @@ def test_twitch_tier2_clears_pending_without_archive(
     monkeypatch, tmp_path,
 ) -> None:
     """After tier-2, cold offline Twitch rows must leave pending state."""
-    partial: dict[str, ChannelStatus] = {}
-
-    def on_partial(statuses: dict[str, ChannelStatus], _names: dict[str, str]) -> None:
-        partial.update(statuses)
-
     fetcher = FakeTwitchFetcher([False, False])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(
         channels=[{"platform": "twitch", "name": "karlylinnea"}],
         db=db,
-        on_partial_snapshot=on_partial,
     )
     entry = ChannelEntry(platform="twitch", name="karlylinnea")
 
@@ -1632,7 +1657,7 @@ def test_twitch_cold_offline_shows_confirmed_without_archive(
 ) -> None:
     """Never-live Twitch channels show OFFLINE even when no ARCHIVE VOD exists."""
     fetcher = FakeTwitchFetcher([False, False, False])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -1658,7 +1683,7 @@ def test_twitch_entry_key_normalizes_login_case() -> None:
 def test_youtube_tidus_emits_went_offline_when_video_drops_out(
     monkeypatch, tmp_path
 ) -> None:
-    """Poll 1 has a LIVE video; later polls have no LIVE items → went-offline fires.
+    """Poll 1 has a LIVE video; later polls have no LIVE items ??went-offline fires.
 
     With the anti-flap guard, the fallback path needs *two* consecutive
     "not live" readings before committing to the offline edge.
@@ -1671,7 +1696,7 @@ def test_youtube_tidus_emits_went_offline_when_video_drops_out(
         display_name="YT Channel",
     )
     fetcher = FakeYouTubeFetcher(items_batches=[[live_item], [], []])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -1682,7 +1707,7 @@ def test_youtube_tidus_emits_went_offline_when_video_drops_out(
 
     # Poll 2: items list returns []; this triggers the fallback path. Need
     # to supply a non-live StreamInfo so fallback can see "not live".
-    # First strike: transient — no offline event yet.
+    # First strike: transient ??no offline event yet.
     fetcher.info_batches = [
         StreamInfo(
             channel="yt",
@@ -1703,7 +1728,7 @@ def test_youtube_tidus_emits_went_offline_when_video_drops_out(
     with monitor._lock:
         assert monitor._pending_offline_events == []
 
-    # Poll 3: second consecutive "not live" → fallback now commits to offline.
+    # Poll 3: second consecutive "not live" ??fallback now commits to offline.
     _check_and_commit(monitor, entry)
     with monitor._lock:
         # Fallback path emits the offline event with the prior payload.
@@ -1716,7 +1741,7 @@ def test_youtube_tidus_emits_went_offline_when_video_drops_out(
 def test_youtube_tidus_emits_went_offline_when_live_set_changes(
     monkeypatch, tmp_path
 ) -> None:
-    """LIVE A in poll 1; LIVE B in polls 2-3 → A confirmed offline after 2 strikes."""
+    """LIVE A in poll 1; LIVE B in polls 2-3 ??A confirmed offline after 2 strikes."""
     live_a = VideoItem(
         video_id="A",
         title="Stream A",
@@ -1730,7 +1755,7 @@ def test_youtube_tidus_emits_went_offline_when_live_set_changes(
         style="LIVE",
     )
     fetcher = FakeYouTubeFetcher(items_batches=[[live_a], [live_b], [live_b]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -1742,7 +1767,7 @@ def test_youtube_tidus_emits_went_offline_when_live_set_changes(
         offline_urls = {p.url for _, p in monitor._pending_offline_events}
         assert "https://www.youtube.com/watch?v=A" not in offline_urls
 
-    _check_and_commit(monitor, entry)  # A still missing (strike 2 → confirmed)
+    _check_and_commit(monitor, entry)  # A still missing (strike 2 ??confirmed)
     with monitor._lock:
         offline_urls = {p.url for _, p in monitor._pending_offline_events}
         assert "https://www.youtube.com/watch?v=A" in offline_urls
@@ -1750,29 +1775,35 @@ def test_youtube_tidus_emits_went_offline_when_live_set_changes(
     db.close()
 
 
-def test_monitor_callback_signature_accepts_on_went_offline(tmp_path) -> None:
-    """Construction accepts the new callback without breaking existing kwargs."""
+def test_monitor_publishes_went_offline_to_event_bus(tmp_path) -> None:
+    """Offline edges are published on the injected event bus."""
     db = SeenVideoDB(tmp_path / "test.db")
+    bus = MonitorEventBus()
     captured: list = []
+    bus.subscribe(
+        lambda event: captured.append(event)
+        if isinstance(event, ChannelWentOffline)
+        else None
+    )
     monitor = Monitor(
         channels=[{"platform": "twitch", "name": "hi"}],
-        on_went_offline=lambda entry, payload: captured.append((entry, payload)),
+        event_bus=bus,
         db=db,
     )
-    assert monitor._on_went_offline is not None
+    assert monitor._event_bus is bus
     db.close()
 
 
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 # Anti-flap guard: single-poll API hiccups must NOT trigger duplicate
 # went_live notifications or fake went_offline events.
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 def test_twitch_single_offline_flap_does_not_emit_offline_event(
     monkeypatch, tmp_path
 ) -> None:
     """A single not-live reading between two live readings is ignored entirely."""
     fetcher = FakeTwitchFetcher([True, False, True])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -1782,7 +1813,7 @@ def test_twitch_single_offline_flap_does_not_emit_offline_event(
     assert len(went_live_1) == 1
 
     # Poll 2: transient "not live" (Twitch GQL cache hiccup). Should be
-    # absorbed by the strike guard — no offline event, last_status stays True.
+    # absorbed by the strike guard ??no offline event, last_status stays True.
     went_live_2 = _check_and_commit(monitor, entry)
     assert went_live_2 == []
     with monitor._lock:
@@ -1790,7 +1821,7 @@ def test_twitch_single_offline_flap_does_not_emit_offline_event(
         assert monitor._last_status["twitch:hello"].status is True
 
     # Poll 3: back to live. Because last_status was preserved as True, this
-    # is NOT a new went_live edge → no duplicate notification.
+    # is NOT a new went_live edge ??no duplicate notification.
     went_live_3 = _check_and_commit(monitor, entry)
     assert went_live_3 == []
     with monitor._lock:
@@ -1801,14 +1832,14 @@ def test_twitch_single_offline_flap_does_not_emit_offline_event(
 def test_twitch_strike_resets_when_channel_returns_live(monkeypatch, tmp_path) -> None:
     """Once a previously-flapping channel returns live, the strike counter resets."""
     fetcher = FakeTwitchFetcher([True, False, True, False, False])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hi"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hi")
 
     _check_and_commit(monitor, entry)  # live
     _check_and_commit(monitor, entry)  # not live (strike 1, ignored)
-    _check_and_commit(monitor, entry)  # live again → strike reset
+    _check_and_commit(monitor, entry)  # live again ??strike reset
     with monitor._lock:
         assert monitor._offline_strikes == {}
         assert monitor._pending_offline_events == []
@@ -1818,7 +1849,7 @@ def test_twitch_strike_resets_when_channel_returns_live(monkeypatch, tmp_path) -
     _check_and_commit(monitor, entry)  # not live (fresh strike 1)
     with monitor._lock:
         assert monitor._pending_offline_events == []
-    _check_and_commit(monitor, entry)  # not live (strike 2 → confirmed)
+    _check_and_commit(monitor, entry)  # not live (strike 2 ??confirmed)
     with monitor._lock:
         assert len(monitor._pending_offline_events) == 1
     db.close()
@@ -1829,7 +1860,7 @@ def test_twitch_fetch_none_increments_offline_strike_when_was_live(
 ) -> None:
     """A failed fetch while LIVE counts toward the offline strike threshold."""
     fetcher = FakeTwitchFetcherReadings([True, None, None])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -1856,7 +1887,7 @@ def test_twitch_live_after_fetch_none_commit_fires_went_live(
 ) -> None:
     """After fetch failures clear a stale LIVE state, a new stream triggers went_live."""
     fetcher = FakeTwitchFetcherReadings([True, None, None, True])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -1875,7 +1906,7 @@ def test_twitch_went_live_suppressed_emits_log(
     monkeypatch, tmp_path, caplog,
 ) -> None:
     fetcher = FakeTwitchFetcher([True, True])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -1920,16 +1951,16 @@ def test_youtube_fallback_single_offline_flap_is_absorbed(
             ),
         ],
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
 
-    # Poll 1: fallback (items empty), live → went_live event.
+    # Poll 1: fallback (items empty), live ??went_live event.
     events_1 = _check_and_commit(monitor, entry)
     assert len(events_1) == 1
 
-    # Poll 2: fallback, single not-live reading — must NOT emit offline event,
+    # Poll 2: fallback, single not-live reading ??must NOT emit offline event,
     # must NOT fire a second went_live on the next poll.
     events_2 = _check_and_commit(monitor, entry)
     assert events_2 == []
@@ -1937,7 +1968,7 @@ def test_youtube_fallback_single_offline_flap_is_absorbed(
         assert monitor._pending_offline_events == []
         assert monitor._last_status["youtube:yt"].status is True
 
-    # Poll 3: fallback live again → no duplicate notification because last
+    # Poll 3: fallback live again ??no duplicate notification because last
     # status was preserved as True throughout the flap.
     events_3 = _check_and_commit(monitor, entry)
     assert events_3 == []
@@ -1964,17 +1995,17 @@ def test_youtube_tidus_single_missing_video_id_is_absorbed(
     fetcher = FakeYouTubeFetcher(
         items_batches=[[live_item], [other_item], [live_item, other_item]]
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
 
-    # Poll 1: vidX is LIVE → went_live event.
+    # Poll 1: vidX is LIVE ??went_live event.
     events_1 = _check_and_commit(monitor, entry)
     assert any(info.video_id == "vidX" for _e, info in events_1)
 
     # Poll 2: vidX missing from feed (single-poll TIDUS dropout). Strike 1
-    # absorbs it — no offline event, last_status stays True.
+    # absorbs it ??no offline event, last_status stays True.
     events_2 = _check_and_commit(monitor, entry)
     assert events_2 == []
     with monitor._lock:
@@ -2024,8 +2055,8 @@ def test_update_channels_clears_strikes_for_removed_entries(tmp_path) -> None:
     # Inject strikes for both channels directly (simulating mid-stream state).
     with monitor._lock:
         monitor._offline_strikes = {
-            monitor_module._live_cache_key("twitch:alice"): 1,
-            monitor_module._live_cache_key("twitch:bob"): 1,
+            monitor_types._live_cache_key("twitch:alice"): 1,
+            monitor_types._live_cache_key("twitch:bob"): 1,
         }
 
     monitor.update_channels([{"platform": "twitch", "name": "alice"}])
@@ -2038,14 +2069,14 @@ def test_update_channels_clears_strikes_for_removed_entries(tmp_path) -> None:
     db.close()
 
 
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 # P1: TIDUS recovering after a fallback-live poll must not emit a fake
 # went_offline for the fallback alias.
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 def test_youtube_fallback_alias_does_not_emit_offline_when_tidus_recovers(
     monkeypatch, tmp_path
 ) -> None:
-    """After fallback live → TIDUS live, the fallback alias is silently dropped."""
+    """After fallback live ??TIDUS live, the fallback alias is silently dropped."""
     live_item = VideoItem(
         video_id="vidX",
         title="Stream",
@@ -2056,7 +2087,7 @@ def test_youtube_fallback_alias_does_not_emit_offline_when_tidus_recovers(
     fetcher = FakeYouTubeFetcher(
         items_batches=[[], [live_item], [live_item], [live_item]],
         info_batches=[
-            # Poll 1: TIDUS empty → fallback path sees the stream as live.
+            # Poll 1: TIDUS empty ??fallback path sees the stream as live.
             StreamInfo(
                 channel="yt",
                 platform="youtube",
@@ -2067,48 +2098,46 @@ def test_youtube_fallback_alias_does_not_emit_offline_when_tidus_recovers(
             ),
         ],
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
-    captured_offline: list = []
     monitor = Monitor(
         channels=[{"platform": "youtube", "name": "yt"}],
         db=db,
-        on_went_offline=lambda e, p: captured_offline.append((e, p)),
     )
     entry = ChannelEntry(platform="youtube", name="yt")
 
-    # Poll 1: fallback sees live → fallback alias stored in _live_payload.
+    # Poll 1: fallback sees live ??fallback alias stored in _live_payload.
     _check_and_commit(monitor, entry)
     with monitor._lock:
-        assert monitor_module._live_cache_key("youtube:yt") in monitor._live_payload
+        assert monitor_types._live_cache_key("youtube:yt") in monitor._live_payload
 
-    # Poll 2: TIDUS recovers → fallback alias must be dropped silently
+    # Poll 2: TIDUS recovers ??fallback alias must be dropped silently
     # (no strike accumulation, no offline event), TIDUS payload installed.
     _check_and_commit(monitor, entry)
     with monitor._lock:
         # Fallback alias gone, no orphan strike, no pending offline event.
-        assert monitor_module._live_cache_key("youtube:yt") not in monitor._live_payload
-        assert monitor_module._live_cache_key("youtube:yt") not in monitor._offline_strikes
+        assert monitor_types._live_cache_key("youtube:yt") not in monitor._live_payload
+        assert monitor_types._live_cache_key("youtube:yt") not in monitor._offline_strikes
         assert monitor._pending_offline_events == []
         # TIDUS payload installed under the real video_id.
         assert (
-            monitor_module._live_cache_key("youtube:yt", "vidX")
+            monitor_types._live_cache_key("youtube:yt", "vidX")
             in monitor._live_payload
         )
 
-    # Poll 3: still live → no spurious offline event later either.
+    # Poll 3: still live ??no spurious offline event later either.
     _check_and_commit(monitor, entry)
     with monitor._lock:
         assert monitor._pending_offline_events == []
     db.close()
 
 
-# ─────────────────────────────────────────────
-# P2: After TIDUS-live → fallback-confirmed-offline, the leftover TIDUS
+# ?????????????????????????????????????????????
+# P2: After TIDUS-live ??fallback-confirmed-offline, the leftover TIDUS
 # payload must NOT cause a second went_offline when TIDUS later returns.
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 def test_fallback_offline_clears_all_tidus_payloads(monkeypatch, tmp_path) -> None:
-    """Fallback offline = entire channel offline → all payloads emit once."""
+    """Fallback offline = entire channel offline ??all payloads emit once."""
     live_item = VideoItem(
         video_id="vidX",
         title="Stream",
@@ -2136,7 +2165,7 @@ def test_fallback_offline_clears_all_tidus_payloads(monkeypatch, tmp_path) -> No
                 title="",
                 url="",
             ),
-            # Poll 3: fallback offline (strike 2 → confirmed). Fires
+            # Poll 3: fallback offline (strike 2 ??confirmed). Fires
             # went_offline for vidX and clears the leftover TIDUS payload.
             StreamInfo(
                 channel="yt",
@@ -2147,7 +2176,7 @@ def test_fallback_offline_clears_all_tidus_payloads(monkeypatch, tmp_path) -> No
             ),
         ],
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -2159,16 +2188,16 @@ def test_fallback_offline_clears_all_tidus_payloads(monkeypatch, tmp_path) -> No
 
     _check_and_commit(monitor, entry)  # Poll 3: fallback offline strike 2
     with monitor._lock:
-        # Exactly one offline event — for vidX — was emitted via the cleared
+        # Exactly one offline event ??for vidX ??was emitted via the cleared
         # TIDUS payload, not for the (non-existent) fallback alias.
         offline_payloads = [p for _e, p in monitor._pending_offline_events]
         vidX_events = [p for p in offline_payloads if p.video_id == "vidX"]
         assert len(vidX_events) == 1, (
             "fallback offline must emit went_offline for the prior TIDUS payload"
         )
-        # The TIDUS payload was popped — no leftover that could re-fire later.
+        # The TIDUS payload was popped ??no leftover that could re-fire later.
         assert (
-            monitor_module._live_cache_key("youtube:yt", "vidX")
+            monitor_types._live_cache_key("youtube:yt", "vidX")
             not in monitor._live_payload
         )
 
@@ -2188,10 +2217,10 @@ def test_fallback_offline_clears_all_tidus_payloads(monkeypatch, tmp_path) -> No
     db.close()
 
 
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 # P3: A single-poll live dropout must not flip the UI to UPCOMING (or fire
 # a phantom UPCOMING notification path's last_status side-effects).
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 def test_channel_entry_carries_monitor_only_flag(tmp_path) -> None:
     """monitor_only on the channel dict propagates onto ChannelEntry."""
     db = SeenVideoDB(tmp_path / "test.db")
@@ -2258,12 +2287,12 @@ def test_youtube_single_live_dropout_with_upcoming_keeps_live_status(
             [live_item, upcoming_item],
         ]
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
 
-    # Poll 1: LIVE + UPCOMING → last_status = LIVE.
+    # Poll 1: LIVE + UPCOMING ??last_status = LIVE.
     _check_and_commit(monitor, entry)
     with monitor._lock:
         assert monitor._last_status["youtube:yt"].status is True
@@ -2282,7 +2311,7 @@ def test_youtube_single_live_dropout_with_upcoming_keeps_live_status(
         assert monitor._live_started_at == live_started_at_snapshot
         assert monitor._pending_offline_events == []
 
-    # Poll 3: LIVE returns → still no duplicate notifications / events.
+    # Poll 3: LIVE returns ??still no duplicate notifications / events.
     _check_and_commit(monitor, entry)
     with monitor._lock:
         assert monitor._last_status["youtube:yt"].status is True
@@ -2290,9 +2319,9 @@ def test_youtube_single_live_dropout_with_upcoming_keeps_live_status(
     db.close()
 
 
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 # Poll performance optimizations
-# ─────────────────────────────────────────────
+# ?????????????????????????????????????????????
 
 
 class SlowFetcher:
@@ -2433,7 +2462,7 @@ def test_poll_rest_when_slower_than_interval(monkeypatch) -> None:
     )
     monitor._run()
 
-    assert sleeps == [monitor_module._MIN_POLL_REST_S]
+    assert sleeps == [monitor_types._MIN_POLL_REST_S]
 
 
 def test_parallel_poll_faster_than_sequential(monkeypatch) -> None:
@@ -2443,14 +2472,14 @@ def test_parallel_poll_faster_than_sequential(monkeypatch) -> None:
     ]
 
     seq_fetcher = SlowFetcher()
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: seq_fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: seq_fetcher)
     seq_monitor = Monitor(channels=channels, max_concurrent=1)
     for entry in seq_monitor._entries:
         seq_monitor._check_channel(entry)
     assert seq_fetcher.max_active == 1
 
     par_fetcher = SlowFetcher()
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: par_fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: par_fetcher)
     par_monitor = Monitor(channels=channels, max_concurrent=4)
     enabled = [e for e in par_monitor._entries if e.enabled]
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -2464,7 +2493,7 @@ def test_parallel_poll_faster_than_sequential(monkeypatch) -> None:
 
 def test_twitch_skips_offline_retry_when_stable_offline(monkeypatch) -> None:
     fetcher = CountingTwitchFetcher()
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     monitor = Monitor(channels=[{"platform": "twitch", "name": "stable"}])
     entry = ChannelEntry(platform="twitch", name="stable")
 
@@ -2504,7 +2533,7 @@ def test_youtube_poll_passes_fill_timing_false(monkeypatch, tmp_path) -> None:
         url="https://www.youtube.com/watch?v=vid1",
     )
     fetcher = TimingAwareFetcher(items_batches=[[live]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -2583,7 +2612,7 @@ def test_youtube_never_live_upcoming_shows_offline_row(
         )
     ]
     fetcher = FakeYouTubeFetcher([items])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -2638,7 +2667,7 @@ def test_youtube_live_end_with_upcoming_keeps_offline_fields(
     fetcher = FetcherWithVod(
         [[live_item], upcoming_only, upcoming_only],
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -2681,7 +2710,7 @@ def test_youtube_tier1_upcoming_notify_requires_surfacable_schedule(
         ).isoformat(),
     )
     fetcher = FakeYouTubeFetcher([[bare], [expired]])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -2715,7 +2744,7 @@ def test_youtube_upcoming_plus_default_vod_url(monkeypatch, tmp_path) -> None:
         ),
     ]
     fetcher = FakeYouTubeFetcher([items])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -2735,7 +2764,7 @@ def test_twitch_fetch_none_offline_commits_in_tier2(
     monkeypatch, tmp_path
 ) -> None:
     fetcher = FakeTwitchFetcherReadings([None, None])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -2779,7 +2808,7 @@ def test_run_tier_gap_youtube_status(monkeypatch, tmp_path) -> None:
         )
     ]
     fetcher = FakeYouTubeFetcher([items])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -2835,7 +2864,7 @@ def test_twitch_fetch_exception_increments_strike_when_was_live(
         raise RuntimeError("parse error")
 
     monkeypatch.setattr(fetcher, "get_stream_info", flaky_get)
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -2855,12 +2884,10 @@ def test_wake_verify_same_live_refreshes_no_event(
     monkeypatch, tmp_path, caplog,
 ) -> None:
     fetcher = FakeTwitchFetcherReadings([True, True])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
-    events: list[tuple[str, str]] = []
     monitor = Monitor(
         channels=[{"platform": "twitch", "name": "hello"}],
-        on_status_change=lambda entry, info: events.append((entry.key, info.title)),
         db=db,
     )
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -2870,7 +2897,6 @@ def test_wake_verify_same_live_refreshes_no_event(
     caplog.set_level(logging.INFO)
     monitor._run_wake_verification([entry], time.monotonic())
 
-    assert events == []
     with monitor._lock:
         assert monitor._last_status["twitch:hello"].status is True
     assert any("wake_verify_confirmed" in r.message for r in caplog.records)
@@ -2881,7 +2907,7 @@ def test_wake_verify_mismatch_defers_offline(
     monkeypatch, tmp_path, caplog,
 ) -> None:
     fetcher = FakeTwitchFetcherReadings([False])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -2945,7 +2971,7 @@ def test_youtube_tidus_upcoming_wake_bucket_matches_probe(
         )
     ]
     fetcher = FakeYouTubeFetcher([items])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -3014,7 +3040,7 @@ def test_restart_thread_runs_maintenance(monkeypatch, tmp_path) -> None:
 
 def test_restart_thread_preserves_last_status(monkeypatch, tmp_path) -> None:
     fetcher = FakeTwitchFetcherReadings([True])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
@@ -3054,7 +3080,7 @@ def test_empty_tidus_feed_strike_before_fallback(
             ),
         ],
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -3085,7 +3111,7 @@ def test_youtube_tidus_fetch_failure_counts_strike_not_fallback(
         "get_channel_items",
         lambda _name, **kwargs: None,
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -3116,7 +3142,7 @@ def test_youtube_fetch_unavailable_cold_start_writes_offline(
         "get_channel_items",
         lambda _name, **kwargs: None,
     )
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -3156,7 +3182,7 @@ def test_youtube_vod_complete_skips_full_vod_rescan_without_upcoming(
         )
 
     monkeypatch.setattr(fetcher, "get_latest_finished_vod", counting_vod)
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
@@ -3199,12 +3225,12 @@ def test_snapshot_readable_during_slow_youtube_offline_refresh(
             )
 
     fetcher = SlowVodFetcher([items])
-    monkeypatch.setattr(monitor_module, "get_fetcher", lambda _p: fetcher)
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
     monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
     entry = ChannelEntry(platform="youtube", name="yt")
 
-    snap = monitor_module._ProbeSnapshot()
+    snap = monitor_types._ProbeSnapshot()
     snap.fetcher = fetcher
     snap.youtube_items = items
 
@@ -3212,7 +3238,9 @@ def test_snapshot_readable_during_slow_youtube_offline_refresh(
 
     def run_refresh() -> None:
         try:
-            commit = monitor._refresh_youtube(entry, snap)
+            commit = get_platform_probe("youtube").refresh_details(
+                monitor, entry, snap
+            )
             commit()
         except BaseException as exc:  # noqa: BLE001
             refresh_error.append(exc)
@@ -3235,8 +3263,7 @@ def test_snapshot_readable_during_slow_youtube_offline_refresh(
 def test_execute_poll_cycle_dispatches_live_during_tier1_before_poll_complete(
     monkeypatch, tmp_path,
 ) -> None:
-    """Went-live callbacks fire as tier-1 probes finish, before poll_complete."""
-    order: list[str] = []
+    """Went-live events fire as tier-1 probes finish, before poll_complete."""
     refresh_started = threading.Event()
     release_refresh = threading.Event()
 
@@ -3272,9 +3299,11 @@ def test_execute_poll_cycle_dispatches_live_during_tier1_before_poll_complete(
         return lambda: None
 
     monkeypatch.setattr(
-        monitor_module, "get_fetcher", lambda _p: MultiLiveTwitchFetcher()
+        monitor_deps, "get_fetcher", lambda _p: MultiLiveTwitchFetcher()
     )
     db = SeenVideoDB(tmp_path / "test.db")
+    bus = MonitorEventBus()
+    order = _track_live_and_poll_order(bus)
     monitor = Monitor(
         channels=[
             {"platform": "twitch", "name": "a"},
@@ -3282,8 +3311,7 @@ def test_execute_poll_cycle_dispatches_live_during_tier1_before_poll_complete(
             {"platform": "twitch", "name": "c"},
         ],
         max_concurrent=4,
-        on_status_change=lambda entry, _info: order.append(f"live:{entry.name}"),
-        on_poll_complete=lambda: order.append("poll_complete"),
+        event_bus=bus,
         db=db,
     )
     monkeypatch.setattr(monitor, "_refresh_details", slow_refresh)
@@ -3323,3 +3351,4 @@ def test_monitor_request_stop_is_non_blocking(tmp_path) -> None:
     monitor.stop()
     assert not monitor.is_running
     db.close()
+

@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 import stream_monitor.browser_win32 as _browser_win32
+from stream_monitor.browser_settings_model import (
+    BrowserSettings,
+    coerce_browser_settings,
+)
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
 from stream_monitor.url_parser import parse_url
@@ -237,19 +241,21 @@ def _default_browser_profile_root() -> str:
     return default_browser_profile_dir()
 
 
-def _close_features_enabled(settings: dict[str, Any]) -> bool:
-    return any(
-        bool(settings.get(flag))
-        for flag in (
-            "close_on_offline",
-            "close_off_topic_pages",
-            "close_on_stop",
-        )
+def _close_features_enabled(
+    settings: BrowserSettings | dict[str, Any],
+) -> bool:
+    coerced = coerce_browser_settings(settings)
+    if coerced is None:
+        return False
+    return (
+        coerced.close_on_offline
+        or coerced.close_off_topic_pages
+        or coerced.close_on_stop
     )
 
 
 def browser_window_tracking_available(
-    settings: dict[str, Any] | None,
+    settings: BrowserSettings | dict[str, Any] | None,
     url: str = "https://www.twitch.tv/example",
 ) -> bool:
     """True when Win32 HWND tracking and managed close can work.
@@ -260,13 +266,14 @@ def browser_window_tracking_available(
     """
     if not browser_isolation_available(settings, url):
         return False
-    if not settings:
+    coerced = coerce_browser_settings(settings)
+    if coerced is None:
         return False
-    return bool(settings.get("app_mode")) or bool(settings.get("new_window", True))
+    return coerced.app_mode or coerced.new_window
 
 
 def browser_isolation_available(
-    settings: dict[str, Any] | None,
+    settings: BrowserSettings | dict[str, Any] | None,
     url: str = "https://www.twitch.tv/example",
 ) -> bool:
     """True when custom-browser launches can use a dedicated profile.
@@ -275,11 +282,15 @@ def browser_isolation_available(
     this isolation. Without it, title-keyword fallbacks can close unrelated
     browser windows that merely mention a channel name.
     """
-    if not settings or not settings.get("enabled"):
+    coerced = coerce_browser_settings(settings)
+    if coerced is None or not coerced.enabled:
         return False
-    base_dir = (settings.get("user_data_dir") or "").strip()
-    per_channel = bool(settings.get("per_channel_profile", True))
-    return bool(_resolve_effective_user_data_dir(url, base_dir, per_channel))
+    base_dir = coerced.user_data_dir.strip()
+    return bool(
+        _resolve_effective_user_data_dir(
+            url, base_dir, coerced.per_channel_profile
+        )
+    )
 
 
 def _resolve_effective_user_data_dir(
@@ -466,7 +477,7 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
 
 def _open_with_browser_settings(
     url: str,
-    settings: dict[str, Any],
+    settings: BrowserSettings | dict[str, Any],
     *,
     title_hints: tuple[str, ...] = (),
 ) -> bool:
@@ -478,6 +489,10 @@ def _open_with_browser_settings(
     that appear afterwards. This is more reliable than browser CLI flags alone,
     because Chrome/Edge route requests through a long-lived master process.
     """
+    coerced = coerce_browser_settings(settings)
+    if coerced is None:
+        return False
+    settings = coerced.to_dict()
     # Resolve the effective user_data_dir up front so both the CLI args and
     # the mkdir below see the same per-channel path.
     effective_settings = dict(settings)
@@ -609,7 +624,7 @@ def _open_with_browser_settings(
 
 def open_url(
     url: str,
-    browser_settings: dict[str, Any] | None = None,
+    browser_settings: BrowserSettings | dict[str, Any] | None = None,
     *,
     title_hints: tuple[str, ...] | list[str] | None = None,
 ) -> bool:
@@ -625,11 +640,12 @@ def open_url(
         return False
 
     hints_tuple = tuple(title_hints or ())
+    coerced = coerce_browser_settings(browser_settings)
 
     custom_launch_failed = False
-    if browser_settings and browser_settings.get("enabled"):
+    if coerced is not None and coerced.enabled:
         if _open_with_browser_settings(
-            url, browser_settings, title_hints=hints_tuple
+            url, coerced, title_hints=hints_tuple
         ):
             return True
         custom_launch_failed = True
@@ -637,8 +653,8 @@ def open_url(
     block_fallback = (
         _is_windows()
         and custom_launch_failed
-        and browser_settings is not None
-        and _close_features_enabled(browser_settings)
+        and coerced is not None
+        and _close_features_enabled(coerced)
     )
 
     try:
@@ -887,7 +903,7 @@ def _title_hints_from_stream_info(info: StreamInfo) -> tuple[str, ...]:
 def open_and_stop(
     info: StreamInfo,
     stop_fn: ActionCallback,
-    browser_settings: dict[str, Any] | None = None,
+    browser_settings: BrowserSettings | dict[str, Any] | None = None,
 ) -> None:
     """Open stream URL in browser and stop monitoring."""
     _toast(info, with_open_button=False)
@@ -897,7 +913,7 @@ def open_and_stop(
 
 def open_and_keep(
     info: StreamInfo,
-    browser_settings: dict[str, Any] | None = None,
+    browser_settings: BrowserSettings | dict[str, Any] | None = None,
 ) -> None:
     """Open stream URL in browser, keep monitoring other channels."""
     _toast(info, with_open_button=False)
@@ -912,7 +928,7 @@ def notify_only(info: StreamInfo) -> None:
 def open_and_exit(
     info: StreamInfo,
     exit_fn: ActionCallback,
-    browser_settings: dict[str, Any] | None = None,
+    browser_settings: BrowserSettings | dict[str, Any] | None = None,
 ) -> None:
     """Open stream URL in browser, then exit the application."""
     _toast(info, with_open_button=False)
@@ -925,7 +941,7 @@ def execute_action(
     info: StreamInfo,
     stop_fn: ActionCallback | None = None,
     exit_fn: ActionCallback | None = None,
-    browser_settings: dict[str, Any] | None = None,
+    browser_settings: BrowserSettings | dict[str, Any] | None = None,
 ) -> None:
     """Dispatch the configured action."""
     logger.info(

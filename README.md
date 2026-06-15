@@ -325,7 +325,11 @@ getconf LONG_BIT
 
 ```text
 stream_monitor/
-  app.py                 CustomTkinter 主視窗、ChannelRow、事件橋接
+  app.py                 CustomTkinter 主視窗、監控生命週期
+  channel_row.py         頻道列表單列 UI
+  events/                監控 Pub/Sub 事件型別與 EventBus
+  event_sink.py          EventBridge 窄介面 Protocol（ISP）
+  event_bridge.py        EventBus 訂閱者 → UI 執行緒副作用
   app_dialogs.py         頻道 / 語言 / 瀏覽器設定對話框
   app_ui.py              UI 共用工具（字型、按鈕、tooltip、時間格式化）
   browser_settings_model.py  瀏覽器設定 UI 維度與能力判斷
@@ -333,7 +337,7 @@ stream_monitor/
   config_manager.py      config.json 載入、驗證、atomic save
   db.py                  SQLite seen video database
   i18n.py                多國語言字串表、語言切換與訂閱機制
-  monitor.py             背景監控、狀態轉換、離線事件
+  monitor/               背景輪詢（types、core、probes/ 平台策略）
   notifier.py            通知、瀏覽器啟動（轉發 browser_win32）
   single_instance.py     單一實例保護
   startup.py             Windows Registry / Linux XDG Autostart

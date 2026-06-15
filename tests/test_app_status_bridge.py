@@ -5,8 +5,13 @@ from __future__ import annotations
 import pytest
 
 from stream_monitor import i18n
-from stream_monitor.app import App, ChannelRow
+from stream_monitor.app import App
 from stream_monitor.app_ui import _format_row_time
+from stream_monitor.channel_row import ChannelRow
+from stream_monitor.event_bridge import (
+    prefer_richer_offline_status,
+    row_has_richer_offline_detail,
+)
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelStatus
 
@@ -154,7 +159,7 @@ def test_format_row_time_live_offline_upcoming() -> None:
 def test_prefer_richer_offline_status_keeps_resolved_empty_over_pending() -> None:
     resolved = ChannelStatus(status=False, ended_at="", ended_at_source="")
     pending = ChannelStatus(status=False, ended_at_source="pending")
-    assert App._prefer_richer_offline_status(resolved, pending) is resolved
+    assert prefer_richer_offline_status(resolved, pending) is resolved
 
 
 def test_prefer_richer_offline_status_keeps_vod_over_pending() -> None:
@@ -165,7 +170,7 @@ def test_prefer_richer_offline_status_keeps_vod_over_pending() -> None:
         vod_url="https://www.twitch.tv/videos/1",
     )
     pending = ChannelStatus(status=False, ended_at_source="pending")
-    assert App._prefer_richer_offline_status(rich, pending) is rich
+    assert prefer_richer_offline_status(rich, pending) is rich
 
 
 def test_row_skips_pending_downgrade_when_resolved_empty() -> None:
@@ -173,7 +178,7 @@ def test_row_skips_pending_downgrade_when_resolved_empty() -> None:
     try:
         row.set_status(ChannelStatus(status=False, ended_at="", ended_at_source=""))
         pending = ChannelStatus(status=False, ended_at_source="pending")
-        assert App._row_has_richer_offline_detail(row, pending) is True
+        assert row_has_richer_offline_detail(row, pending) is True
     finally:
         root.destroy()
 
@@ -190,7 +195,7 @@ def test_row_skips_pending_downgrade_when_vod_detail_present() -> None:
             )
         )
         pending = ChannelStatus(status=False, ended_at_source="pending")
-        assert App._row_has_richer_offline_detail(row, pending) is True
+        assert row_has_richer_offline_detail(row, pending) is True
     finally:
         root.destroy()
 
