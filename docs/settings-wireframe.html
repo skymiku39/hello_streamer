@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hello Streamer — 設定頁線框（監控 + 瀏覽器 + 頻道摘要）</title>
+<style>
+:root{
+  --color-background-primary:#1a1b26;
+  --color-background-secondary:#24283b;
+  --color-background-warning:#2d2618;
+  --color-border-tertiary:#3b4261;
+  --color-border-secondary:#565f89;
+  --color-text-primary:#c0caf5;
+  --color-text-secondary:#9aa5ce;
+  --color-text-warning:#e0af68;
+  --border-radius-lg:10px;
+  --border-radius-md:6px;
+  --font-mono:ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:20px;background:#13141c;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--color-text-primary);max-width:720px;margin-inline:auto}
+h1.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+.page-title{font-size:15px;font-weight:600;margin:0 0 4px}
+.page-sub{font-size:12px;color:var(--color-text-secondary);margin:0 0 16px}
+.panel{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;margin-bottom:14px}
+.panel-head{padding:12px 16px;border-bottom:0.5px solid var(--color-border-tertiary);display:flex;align-items:center;justify-content:space-between}
+.panel-title{font-size:14px;font-weight:500;color:var(--color-text-primary)}
+.panel-sub{font-size:11px;color:var(--color-text-secondary);margin-top:2px}
+.mode-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 16px}
+.mopt{border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:10px 11px;cursor:pointer;user-select:none}
+.mopt.active{border:2px solid #378ADD;background:#1e2a3d}
+.mradio{width:13px;height:13px;border-radius:50%;border:1.5px solid var(--color-border-secondary);margin-bottom:7px;display:flex;align-items:center;justify-content:center}
+.mopt.active .mradio{border-color:#378ADD;background:#378ADD}
+.mopt.active .mradio::after{content:'';width:5px;height:5px;border-radius:50%;background:#fff}
+.mname{font-size:12px;font-weight:500;color:var(--color-text-primary);line-height:1.3;margin-bottom:2px}
+.msub{font-size:11px;color:var(--color-text-secondary);line-height:1.4}
+.mopt.active .mname{color:#7dcfff}
+.mopt.active .msub{color:#9ece6a}
+.capbar{display:flex;align-items:center;gap:14px;margin:0 16px 12px;padding:7px 11px;background:var(--color-background-secondary);border-radius:var(--border-radius-md);flex-wrap:wrap}
+.capitem{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--color-text-secondary)}
+.capdot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.cap-desc{font-size:11px;color:var(--color-text-secondary);margin-left:auto}
+.sec{border-top:0.5px solid var(--color-border-tertiary)}
+.sec-lbl{font-size:10px;font-weight:500;color:var(--color-text-secondary);padding:9px 16px 3px;text-transform:uppercase;letter-spacing:.04em;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ltag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--color-background-secondary);color:var(--color-text-secondary)}
+.trow{display:flex;align-items:center;padding:9px 16px;border-bottom:0.5px solid var(--color-border-tertiary);gap:10px;transition:opacity .2s}
+.trow:last-child{border-bottom:none}
+.trow.dim{opacity:.35;pointer-events:none}
+.tico{font-size:14px;color:var(--color-text-secondary);width:20px;text-align:center;flex-shrink:0}
+.tleft{flex:1;min-width:0}
+.tname{font-size:12px;color:var(--color-text-primary);display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.ttag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--color-background-secondary);color:var(--color-text-warning)}
+.tsub{font-size:11px;color:var(--color-text-secondary);margin-top:1px}
+.tkey{font-size:10px;font-family:var(--font-mono);color:var(--color-text-secondary);margin-top:2px}
+.tog{width:30px;height:17px;border-radius:9px;flex-shrink:0;display:flex;align-items:center;padding:2px;cursor:pointer;transition:background .15s}
+.tog.on{background:#378ADD;justify-content:flex-end}
+.tog.off{background:var(--color-border-secondary);justify-content:flex-start}
+.tog .knob{width:13px;height:13px;border-radius:50%;background:#fff}
+.irow{display:flex;align-items:center;gap:6px}
+.irow input[type=text],.irow select{flex:1;font-size:11px;font-family:var(--font-mono);padding:3px 8px;height:26px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:var(--color-background-secondary);color:var(--color-text-primary)}
+.irow .ibtn{font-size:11px;padding:0 9px;height:26px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:var(--color-background-primary);color:var(--color-text-secondary);cursor:pointer;white-space:nowrap}
+.nrow{display:flex;align-items:center;gap:5px}
+.nrow input[type=number]{width:58px;font-size:11px;font-family:var(--font-mono);padding:3px 6px;height:26px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:var(--color-background-secondary);color:var(--color-text-primary);text-align:center}
+.nsep{font-size:12px;color:var(--color-text-secondary)}
+.cfg{padding:10px 14px;background:var(--color-background-secondary);font-size:11px;font-family:var(--font-mono);line-height:1.9;color:var(--color-text-secondary);white-space:pre-wrap;word-break:break-all}
+.ch{color:var(--color-text-primary)}
+.cg{color:#9ece6a}
+.ci{color:#7dcfff}
+.warn-bar{margin:10px 16px 12px;padding:8px 12px;background:var(--color-background-warning);border-radius:var(--border-radius-md);font-size:12px;color:var(--color-text-warning);line-height:1.5}
+.dep-note{margin:0 16px 12px;padding:8px 11px;background:#1e2030;border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);font-size:11px;color:var(--color-text-secondary);line-height:1.55}
+.dep-note strong{color:var(--color-text-warning);font-weight:500}
+.chlist{padding:0 16px 12px;font-size:11px;color:var(--color-text-secondary);line-height:1.7}
+.chitem{display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:0.5px solid var(--color-border-tertiary)}
+.chitem:last-child{border-bottom:none}
+.badge{font-size:10px;padding:1px 6px;border-radius:4px;background:#2d3047;color:#bb9af7}
+.badge.mo{background:#2a2d1e;color:#e0af68}
+.mode2{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px}
+.mopt2{border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:10px 11px;cursor:pointer}
+.mopt2.active{border:2px solid #9ece6a;background:#1e2a22}
+</style>
+</head>
+<body>
+<h1 class="sr-only">Hello Streamer 設定頁線框</h1>
+<p class="page-title">設定頁線框 — 能力矩陣 + 依賴 dim</p>
+<p class="page-sub">以 config.json 為預填值。所有選項皆為專案內建能力；dim 表示目前組合下不生效，非禁止使用。</p>
+
+<!-- ═══ Panel 1：監控與觸發 ═══ -->
+<div class="panel" id="p-trigger">
+  <div class="panel-head">
+    <div>
+      <div class="panel-title">監控與觸發</div>
+      <div class="panel-sub">決定輪詢行為、開播時執行什麼動作</div>
+    </div>
+  </div>
+
+  <div class="mode2">
+    <div class="mopt2" id="mm-trigger" onclick="setMonitorMode('trigger')">
+      <div class="mradio"></div>
+      <div class="mname">監聽 + 觸發</div>
+      <div class="msub">config.monitor_mode = "trigger"</div>
+      <div class="msub" style="margin-top:4px">開播時執行 action；支援通知與瀏覽器開窗</div>
+    </div>
+    <div class="mopt2 active" id="mm-watch" onclick="setMonitorMode('watch')">
+      <div class="mradio"></div>
+      <div class="mname">只監測</div>
+      <div class="msub">config.monitor_mode = "watch"</div>
+      <div class="msub" style="margin-top:4px">只更新狀態列；不通知、不開窗、不離線關窗</div>
+    </div>
+  </div>
+
+  <div class="capbar">
+    <div class="capitem"><div class="capdot" style="background:#9ece6a"></div>trigger 時可用</div>
+    <div class="capitem"><div class="capdot" style="background:var(--color-border-secondary)"></div>watch 時 dim</div>
+    <div class="cap-desc" id="mm-cap">目前：只監測 — action 與生命週期關閉不生效</div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-lbl">開播動作 <span class="ltag" id="t-action">需 trigger</span></div>
+    <div class="trow" id="r-action">
+      <div class="tico">▶</div>
+      <div class="tleft">
+        <div class="tname">觸發行為</div>
+        <div class="tsub">偵測到開播時執行（UPCOMING 預定直播強制只通知）</div>
+        <div class="tkey">config.action</div>
+      </div>
+      <div class="irow" style="width:220px">
+        <select id="action-sel" onchange="render()">
+          <option value="open_and_stop">開啟網頁並停止監聽</option>
+          <option value="open_and_keep" selected>開啟網頁並保持監聽</option>
+          <option value="notify_only">僅跳出系統通知</option>
+          <option value="open_and_exit">開啟網頁後關閉程式</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-lbl">輪詢</div>
+    <div class="trow">
+      <div class="tico">⏱</div>
+      <div class="tleft">
+        <div class="tname">檢查間隔</div>
+        <div class="tsub">兩輪完整輪詢之間的最短等待（最小 10 秒）</div>
+        <div class="tkey">config.check_interval</div>
+      </div>
+      <div class="nrow">
+        <input type="number" id="interval" value="10" min="10" max="3600" step="1" oninput="render()">
+        <span class="nsep">秒</span>
+      </div>
+    </div>
+    <div class="trow">
+      <div class="tico">🚀</div>
+      <div class="tleft">
+        <div class="tname">開機自動啟動</div>
+        <div class="tkey">config.run_on_startup</div>
+      </div>
+      <div class="tog off" id="tog-startup" onclick="toggle('tog-startup')"><div class="knob"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Panel 2：瀏覽器設定 ═══ -->
+<div class="panel" id="p-browser">
+  <div class="panel-head">
+    <div>
+      <div class="panel-title">瀏覽器設定</div>
+      <div class="panel-sub">決定直播視窗的開啟方式與生命週期</div>
+    </div>
+    <div class="tog off" id="main-tog" onclick="toggleMain()"><div class="knob"></div></div>
+  </div>
+
+  <div id="body-on">
+    <div class="mode-grid">
+      <div class="mopt" id="o11" onclick="setBrowserMode('1-1')"><div class="mradio"></div><div class="mname">同視窗新分頁</div><div class="msub">主 Chrome · 最省事</div></div>
+      <div class="mopt" id="o12" onclick="setBrowserMode('1-2')"><div class="mradio"></div><div class="mname">獨立新視窗</div><div class="msub">主 Chrome · 各窗分開</div></div>
+      <div class="mopt active" id="o21" onclick="setBrowserMode('2-1')"><div class="mradio"></div><div class="mname">純淨視窗</div><div class="msub">專案 Profile · 全功能</div></div>
+    </div>
+
+    <div class="capbar">
+      <div class="capitem"><div class="capdot" style="background:#378ADD"></div>可用</div>
+      <div class="capitem"><div class="capdot" style="background:#BA7517"></div>部分可用</div>
+      <div class="capitem"><div class="capdot" style="background:var(--color-border-secondary)"></div>不支援</div>
+      <div class="cap-desc" id="cap-desc">新視窗 · 自動關窗 · 需登入專案 Profile</div>
+    </div>
+
+    <div class="dep-note" id="browser-dep-note"></div>
+
+    <div class="sec">
+      <div class="sec-lbl">開啟行為</div>
+      <div class="trow" id="r-profile">
+        <div class="tico">📁</div>
+        <div class="tleft">
+          <div class="tname">專案 Profile 路徑</div>
+          <div class="tsub">留空使用主 Chrome；填路徑啟用純淨模式</div>
+          <div class="tkey">browser_settings.user_data_dir</div>
+        </div>
+        <div class="irow" style="width:210px">
+          <input type="text" id="profile-path" value="D:\Tools\HelloStreamer-HelloStreamer\browser_profile" oninput="onProfilePathInput()">
+          <button class="ibtn" type="button">瀏覽</button>
+        </div>
+      </div>
+      <div class="trow" id="r-perch">
+        <div class="tico">👤</div>
+        <div class="tleft">
+          <div class="tname">每頻道獨立 Profile <span class="ttag" id="t-perch">需純淨視窗</span></div>
+          <div class="tsub">各頻道使用子資料夾，避免多窗互相干擾</div>
+          <div class="tkey">browser_settings.per_channel_profile</div>
+        </div>
+        <div class="tog on" id="tog-perch" onclick="toggle('tog-perch')"><div class="knob"></div></div>
+      </div>
+      <div class="trow" id="r-appmode">
+        <div class="tico">▣</div>
+        <div class="tleft">
+          <div class="tname">純淨播放器 <span class="ttag" id="t-appmode">需純淨視窗</span></div>
+          <div class="tsub">隱藏網址列，視窗只顯示播放畫面</div>
+          <div class="tkey">browser_settings.app_mode</div>
+        </div>
+        <div class="tog off" id="tog-appmode" onclick="toggle('tog-appmode')"><div class="knob"></div></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-lbl">視窗尺寸</div>
+      <div class="trow" id="r-geo">
+        <div class="tico">⊞</div>
+        <div class="tleft">
+          <div class="tname">鎖定視窗大小 <span class="ttag" id="t-geo">需純淨視窗</span></div>
+          <div class="tsub">開播時自動套用下方尺寸</div>
+          <div class="tkey">browser_settings.apply_geometry</div>
+        </div>
+        <div class="tog on" id="tog-geo" onclick="toggleGeo()"><div class="knob"></div></div>
+      </div>
+      <div class="trow" id="r-size">
+        <div class="tico">↔</div>
+        <div class="tleft">
+          <div class="tname">尺寸（寬 × 高）</div>
+          <div class="tkey">width / height</div>
+        </div>
+        <div class="nrow">
+          <input type="number" id="w" value="340" min="100" max="3840" oninput="render()">
+          <span class="nsep">×</span>
+          <input type="number" id="h" value="300" min="100" max="2160" oninput="render()">
+          <span class="nsep">px</span>
+        </div>
+      </div>
+      <div class="trow" id="r-min">
+        <div class="tico">—</div>
+        <div class="tleft">
+          <div class="tname">開啟後最小化 <span class="ttag" id="t-min">需純淨視窗</span></div>
+          <div class="tkey">browser_settings.minimized</div>
+        </div>
+        <div class="tog off" id="tog-min" onclick="toggle('tog-min')"><div class="knob"></div></div>
+      </div>
+      <div class="trow" id="r-taskbar">
+        <div class="tico">▭</div>
+        <div class="tleft">
+          <div class="tname">隱藏工作列圖示 <span class="ttag" id="t-taskbar">需純淨視窗</span></div>
+          <div class="tkey">browser_settings.hide_from_taskbar</div>
+        </div>
+        <div class="tog off" id="tog-taskbar" onclick="toggle('tog-taskbar')"><div class="knob"></div></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-lbl">生命週期 <span class="ltag" id="t-lc">需純淨視窗 + trigger</span></div>
+      <div class="trow" id="r-offline">
+        <div class="tico">■</div>
+        <div class="tleft">
+          <div class="tname">下播自動關窗</div>
+          <div class="tkey">browser_settings.close_on_offline</div>
+        </div>
+        <div class="tog on" id="tog-offline" onclick="toggle('tog-offline')"><div class="knob"></div></div>
+      </div>
+      <div class="trow" id="r-stop">
+        <div class="tico">⏹</div>
+        <div class="tleft">
+          <div class="tname">停止監聽時關閉所有視窗</div>
+          <div class="tkey">browser_settings.close_on_stop</div>
+        </div>
+        <div class="tog on" id="tog-stop" onclick="toggle('tog-stop')"><div class="knob"></div></div>
+      </div>
+      <div class="trow" id="r-offtopic">
+        <div class="tico">⊘</div>
+        <div class="tleft">
+          <div class="tname">離題頁自動關閉</div>
+          <div class="tkey">browser_settings.close_off_topic_pages</div>
+        </div>
+        <div class="tog on" id="tog-offtopic" onclick="toggle('tog-offtopic')"><div class="knob"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="body-off" style="display:none">
+    <div class="warn-bar">自訂瀏覽器已停用（enabled: false）。開播時以系統預設瀏覽器開啟；自動關窗與視窗尺寸控制不生效。</div>
+  </div>
+</div>
+
+<!-- ═══ Panel 3：頻道觸發覆寫 ═══ -->
+<div class="panel" id="p-channels">
+  <div class="panel-head">
+    <div>
+      <div class="panel-title">頻道觸發覆寫</div>
+      <div class="panel-sub">每個頻道可獨立設為「只監測不觸發」，覆寫全局 trigger 設定</div>
+    </div>
+  </div>
+  <div class="dep-note">全局 <strong>watch</strong> 時，所有頻道都不觸發；全局 <strong>trigger</strong> 時，下列 <strong>monitor_only</strong> 頻道仍只更新狀態。</div>
+  <div class="chlist" id="ch-summary"></div>
+</div>
+
+<!-- ═══ Panel 4：合併 config 預覽 ═══ -->
+<div class="panel">
+  <div class="panel-head"><div class="panel-title" style="font-size:13px">產生的 config（合併預覽）</div></div>
+  <div class="cfg" id="cfg-out"></div>
+</div>
+
+<script>
+var monitorMode = 'watch';
+var browserMode = '2-1';
+var mainOn = false;
+var geoOn = true;
+
+var monitorOnlyChannels = [
+  { platform: 'youtube', name: '鳶冥·翠隱', display: '鳶冥·翠隱enmei_suiin' },
+  { platform: 'youtube', name: 'Tinalis_1002', display: 'Tinalis Ch. 提娜莉斯' },
+  { platform: 'youtube', name: 'SerpensSpiritStudio', display: '遊戲研究室 × 蛇靈Celine' },
+];
+
+function isOn(id){ var el=document.getElementById(id); return el&&el.classList.contains('on'); }
+function setTog(id,on){ var el=document.getElementById(id); if(!el)return; el.classList.toggle('on',on); el.classList.toggle('off',!on); }
+
+function toggle(id){
+  var el=document.getElementById(id);
+  if(!el||el.classList.contains('dim-parent'))return;
+  el.classList.toggle('on'); el.classList.toggle('off');
+  render();
+}
+
+function toggleMain(){
+  mainOn=!mainOn;
+  setTog('main-tog',mainOn);
+  document.getElementById('body-on').style.display=mainOn?'':'none';
+  document.getElementById('body-off').style.display=mainOn?'none':'';
+  render();
+}
+
+function toggleGeo(){
+  geoOn=!geoOn;
+  setTog('tog-geo',geoOn);
+  document.getElementById('r-size').classList.toggle('dim',!geoOn||browserMode!=='2-1');
+  render();
+}
+
+function setMonitorMode(m){
+  monitorMode=m;
+  document.getElementById('mm-trigger').classList.toggle('active',m==='trigger');
+  document.getElementById('mm-watch').classList.toggle('active',m==='watch');
+  document.getElementById('mm-cap').textContent=m==='trigger'
+    ? '目前：監聽+觸發 — action 與生命週期可依下方設定生效'
+    : '目前：只監測 — action 與生命週期設定保留但不執行';
+  applyCrossDeps();
+  render();
+}
+
+var capdesc={
+  '1-1':'同視窗分頁 · 無自動關窗 · 沿用主 Chrome 登入',
+  '1-2':'各窗獨立 · 關窗不穩定 · 沿用主 Chrome 登入',
+  '2-1':'新視窗 · 自動關窗完整 · 需登入專案 Profile'
+};
+
+function inferBrowserModeFromPath(path){
+  if(path) return '2-1';
+  return browserMode==='1-1'?'1-1':'1-2';
+}
+
+function onProfilePathInput(){
+  var path=document.getElementById('profile-path').value.trim();
+  if(path) setBrowserMode('2-1');
+  else if(browserMode==='2-1') setBrowserMode('1-2');
+  else render();
+}
+
+function setBrowserMode(m){
+  browserMode=m;
+  ['1-1','1-2','2-1'].forEach(function(k){
+    var el=document.getElementById('o'+k.replace('-',''));
+    if(el) el.classList.toggle('active',k===m);
+  });
+  if(m!=='2-1'){
+    var p=document.getElementById('profile-path');
+    if(p&&p.value.trim()){ /* keep path visible */ }
+  }
+  if(m==='2-1'){
+    var p=document.getElementById('profile-path');
+    if(p&&!p.value.trim()) p.value='D:\\Tools\\HelloStreamer-HelloStreamer\\browser_profile';
+  }
+  document.getElementById('cap-desc').textContent=capdesc[m]||'';
+  applyCrossDeps();
+  render();
+}
+
+function isPure(){ return browserMode==='2-1' && mainOn; }
+function isTrigger(){ return monitorMode==='trigger'; }
+function actionOpensBrowser(){
+  var a=document.getElementById('action-sel').value;
+  return a==='open_and_stop'||a==='open_and_keep'||a==='open_and_exit';
+}
+
+function applyCrossDeps(){
+  var pure=isPure();
+  var trig=isTrigger();
+  var lcActive=pure&&trig;
+
+  ['r-appmode','r-geo','r-min','r-taskbar','r-perch','r-offline','r-stop','r-offtopic'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el) el.classList.toggle('dim',!pure);
+  });
+  document.getElementById('r-size').classList.toggle('dim',!pure||!geoOn);
+
+  ['t-appmode','t-geo','t-min','t-taskbar','t-perch'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el) el.style.display=pure?'none':'';
+  });
+
+  var tlc=document.getElementById('t-lc');
+  if(tlc){
+    if(pure&&!trig) tlc.textContent='需 trigger 模式';
+    else if(!pure) tlc.textContent='需純淨視窗 + trigger';
+    else tlc.style.display='none';
+  }
+  if(pure&&trig&&tlc) tlc.style.display='none';
+
+  document.getElementById('r-action').classList.toggle('dim',!trig);
+  document.getElementById('t-action').style.display=trig?'none':'';
+
+  var notes=[];
+  if(!mainOn) notes.push('browser_settings.enabled = false → 瀏覽器細項全部不執行');
+  if(!trig) notes.push('monitor_mode = watch → action 與 close_on_* 不執行（設定仍寫入 config）');
+  if(mainOn&&pure&&trig&&actionOpensBrowser()) notes.push('trigger + 2-1 + 開窗 action → 生命週期三項可生效');
+  if(mainOn&&trig&&browserMode!=='2-1'&&actionOpensBrowser()) notes.push('非 2-1 模式開窗 → 無 HWND 追蹤，close_on_* 不生效');
+  if(trig&&monitorOnlyChannels.length) notes.push(monitorOnlyChannels.length+' 個頻道 monitor_only → 該頻道略過 action 與 close_on_offline');
+  document.getElementById('browser-dep-note').innerHTML=notes.length
+    ? '<strong>跨設定依賴：</strong>'+notes.join(' · ')
+    : '';
+
+  var ch=document.getElementById('ch-summary');
+  ch.innerHTML=monitorOnlyChannels.map(function(c){
+    return '<div class="chitem"><span class="badge mo">monitor_only</span><span>'+c.display+'</span><span style="margin-left:auto;font-family:var(--font-mono);font-size:10px">'+c.platform+'</span></div>';
+  }).join('')+'<div style="margin-top:8px;font-size:10px;color:var(--color-text-secondary)">其餘 14 個頻道跟隨全局 monitor_mode / action</div>';
+}
+
+function esc(s){ return String(s).replace(/\\/g,'\\\\').replace(/"/g,'\\"'); }
+
+function line(k,v,cls){ return '  "<span style="color:var(--color-text-secondary)">'+k+'</span>": <span class="'+cls+'">'+v+'</span>'; }
+
+function render(){
+  applyCrossDeps();
+  var pure=browserMode==='2-1';
+  var newwin=browserMode!=='1-1';
+  var path=document.getElementById('profile-path').value.trim();
+  if(path) pure=true;
+  var W=document.getElementById('w').value;
+  var H=document.getElementById('h').value;
+  var interval=document.getElementById('interval').value;
+  var action=document.getElementById('action-sel').value;
+  var rows=[];
+
+  rows.push('<span class="ch">{</span>');
+  rows.push(line('monitor_mode','"'+monitorMode+'"',monitorMode==='trigger'?'cg':'ci'));
+  rows.push(line('action','"'+action+'"',isTrigger()?'cg':''));
+  rows.push(line('check_interval',interval,'ch'));
+  rows.push(line('run_on_startup',isOn('tog-startup'),isOn('tog-startup')?'cg':''));
+  rows.push('');
+  rows.push('  <span class="ch">"browser_settings"</span>: {');
+  rows.push(line('enabled',mainOn,mainOn?'cg':''));
+  rows.push(line('new_window',newwin,newwin?'cg':''));
+  if(pure&&path&&mainOn){
+    rows.push(line('user_data_dir','"'+esc(path)+'"','ch'));
+    rows.push(line('per_channel_profile',isOn('tog-perch'),isOn('tog-perch')?'cg':''));
+    rows.push(line('app_mode',isOn('tog-appmode'),isOn('tog-appmode')?'cg':''));
+    rows.push(line('apply_geometry',geoOn,geoOn?'cg':''));
+    if(geoOn){ rows.push(line('width',W,'ch')); rows.push(line('height',H,'ch')); }
+    rows.push(line('minimized',isOn('tog-min'),isOn('tog-min')?'cg':''));
+    rows.push(line('hide_from_taskbar',isOn('tog-taskbar'),isOn('tog-taskbar')?'cg':''));
+    rows.push(line('close_on_offline',isOn('tog-offline'),(isTrigger()&&isOn('tog-offline'))?'cg':''));
+    rows.push(line('close_on_stop',isOn('tog-stop'),(isTrigger()&&isOn('tog-stop'))?'cg':''));
+    rows.push(line('close_off_topic_pages',isOn('tog-offtopic'),(isTrigger()&&isOn('tog-offtopic'))?'cg':''));
+  } else {
+    rows.push(line('user_data_dir','""',''));
+    rows.push(line('per_channel_profile','false',''));
+  }
+  rows.push('  }');
+  rows.push('<span class="ch">}</span>');
+
+  document.getElementById('cfg-out').innerHTML=rows.join(',\n').replace(/,\n\n/g,'\n').replace(/,\n  \}/g,'\n  }').replace(/,\n<span/g,',\n<span');
+}
+
+setMonitorMode('watch');
+setBrowserMode('2-1');
+setTog('main-tog',false);
+document.getElementById('body-on').style.display='none';
+document.getElementById('body-off').style.display='';
+render();
+</script>
+</body>
+</html>
