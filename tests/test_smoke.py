@@ -19,30 +19,31 @@ from stream_monitor.monitor import deps as monitor_deps
 class _FakeSink:
     """Minimal ``AppEventSink`` stand-in for bridge smoke tests."""
 
-    _monitor_mode = "watch"
-    _ui_status_pending: dict = {}
-    _channel_rows: list = []
-    _monitor = None
+    monitor_mode = "watch"
+    wake_verify_active = False
     config: dict = {"action": "notify_only"}
 
-    def _set_poll_subline_waiting(self) -> None:
+    def iter_channel_rows(self) -> list:
+        return []
+
+    def set_poll_waiting(self) -> None:
         pass
 
-    def _apply_display_names(self, display_names: dict[str, str]) -> None:
+    def apply_display_names(self, display_names: dict[str, str]) -> None:
         pass
 
-    def _update_poll_subline(
+    def update_poll_subline(
         self, entry: ChannelEntry, phase: str, display_name: str = ""
     ) -> None:
         pass
 
-    def _current_browser_settings(self) -> dict | None:
+    def current_browser_settings(self) -> dict | None:
         return None
 
-    def _apply_live_row_status(self, entry: ChannelEntry, info: StreamInfo) -> None:
+    def apply_live_row_status(self, entry: ChannelEntry, info: StreamInfo) -> None:
         pass
 
-    def _execute_live_action(
+    def execute_live_action(
         self,
         action: str,
         info: StreamInfo,
@@ -50,16 +51,16 @@ class _FakeSink:
     ) -> None:
         pass
 
-    def _handle_channel_offline(self, entry: ChannelEntry, offline_info: object) -> None:
+    def handle_channel_offline(self, entry: ChannelEntry, offline_info: object) -> None:
         pass
 
-    def _on_stop(self, *, is_user_action: bool = True) -> None:
+    def on_stop(self, *, is_user_action: bool = True) -> None:
         pass
 
-    def _quit_app(self) -> None:
+    def quit_app(self) -> None:
         pass
 
-    def _maybe_restart_dead_monitor(self) -> None:
+    def maybe_restart_dead_monitor(self) -> None:
         pass
 
 

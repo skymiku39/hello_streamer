@@ -7,7 +7,8 @@ import threading
 from typing import Any
 
 from stream_monitor.browser_settings_model import coerce_browser_settings
-from stream_monitor.event_sink import AppEventSink
+from stream_monitor.domain import ChannelEntry, ChannelStatus
+from stream_monitor.event_sink import AppEventSink, ChannelRowView
 from stream_monitor.events import (
     ChannelWentLive,
     ChannelWentOffline,
@@ -19,7 +20,6 @@ from stream_monitor.events import (
     PollWaiting,
 )
 from stream_monitor.fetcher.base import StreamInfo
-from stream_monitor.monitor import ChannelEntry, ChannelStatus
 from stream_monitor.notifier import (
     action_for_stream_status,
     browser_window_tracking_available,
@@ -30,16 +30,69 @@ from stream_monitor.notifier import (
 logger = logging.getLogger(__name__)
 
 
+class PendingStatusStore:
+    """Buffers per-channel status updates and flushes them to rows in batches.
+
+    Keeping this state inside the bridge (rather than on the UI window) lets the
+    bridge depend only on the public ``AppEventSink`` contract.
+    """
+
+    def __init__(self) -> None:
+        self._pending: dict[str, Any] = {}
+
+    def __len__(self) -> int:
+        return len(self._pending)
+
+    def clear(self) -> None:
+        self._pending.clear()
+
+    def merge(self, key: str, status: Any) -> None:
+        self._pending[key] = prefer_richer_offline_status(
+            self._pending.get(key), status
+        )
+
+    def set(self, key: str, status: Any) -> None:
+        self._pending[key] = status
+
+    def flush(self, rows: list[ChannelRowView], *, limit: int = 3) -> int:
+        """Apply queued row status updates in small batches to keep UI responsive."""
+        applied = 0
+        keys = list(self._pending.keys())
+        live_keys = [
+            key for key in keys if pending_status_is_live(self._pending[key])
+        ]
+        ordered = live_keys + [key for key in keys if key not in live_keys]
+        for key in ordered:
+            if applied >= limit:
+                break
+            if key not in self._pending:
+                continue
+            status = self._pending.pop(key)
+            for row in rows:
+                if row.key == key:
+                    if row_has_richer_offline_detail(row, status):
+                        break
+                    row.set_status(status)
+                    applied += 1
+                    break
+        return applied
+
+
 class MonitorEventBridge:
     """Subscribes to ``MonitorEventBus`` and maps events to UI side-effects."""
 
     def __init__(self, sink: AppEventSink, event_bus: MonitorEventBus) -> None:
         self._sink = sink
         self._bus = event_bus
+        self._pending = PendingStatusStore()
+
+    def reset(self) -> None:
+        """Drop buffered status updates (called when monitoring stops)."""
+        self._pending.clear()
 
     def tick(self) -> None:
         sink = self._sink
-        if sink._monitor_mode == "idle":
+        if sink.monitor_mode == "idle":
             self._bus.clear()
             return
 
@@ -73,39 +126,36 @@ class MonitorEventBridge:
             elif isinstance(event, ChannelWentOffline):
                 offline_events.append((event.entry, event.offline_info))
             elif isinstance(event, PollWaiting):
-                sink._set_poll_subline_waiting()
+                sink.set_poll_waiting()
             elif isinstance(event, PartialStatusUpdate):
                 for key, status in event.statuses.items():
-                    merged = prefer_richer_offline_status(
-                        sink._ui_status_pending.get(key), status
-                    )
-                    sink._ui_status_pending[key] = merged
+                    self._pending.merge(key, status)
                 pending_names.update(event.display_names)
             elif isinstance(event, PollStatusUpdate):
                 pending_names.update(event.display_names)
-                for row in sink._channel_rows:
+                for row in sink.iter_channel_rows():
                     if row.key in event.statuses:
-                        sink._ui_status_pending[row.key] = event.statuses[row.key]
+                        self._pending.set(row.key, event.statuses[row.key])
                     elif row._status_state in ("live", "offline", "upcoming"):
-                        sink._ui_status_pending[row.key] = None
+                        self._pending.set(row.key, None)
                 poll_complete = True
 
         if pending_names:
-            sink._apply_display_names(pending_names)
+            sink.apply_display_names(pending_names)
 
         if latest_poll_activity is not None:
             entry, phase, display_name = latest_poll_activity
-            sink._update_poll_subline(entry, phase, display_name)
+            sink.update_poll_subline(entry, phase, display_name)
 
-        applied = apply_pending_status_updates(sink, limit=3)
+        applied = self._pending.flush(sink.iter_channel_rows(), limit=3)
         if applied:
             logger.info(
                 "UI status flush: %d row(s), %d queued",
                 applied,
-                len(sink._ui_status_pending),
+                len(self._pending),
             )
 
-        trigger_enabled = sink._monitor_mode == "trigger"
+        trigger_enabled = sink.monitor_mode == "trigger"
 
         if poll_complete:
             raw_browser_settings = coerce_browser_settings(
@@ -138,15 +188,15 @@ class MonitorEventBridge:
                 )
 
         configured_action = sink.config.get("action", "open_and_stop")
-        browser_settings = sink._current_browser_settings()
+        browser_settings = sink.current_browser_settings()
         should_stop = False
         should_exit = False
 
         for entry, info in live_events:
             if info.display_name:
-                sink._apply_display_names({entry.key: info.display_name})
+                sink.apply_display_names({entry.key: info.display_name})
             if not poll_complete:
-                sink._apply_live_row_status(entry, info)
+                sink.apply_live_row_status(entry, info)
 
             if not trigger_enabled:
                 continue
@@ -163,7 +213,7 @@ class MonitorEventBridge:
 
             if action in ("open_and_stop", "open_and_keep", "open_and_exit"):
                 threading.Thread(
-                    target=sink._execute_live_action,
+                    target=sink.execute_live_action,
                     args=(action, info, browser_settings),
                     daemon=True,
                 ).start()
@@ -181,9 +231,7 @@ class MonitorEventBridge:
                     browser_settings=browser_settings,
                 )
 
-        skip_close_on_offline = (
-            sink._monitor is not None and sink._monitor.wake_verify_active
-        )
+        skip_close_on_offline = sink.wake_verify_active
         if (
             trigger_enabled
             and offline_events
@@ -195,14 +243,14 @@ class MonitorEventBridge:
             for entry, offline_info in offline_events:
                 if getattr(entry, "monitor_only", False):
                     continue
-                sink._handle_channel_offline(entry, offline_info)
+                sink.handle_channel_offline(entry, offline_info)
 
         if should_stop:
-            sink._on_stop(is_user_action=False)
+            sink.on_stop(is_user_action=False)
         elif should_exit:
-            sink._quit_app()
+            sink.quit_app()
 
-        sink._maybe_restart_dead_monitor()
+        sink.maybe_restart_dead_monitor()
 
 
 def prefer_richer_offline_status(old: Any, new: Any) -> Any:
@@ -235,29 +283,3 @@ def row_has_richer_offline_detail(row: Any, status: Any) -> bool:
         row._status_state == "offline"
         and row._ended_at_source != "pending"
     )
-
-
-def apply_pending_status_updates(sink: AppEventSink, *, limit: int = 3) -> int:
-    """Apply queued row status updates in small batches to keep UI responsive."""
-    applied = 0
-    keys = list(sink._ui_status_pending.keys())
-    live_keys = [
-        key
-        for key in keys
-        if pending_status_is_live(sink._ui_status_pending[key])
-    ]
-    ordered = live_keys + [key for key in keys if key not in live_keys]
-    for key in ordered:
-        if applied >= limit:
-            break
-        if key not in sink._ui_status_pending:
-            continue
-        status = sink._ui_status_pending.pop(key)
-        for row in sink._channel_rows:
-            if row.key == key:
-                if row_has_richer_offline_detail(row, status):
-                    break
-                row.set_status(status)
-                applied += 1
-                break
-    return applied
