@@ -16,6 +16,7 @@ _YOUTUBE_PATTERNS = [
     re.compile(r"^/user/([A-Za-z0-9_.\-]+)/?$"),
 ]
 _YOUTUBE_HANDLE_RE = re.compile(r"/@([^/]+)")
+_YOUTUBE_BARE_HANDLE_RE = re.compile(r"^@([^/\s@]+)$")
 
 
 @dataclass
@@ -32,6 +33,10 @@ def parse_url(text: str) -> ParsedChannel | None:
     text = text.strip()
     if not text:
         return None
+
+    bare_handle = _YOUTUBE_BARE_HANDLE_RE.match(text)
+    if bare_handle:
+        return ParsedChannel(platform="youtube", name=bare_handle.group(1))
 
     parsed = urlparse(text if "://" in text else f"https://{text}")
     host = parsed.netloc.lower()

@@ -1,6 +1,29 @@
 from stream_monitor.url_parser import ParsedChannel, parse_url
 
 
+def test_parse_youtube_bare_handle_shorthand() -> None:
+    assert parse_url("@handle") == ParsedChannel(platform="youtube", name="handle")
+    assert parse_url("@hello.streamer") == ParsedChannel(
+        platform="youtube",
+        name="hello.streamer",
+    )
+    assert parse_url("  @hello.streamer  ") == ParsedChannel(
+        platform="youtube",
+        name="hello.streamer",
+    )
+    assert parse_url("@\u4e2d\u6587\u540d\u5b57") == ParsedChannel(
+        platform="youtube",
+        name="\u4e2d\u6587\u540d\u5b57",
+    )
+
+
+def test_parse_rejects_invalid_bare_handles() -> None:
+    assert parse_url("@") is None
+    assert parse_url("@@hello") is None
+    assert parse_url("@hello world") is None
+    assert parse_url("@hello/streams") is None
+
+
 def test_parse_twitch_url_lowercases_name() -> None:
     assert parse_url("https://www.twitch.tv/Some_Channel") == ParsedChannel(
         platform="twitch",
