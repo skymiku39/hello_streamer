@@ -3239,7 +3239,7 @@ def test_snapshot_readable_during_slow_youtube_offline_refresh(
     def run_refresh() -> None:
         try:
             commit = get_platform_probe("youtube").refresh_details(
-                monitor, entry, snap
+                monitor._facade, entry, snap
             )
             commit()
         except BaseException as exc:  # noqa: BLE001
