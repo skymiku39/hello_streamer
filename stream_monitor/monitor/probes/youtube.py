@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from stream_monitor.fetcher.base import StreamInfo, VideoItem
 from stream_monitor.monitor import deps as _monitor_deps
-from stream_monitor.monitor.probes.host import ProbeHost
+from stream_monitor.monitor.probes.facade import ProbeFacade
 from stream_monitor.monitor.types import (
     _OFFLINE_STRIKE_THRESHOLD,
     ChannelEntry,
@@ -34,44 +34,45 @@ class YouTubePlatformProbe:
 
     def probe_live(
         self,
-        host: ProbeHost,
+        facade: ProbeFacade,
         entry: ChannelEntry,
         snap: _ProbeSnapshot
     ) -> list[tuple[ChannelEntry, StreamInfo]]:
+        session = facade.session
         try:
             fetcher = _monitor_deps.get_fetcher(entry.platform)
             items = fetcher.get_channel_items(entry.name, fill_timing=False)
         except Exception:
             logger.exception("Error fetching %s", entry.key)
-            return host._handle_fetch_unavailable(
+            return facade.handle_fetch_unavailable(
                 entry, label="YouTube", snap=snap, reason="fetch exception"
             )
 
         if items is None:
-            return host._handle_fetch_unavailable(
+            return facade.handle_fetch_unavailable(
                 entry, label="YouTube", snap=snap
             )
 
         snap.fetcher = fetcher
         snap.youtube_items = items
-        with host._lock:
-            host._probe_snapshots[entry.key] = snap
-        host._publish_channel_preview(entry, from_probe=True)
+        with session.lock:
+            session.probe_snapshots[entry.key] = snap
+        facade.publish_preview(entry, from_probe=True)
         if not items:
-            with host._lock:
-                prev = host._last_status.get(entry.key)
+            with session.lock:
+                prev = session.last_status.get(entry.key)
                 prev_status = (
                     prev.status if isinstance(prev, ChannelStatus) else prev
                 )
-                was_fallback_live = entry.key in host._fallback_triggered_live
+                was_fallback_live = entry.key in session.fallback_triggered_live
             if (
                 was_fallback_live
                 and prev_status is True
-                and not host._wake_verify_mode
+                and not facade.wake_verify_mode
             ):
                 live_key = _live_cache_key(entry.key)
-                with host._lock:
-                    miss = host._record_offline_miss(
+                with session.lock:
+                    miss = facade.record_offline_miss(
                         entry,
                         live_key,
                         prev_status,
@@ -83,13 +84,13 @@ class YouTubePlatformProbe:
                     snap.youtube_fallback_hold = True
                     return []
             snap.youtube_fallback = True
-            return self._probe_fallback_live(host, entry, fetcher, snap)
+            return self._probe_fallback_live(facade, entry, fetcher, snap)
 
         new_events: list[tuple[ChannelEntry, StreamInfo]] = []
         live_items: list[VideoItem] = []
-        with host._lock:
-            is_baselined = entry.key in host._youtube_baselined
-            fallback_title = host._fallback_triggered_live.get(entry.key)
+        with session.lock:
+            is_baselined = entry.key in session.youtube_baselined
+            fallback_title = session.fallback_triggered_live.get(entry.key)
 
         unseen_live_items: list[VideoItem] = []
         pending_seen: list[tuple[str, str, str, str, str]] = []
@@ -97,11 +98,11 @@ class YouTubePlatformProbe:
         for item in items:
             if item.style == "LIVE":
                 live_key = _live_cache_key(entry.key, item.video_id)
-                with host._lock:
+                with session.lock:
                     if item.started_at:
-                        host._live_started_at[live_key] = item.started_at
-                        host._live_platform_started_at.add(live_key)
-                    host._live_payload[live_key] = OfflineInfo(
+                        session.live_started_at[live_key] = item.started_at
+                        session.live_platform_started_at.add(live_key)
+                    session.live_payload[live_key] = OfflineInfo(
                         url=item.url,
                         title=item.title,
                         platform=entry.platform,
@@ -112,14 +113,14 @@ class YouTubePlatformProbe:
                 live_items.append(item)
 
             if item.display_name:
-                with host._lock:
-                    host._display_names[entry.key] = item.display_name
+                with session.lock:
+                    session.display_names[entry.key] = item.display_name
 
             if item.style not in {"LIVE", "UPCOMING"}:
                 continue
 
             try:
-                if host._db.is_seen(item.video_id, item.style):
+                if facade.db.is_seen(item.video_id, item.style):
                     continue
             except Exception:
                 logger.exception("DB error for video %s", item.video_id)
@@ -144,7 +145,7 @@ class YouTubePlatformProbe:
             if item.style != "DEFAULT":
                 continue
             try:
-                if host._db.is_seen(item.video_id, item.style):
+                if facade.db.is_seen(item.video_id, item.style):
                     continue
             except Exception:
                 logger.exception("DB error for video %s", item.video_id)
@@ -164,41 +165,42 @@ class YouTubePlatformProbe:
                     suppressed_idx = 0
             if suppressed_idx >= 0:
                 unseen_live_items.pop(suppressed_idx)
-            with host._lock:
-                host._fallback_triggered_live.pop(entry.key, None)
+            with session.lock:
+                session.fallback_triggered_live.pop(entry.key, None)
 
         for item in unseen_live_items:
             info = _video_item_to_stream_info(item, entry.name)
             new_events.append((entry, info))
 
         snap.youtube_pending_seen = pending_seen
-        with host._lock:
-            host._probe_snapshots[entry.key] = snap
-        if host._wake_verify_mode:
+        with session.lock:
+            session.probe_snapshots[entry.key] = snap
+        if facade.wake_verify_mode:
             return []
         return new_events
 
     def refresh_details(
         self,
-        host: ProbeHost,
+        facade: ProbeFacade,
         entry: ChannelEntry,
         snap: _ProbeSnapshot
     ) -> Callable[[], None]:
         """Tier 2: LIVE row, strike-hold, or OFFLINE (+ optional upcoming_url)."""
+        session = facade.session
         if snap.youtube_fallback:
-            self._refresh_fallback(host, entry, snap)
-            return host._noop_commit
+            self._refresh_fallback(facade, entry, snap)
+            return facade.noop_commit
 
         fetcher = snap.fetcher
         items = snap.youtube_items
         if fetcher is None or items is None:
-            return host._noop_commit
+            return facade.noop_commit
 
         live_items = [item for item in items if item.style == "LIVE"]
         has_live = bool(live_items)
 
-        with host._lock:
-            prev_cs = host._last_status.get(entry.key)
+        with session.lock:
+            prev_cs = session.last_status.get(entry.key)
             prev_channel = (
                 prev_cs if isinstance(prev_cs, ChannelStatus) else None
             )
@@ -211,7 +213,7 @@ class YouTubePlatformProbe:
                     item.started_at, datetime.now(timezone.utc)
                 ),
             )
-            live_stable = host._youtube_live_row_is_stable(
+            live_stable = facade.youtube_live_row_is_stable(
                 entry, prev_channel, live_item
             )
             if (
@@ -224,7 +226,7 @@ class YouTubePlatformProbe:
             not fetcher.http_backoff_active()
             and not (
                 prev_channel is not None
-                and host._youtube_offline_row_is_stable(prev_channel, items)
+                and facade.youtube_offline_row_is_stable(prev_channel, items)
             )
             and any(
                 item.style == "UPCOMING" and not item.scheduled_start
@@ -239,7 +241,7 @@ class YouTubePlatformProbe:
                 status=True,
                 url=live_item.url,
                 title=live_item.title,
-                started_at=host._resolve_youtube_live_started_at(
+                started_at=facade.resolve_youtube_live_started_at(
                     entry, live_item
                 ),
             )
@@ -251,26 +253,26 @@ class YouTubePlatformProbe:
         has_strike_pending = False
         active_live_ids: set[str] = set()
 
-        with host._lock:
+        with session.lock:
             observed_live_ids = {item.video_id for item in live_items}
 
             if has_live:
                 fallback_alias_key = _live_cache_key(entry.key)
-                host._live_payload.pop(fallback_alias_key, None)
-                host._offline_strikes.pop(fallback_alias_key, None)
-                host._fallback_triggered_live.pop(entry.key, None)
+                session.live_payload.pop(fallback_alias_key, None)
+                session.offline_strikes.pop(fallback_alias_key, None)
+                session.fallback_triggered_live.pop(entry.key, None)
 
             active_live_ids = set(observed_live_ids)
             stale_candidates = [
                 key
-                for key in list(host._live_payload.keys())
+                for key in list(session.live_payload.keys())
                 if _entry_key_from_live_cache_key(key) == entry.key
                 and key.rsplit("|", 1)[-1] not in active_live_ids
             ]
             for stale_key in stale_candidates:
-                strikes = host._offline_strikes.get(stale_key, 0) + 1
+                strikes = session.offline_strikes.get(stale_key, 0) + 1
                 if strikes < _OFFLINE_STRIKE_THRESHOLD:
-                    host._offline_strikes[stale_key] = strikes
+                    session.offline_strikes[stale_key] = strikes
                     active_live_ids.add(stale_key.rsplit("|", 1)[-1])
                     has_strike_pending = True
                     logger.info(
@@ -281,27 +283,29 @@ class YouTubePlatformProbe:
                         _OFFLINE_STRIKE_THRESHOLD,
                     )
                     continue
-                host._offline_strikes.pop(stale_key, None)
-                payload = host._live_payload.pop(stale_key, None)
+                session.offline_strikes.pop(stale_key, None)
+                payload = session.live_payload.pop(stale_key, None)
                 if payload is not None:
-                    host._pending_offline_events.append((entry, payload))
+                    session.pending_offline_events.append((entry, payload))
                     offline_payload = payload
 
             for vid in observed_live_ids:
-                host._offline_strikes.pop(_live_cache_key(entry.key, vid), None)
+                session.offline_strikes.pop(
+                    _live_cache_key(entry.key, vid), None
+                )
 
             if has_live:
-                host._live_started_at = {
+                session.live_started_at = {
                     key: value
-                    for key, value in host._live_started_at.items()
+                    for key, value in session.live_started_at.items()
                     if (
                         _entry_key_from_live_cache_key(key) != entry.key
                         or key.rsplit("|", 1)[-1] in active_live_ids
                     )
                 }
-                host._live_platform_started_at = {
+                session.live_platform_started_at = {
                     key
-                    for key in host._live_platform_started_at
+                    for key in session.live_platform_started_at
                     if (
                         _entry_key_from_live_cache_key(key) != entry.key
                         or key.rsplit("|", 1)[-1] in active_live_ids
@@ -310,32 +314,32 @@ class YouTubePlatformProbe:
             elif has_strike_pending:
                 pass
             elif items:
-                host._live_started_at = {
+                session.live_started_at = {
                     key: value
-                    for key, value in host._live_started_at.items()
+                    for key, value in session.live_started_at.items()
                     if _entry_key_from_live_cache_key(key) != entry.key
                 }
-                host._live_platform_started_at = {
+                session.live_platform_started_at = {
                     key
-                    for key in host._live_platform_started_at
+                    for key in session.live_platform_started_at
                     if _entry_key_from_live_cache_key(key) != entry.key
                 }
                 offline_extra_vod = next(
                     (item.url for item in items if item.style == "DEFAULT"),
                     "",
                 )
-                prev_offline = host._last_status.get(entry.key)
+                prev_offline = session.last_status.get(entry.key)
                 need_offline_status = True
 
-            host._youtube_baselined.add(entry.key)
+            session.youtube_baselined.add(entry.key)
 
         if live_status is not None:
-            with host._lock:
-                host._last_status[entry.key] = live_status
+            with session.lock:
+                session.last_status[entry.key] = live_status
                 if live_status.started_at:
                     for item in live_items:
                         if item.url == live_status.url:
-                            host._live_started_at[
+                            session.live_started_at[
                                 _live_cache_key(entry.key, item.video_id)
                             ] = live_status.started_at
                             break
@@ -343,9 +347,9 @@ class YouTubePlatformProbe:
             if (
                 isinstance(prev_offline, ChannelStatus)
                 and prev_offline.status is False
-                and host._youtube_offline_row_is_stable(prev_offline, items)
+                and facade.youtube_offline_row_is_stable(prev_offline, items)
             ):
-                fresh = host._find_youtube_upcoming_item(
+                fresh = facade.find_youtube_upcoming_item(
                     entry, fetcher, channel_items=items
                 )
                 upcoming_url = fresh.url if fresh else ""
@@ -367,7 +371,7 @@ class YouTubePlatformProbe:
                         scheduled_start=scheduled_start,
                     )
             else:
-                offline_status = host._youtube_offline_status_for(
+                offline_status = facade.youtube_offline_status_for(
                     entry,
                     prev_offline,
                     offline_payload,
@@ -375,28 +379,29 @@ class YouTubePlatformProbe:
                     extra_vod_url=offline_extra_vod,
                     channel_items=items,
                 )
-            with host._lock:
-                host._last_status[entry.key] = offline_status
+            with session.lock:
+                session.last_status[entry.key] = offline_status
 
         pending_seen = snap.youtube_pending_seen or []
 
         def commit() -> None:
             for args in pending_seen:
                 try:
-                    host._db.mark_seen(*args)
+                    facade.db.mark_seen(*args)
                 except Exception:
                     logger.exception("DB error for video %s", args[0])
 
-        host._publish_channel_preview(entry, from_probe=False)
+        facade.publish_preview(entry, from_probe=False)
         return commit
 
     def _probe_fallback_live(
         self,
-        host: ProbeHost,
+        facade: ProbeFacade,
         entry: ChannelEntry,
         fetcher: Any,
         snap: _ProbeSnapshot
     ) -> list[tuple[ChannelEntry, StreamInfo]]:
+        session = facade.session
         try:
             info = fetcher.get_stream_info(entry.name)
         except Exception:
@@ -404,18 +409,18 @@ class YouTubePlatformProbe:
             return []
 
         if info is None:
-            return host._handle_fetch_unavailable(
+            return facade.handle_fetch_unavailable(
                 entry, label="YouTube fallback"
             )
 
         live_key = _live_cache_key(entry.key)
 
-        with host._lock:
-            prev = host._last_status.get(entry.key)
+        with session.lock:
+            prev = session.last_status.get(entry.key)
             prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
 
             if not info.is_live and prev_status is True:
-                miss = host._record_offline_miss(
+                miss = facade.record_offline_miss(
                     entry,
                     live_key,
                     prev_status,
@@ -424,26 +429,28 @@ class YouTubePlatformProbe:
                 )
                 if miss == "hold":
                     if info.display_name:
-                        host._display_names[entry.key] = info.display_name
+                        session.display_names[entry.key] = info.display_name
                     snap.youtube_fallback_info = info
                     snap.youtube_fallback_hold = True
                     return []
             else:
-                host._offline_strikes.pop(live_key, None)
+                session.offline_strikes.pop(live_key, None)
 
             if info.is_live:
-                started_at = info.started_at or host._live_started_at.get(live_key)
+                started_at = info.started_at or session.live_started_at.get(
+                    live_key
+                )
                 if not started_at:
                     started_at = _utc_now_iso()
-                host._live_started_at[live_key] = started_at
+                session.live_started_at[live_key] = started_at
                 info.started_at = started_at
-                host._last_status[entry.key] = ChannelStatus(
+                session.last_status[entry.key] = ChannelStatus(
                     status=True,
                     url=info.url,
                     title=info.title,
                     started_at=started_at,
                 )
-                host._live_payload[live_key] = OfflineInfo(
+                session.live_payload[live_key] = OfflineInfo(
                     url=info.url,
                     title=info.title,
                     platform=entry.platform,
@@ -451,11 +458,11 @@ class YouTubePlatformProbe:
                     display_name=info.display_name or "",
                 )
             if info.display_name:
-                host._display_names[entry.key] = info.display_name
+                session.display_names[entry.key] = info.display_name
 
         snap.youtube_fallback_info = info
 
-        if host._wake_verify_mode:
+        if facade.wake_verify_mode:
             return []
 
         went_live = info.is_live and prev_status is not True
@@ -466,8 +473,8 @@ class YouTubePlatformProbe:
                 info.title,
                 info.url,
             )
-            with host._lock:
-                host._fallback_triggered_live[entry.key] = info.title
+            with session.lock:
+                session.fallback_triggered_live[entry.key] = info.title
             info.stream_status = "live"
             return [(entry, info)]
         if info.is_live and prev_status is True:
@@ -479,17 +486,18 @@ class YouTubePlatformProbe:
 
     def _refresh_fallback(
         self,
-        host: ProbeHost,
+        facade: ProbeFacade,
         entry: ChannelEntry,
         snap: _ProbeSnapshot
     ) -> None:
+        session = facade.session
         info = snap.youtube_fallback_info
         fetcher = snap.fetcher
         if info is None or snap.youtube_fallback_hold:
             return
 
-        with host._lock:
-            prev = host._last_status.get(entry.key)
+        with session.lock:
+            prev = session.last_status.get(entry.key)
             prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
 
         went_offline = (
@@ -497,7 +505,7 @@ class YouTubePlatformProbe:
             and prev_status is True
         )
         if went_offline:
-            host._enqueue_youtube_fallback_went_offline(
+            facade.enqueue_youtube_fallback_offline(
                 entry, prev, label="YouTube fallback"
             )
             return
@@ -513,41 +521,41 @@ class YouTubePlatformProbe:
                     title=info.title,
                     scheduled_start=info.scheduled_start,
                 )
-                with host._lock:
-                    host._live_started_at = {
+                with session.lock:
+                    session.live_started_at = {
                         key: value
-                        for key, value in host._live_started_at.items()
+                        for key, value in session.live_started_at.items()
                         if _entry_key_from_live_cache_key(key) != entry.key
                     }
-                    host._live_platform_started_at = {
+                    session.live_platform_started_at = {
                         key
-                        for key in host._live_platform_started_at
+                        for key in session.live_platform_started_at
                         if _entry_key_from_live_cache_key(key) != entry.key
                     }
-                    host._fallback_triggered_live.pop(entry.key, None)
-                    host._last_status[entry.key] = upcoming_status
+                    session.fallback_triggered_live.pop(entry.key, None)
+                    session.last_status[entry.key] = upcoming_status
             else:
-                offline_status = host._youtube_offline_status_for(
+                offline_status = facade.youtube_offline_status_for(
                     entry, prev, fetcher=fetcher
                 )
-                with host._lock:
-                    host._live_started_at = {
+                with session.lock:
+                    session.live_started_at = {
                         key: value
-                        for key, value in host._live_started_at.items()
+                        for key, value in session.live_started_at.items()
                         if _entry_key_from_live_cache_key(key) != entry.key
                     }
-                    host._live_platform_started_at = {
+                    session.live_platform_started_at = {
                         key
-                        for key in host._live_platform_started_at
+                        for key in session.live_platform_started_at
                         if _entry_key_from_live_cache_key(key) != entry.key
                     }
-                    host._fallback_triggered_live.pop(entry.key, None)
-                    host._last_status[entry.key] = offline_status
-        host._publish_channel_preview(entry, from_probe=False)
+                    session.fallback_triggered_live.pop(entry.key, None)
+                    session.last_status[entry.key] = offline_status
+        facade.publish_preview(entry, from_probe=False)
 
     def finalize_tier1_probe(
         self,
-        host: ProbeHost,
+        facade: ProbeFacade,
         entry: ChannelEntry,
         snap: _ProbeSnapshot,
     ) -> None:

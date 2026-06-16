@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Callable, Protocol
 
 from stream_monitor.fetcher.base import StreamInfo
-from stream_monitor.monitor.probes.host import ProbeHost
+from stream_monitor.monitor.probes.facade import ProbeFacade
 from stream_monitor.monitor.types import ChannelEntry, _ProbeSnapshot
 
 CommitFn = Callable[[], None]
@@ -18,21 +18,21 @@ class PlatformProbe(Protocol):
 
     def probe_live(
         self,
-        host: ProbeHost,
+        facade: ProbeFacade,
         entry: ChannelEntry,
         snap: _ProbeSnapshot,
     ) -> list[tuple[ChannelEntry, StreamInfo]]: ...
 
     def refresh_details(
         self,
-        host: ProbeHost,
+        facade: ProbeFacade,
         entry: ChannelEntry,
         snap: _ProbeSnapshot,
     ) -> CommitFn: ...
 
     def finalize_tier1_probe(
         self,
-        host: ProbeHost,
+        facade: ProbeFacade,
         entry: ChannelEntry,
         snap: _ProbeSnapshot,
     ) -> None: ...
