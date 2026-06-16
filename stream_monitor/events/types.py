@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Union
 
+from stream_monitor.domain import ChannelEntry, OfflineInfo
 from stream_monitor.fetcher.base import StreamInfo
-from stream_monitor.monitor.types import ChannelEntry, OfflineInfo
 
 
 @dataclass(frozen=True, slots=True)
