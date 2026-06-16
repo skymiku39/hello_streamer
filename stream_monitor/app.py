@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -48,11 +47,10 @@ from stream_monitor.app_ui import (
 from stream_monitor.browser_settings_model import BrowserSettings
 from stream_monitor.channel_row import ChannelRow
 from stream_monitor.db import SeenVideoDB
-from stream_monitor.event_bridge import MonitorEventBridge
-from stream_monitor.events import MonitorEventBus
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
-from stream_monitor.monitor import ChannelEntry, ChannelStatus, Monitor
+from stream_monitor.monitor import ChannelEntry, ChannelStatus
+from stream_monitor.monitor_controller import MonitorController
 from stream_monitor.notifier import (
     browser_window_tracking_available,
     close_all_tracked_windows,
@@ -81,16 +79,12 @@ class App(ctk.CTk):
         super().__init__()
 
         self.config = config_manager.load()
-        self._event_bus = MonitorEventBus()
         self._db = SeenVideoDB()
-        self._monitor: Monitor | None = None
         self._channel_rows: list[ChannelRow] = []
-        self._ui_status_pending: dict[str, Any] = {}
         self._silent = silent
         self._truly_quitting = False
-        # monitor mode: "idle" | "trigger" | "watch"
-        self._monitor_mode: str = "idle"
-        self._event_bridge = MonitorEventBridge(self, self._event_bus)
+        # Owns the event bus, bridge, monitor thread, and idle/trigger/watch mode.
+        self._controller = MonitorController(self, self._db)
 
         # Restore the saved language *before* any widget creation so all
         # labels/buttons are constructed in the user's chosen language.
@@ -115,9 +109,9 @@ class App(ctk.CTk):
             on_show=self._show_window,
             on_toggle_monitor=self._tray_toggle_monitor,
             on_watch_only=lambda: self.after(0, self._on_watch),
-            on_stop=lambda: self.after(0, self._on_stop),
-            on_quit=self._quit_app,
-            get_mode=lambda: self._monitor_mode,
+            on_stop=lambda: self.after(0, self.on_stop),
+            on_quit=self.quit_app,
+            get_mode=lambda: self._controller.mode,
         )
         self._tray.start()
 
@@ -149,13 +143,12 @@ class App(ctk.CTk):
         if self.minimize_to_tray_var.get():
             self._hide_window()
         else:
-            self._quit_app()
+            self.quit_app()
 
-    def _quit_app(self) -> None:
+    def quit_app(self) -> None:
         """Full exit — called from tray menu or explicit quit."""
         self._truly_quitting = True
-        if self._monitor:
-            self._monitor.stop()
+        self._controller.shutdown()
         self._tray.stop()
         self._save_config()
         self._db.close()
@@ -168,17 +161,31 @@ class App(ctk.CTk):
     # Tray callbacks
     # ------------------------------------------------------------------
     def _tray_toggle_monitor(self) -> None:
-        if self._monitor and self._monitor.is_running:
-            self.after(0, self._on_stop)
+        if self._controller.is_running:
+            self.after(0, self.on_stop)
         else:
             self.after(0, self._on_start)
 
-    def _current_browser_settings(self) -> BrowserSettings | None:
+    def current_browser_settings(self) -> BrowserSettings | None:
         raw = self.config.get("browser_settings")
         if not isinstance(raw, dict):
             return None
         settings = BrowserSettings.from_dict(raw)
         return settings if settings.enabled else None
+
+    # ------------------------------------------------------------------
+    # AppEventSink read-only views (consumed by MonitorEventBridge)
+    # ------------------------------------------------------------------
+    @property
+    def monitor_mode(self) -> str:
+        return self._controller.mode
+
+    @property
+    def wake_verify_active(self) -> bool:
+        return self._controller.wake_verify_active
+
+    def iter_channel_rows(self) -> list[ChannelRow]:
+        return self._channel_rows
 
     # ------------------------------------------------------------------
     # UI construction
@@ -370,7 +377,7 @@ class App(ctk.CTk):
             hover_color=_CLR_STOP_HOVER,
             state="disabled",
             font=_font(14, "bold"),
-            command=self._on_stop,
+            command=self.on_stop,
         )
         self.stop_btn.pack(side="left")
         _tooltip_tr(self.stop_btn, "tooltip.stop")
@@ -548,7 +555,7 @@ class App(ctk.CTk):
             on_move_up=on_move_up,
             on_move_down=on_move_down,
             on_toggle_enabled=on_toggle_enabled,
-            get_browser_settings=self._current_browser_settings,
+            get_browser_settings=self.current_browser_settings,
         )
         row.pack(fill="x", pady=3)
         self._channel_rows.append(row)
@@ -584,8 +591,7 @@ class App(ctk.CTk):
         self._save_config()
         self._refresh_empty_hint()
         self._refresh_move_buttons()
-        if self._monitor and self._monitor.is_running:
-            self._monitor.update_channels(channels)
+        self._controller.update_channels(channels)
 
     def _move_channel(self, channel: dict[str, str], offset: int) -> None:
         channels = self.config.get("channels", [])
@@ -611,8 +617,7 @@ class App(ctk.CTk):
 
         self._save_config()
         self._refresh_move_buttons()
-        if self._monitor and self._monitor.is_running:
-            self._monitor.update_channels(channels)
+        self._controller.update_channels(channels)
 
     def _refresh_move_buttons(self) -> None:
         last_index = len(self._channel_rows) - 1
@@ -622,10 +627,9 @@ class App(ctk.CTk):
     def _on_channel_toggle_enabled(self, channel: dict[str, str]) -> None:
         self._save_config()
         channels = self.config.get("channels", [])
-        if self._monitor and self._monitor.is_running:
-            self._monitor.update_channels(channels)
+        self._controller.update_channels(channels)
 
-    def _apply_display_names(self, display_names: dict[str, str]) -> None:
+    def apply_display_names(self, display_names: dict[str, str]) -> None:
         changed = False
         for row in self._channel_rows:
             changed = row.set_display_name(display_names.get(row.key)) or changed
@@ -642,8 +646,7 @@ class App(ctk.CTk):
                 channels.append(ch)
                 self._add_channel_row(ch)
                 self._save_config()
-                if self._monitor and self._monitor.is_running:
-                    self._monitor.update_channels(channels)
+                self._controller.update_channels(channels)
 
     def _on_language_picker(self) -> None:
         dialog = LanguageDialog(self, on_apply=self._apply_language)
@@ -683,12 +686,9 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
     # Monitor control
     # ------------------------------------------------------------------
-    def _ensure_monitor_running(self) -> bool:
-        """Start (or keep) the background monitor. Returns False if no channels."""
+    def _collect_monitor_config(self) -> tuple[list[dict[str, str]], int]:
+        """Read interval/action widgets into config; return (channels, interval)."""
         channels = self.config.get("channels", [])
-        if not channels:
-            return False
-
         try:
             interval = int(self.interval_var.get())
         except (TypeError, ValueError):
@@ -697,26 +697,9 @@ class App(ctk.CTk):
         self.interval_var.set(str(interval))
         self.config["check_interval"] = interval
 
-        action_display = self.action_var.get()
-        action_key = _action_key_for_display(action_display)
+        action_key = _action_key_for_display(self.action_var.get())
         self.config["action"] = action_key
-
-        if self._monitor and self._monitor.is_running:
-            self._monitor.update_interval(interval)
-            self._monitor.update_channels(channels)
-        elif self._monitor is not None:
-            self._monitor.update_interval(interval)
-            self._monitor.update_channels(channels)
-            self._monitor.restart_thread()
-        else:
-            self._monitor = Monitor(
-                channels=channels,
-                interval=interval,
-                event_bus=self._event_bus,
-                db=self._db,
-            )
-            self._monitor.start()
-        return True
+        return channels, interval
 
     def _render_status_text(self) -> None:
         main = tr(self._status_text_key)
@@ -734,11 +717,10 @@ class App(ctk.CTk):
         self._render_status_text()
 
     def _channel_display_name(self, entry: ChannelEntry) -> str:
-        if self._monitor:
-            names = self._monitor.snapshot_display_names()
-            display = (names.get(entry.key) or "").strip()
-            if display:
-                return display
+        names = self._controller.snapshot_display_names()
+        display = (names.get(entry.key) or "").strip()
+        if display:
+            return display
         for ch in self.config.get("channels", []):
             if channel_key(ch["platform"], ch["name"]) == entry.key:
                 display = (ch.get("display_name") or "").strip()
@@ -746,10 +728,10 @@ class App(ctk.CTk):
                     return display
         return entry.name
 
-    def _update_poll_subline(
+    def update_poll_subline(
         self, entry: ChannelEntry, phase: str, display_name: str = ""
     ) -> None:
-        if self._monitor_mode not in ("trigger", "watch"):
+        if self._controller.mode not in ("trigger", "watch"):
             return
         name = _truncate_status_name(display_name or entry.name)
         sub_key = (
@@ -761,8 +743,8 @@ class App(ctk.CTk):
         self._status_subline_kwargs = {"name": name}
         self._render_status_text()
 
-    def _set_poll_subline_waiting(self) -> None:
-        if self._monitor_mode not in ("trigger", "watch"):
+    def set_poll_waiting(self) -> None:
+        if self._controller.mode not in ("trigger", "watch"):
             return
         self._status_subline_key = "status.poll_waiting"
         self._status_subline_kwargs = {}
@@ -774,9 +756,8 @@ class App(ctk.CTk):
         self._render_status_text()
 
     def _on_start(self) -> None:
-        self._monitor_mode = "trigger"
-        if not self._ensure_monitor_running():
-            self._monitor_mode = "idle"
+        channels, interval = self._collect_monitor_config()
+        if not self._controller.start("trigger", channels, interval):
             return
         self.config["monitor_mode"] = "trigger"
         self._save_config()
@@ -785,9 +766,8 @@ class App(ctk.CTk):
         self._tray.update_tooltip_key("tray.tooltip.trigger")
 
     def _on_watch(self) -> None:
-        self._monitor_mode = "watch"
-        if not self._ensure_monitor_running():
-            self._monitor_mode = "idle"
+        channels, interval = self._collect_monitor_config()
+        if not self._controller.start("watch", channels, interval):
             return
         self.config["monitor_mode"] = "watch"
         self._save_config()
@@ -795,20 +775,12 @@ class App(ctk.CTk):
         self._set_status_text("status.watching", "#64b5f6")
         self._tray.update_tooltip_key("tray.tooltip.watch")
 
-    def _on_stop(self, *, is_user_action: bool = True) -> None:
-        monitor = self._monitor
-        self._monitor = None
-        self._event_bus.clear()
-        self._ui_status_pending.clear()
-        self._monitor_mode = "idle"
+    def on_stop(self, *, is_user_action: bool = True) -> None:
+        self._controller.stop()
         self._apply_monitor_mode_buttons()
         self._set_status_text("status.stopped", _CLR_OFFLINE)
         self._set_awaiting_start_subline()
         self._tray.update_tooltip_key("tray.tooltip.stopped")
-
-        if monitor is not None:
-            monitor.request_stop()
-            threading.Thread(target=monitor.stop, daemon=True).start()
 
         # close_on_stop fires only when the user explicitly hit Stop — never
         # on the auto-stop produced by open_and_stop, because that just
@@ -829,7 +801,7 @@ class App(ctk.CTk):
                     logger.exception("close_on_stop sweep failed")
 
     def _apply_monitor_mode_buttons(self) -> None:
-        mode = self._monitor_mode
+        mode = self._controller.mode
         if mode == "trigger":
             self.start_btn.configure(state="disabled")
             self.watch_btn.configure(state="normal")
@@ -879,13 +851,13 @@ class App(ctk.CTk):
             vod_url=info.url if stream_status == "video" else "",
         )
 
-    def _apply_live_row_status(self, entry: ChannelEntry, info: StreamInfo) -> None:
+    def apply_live_row_status(self, entry: ChannelEntry, info: StreamInfo) -> None:
         for row in self._channel_rows:
             if row.key == entry.key:
                 row.set_status(self._channel_status_from_stream_info(info))
                 break
 
-    def _execute_live_action(
+    def execute_live_action(
         self,
         action: str,
         info: StreamInfo,
@@ -915,21 +887,16 @@ class App(ctk.CTk):
 
     def _monitor_health_check(self) -> None:
         """Restart the background monitor if its thread died unexpectedly."""
-        self._maybe_restart_dead_monitor()
+        self.maybe_restart_dead_monitor()
         self.after(10_000, self._monitor_health_check)
 
-    def _maybe_restart_dead_monitor(self) -> None:
-        if self._monitor_mode not in ("trigger", "watch"):
+    def maybe_restart_dead_monitor(self) -> None:
+        if self._controller.mode not in ("trigger", "watch"):
             return
-        if self._monitor is None or self._monitor.is_running:
+        channels, interval = self._collect_monitor_config()
+        if not self._controller.restart_if_dead(channels, interval):
             return
-        logger.warning(
-            "Monitor thread died unexpectedly (mode=%s), restarting",
-            self._monitor_mode,
-        )
-        if not self._ensure_monitor_running():
-            return
-        if self._monitor_mode == "trigger":
+        if self._controller.mode == "trigger":
             self._set_status_text("status.monitor_restarted", _CLR_LIVE)
             self._tray.update_tooltip_key("tray.tooltip.trigger")
         else:
@@ -938,9 +905,9 @@ class App(ctk.CTk):
 
     def _poll_events(self) -> None:
         self.after(80, self._poll_events)
-        self._event_bridge.tick()
+        self._controller.tick()
 
-    def _handle_channel_offline(
+    def handle_channel_offline(
         self, entry: ChannelEntry, offline_info: Any
     ) -> None:
         """Close any browser window we opened for this channel."""
@@ -951,7 +918,7 @@ class App(ctk.CTk):
         # profile (HWND tracking). Shared-profile / webbrowser opens register
         # a one-shot block instead; still pass keywords only when isolation is
         # available so a stale block cannot be bypassed by config drift.
-        settings = self._current_browser_settings()
+        settings = self.current_browser_settings()
         keywords: list[str] | None = None
         if settings and browser_window_tracking_available(settings, url):
             keywords = []
@@ -1006,8 +973,7 @@ class App(ctk.CTk):
         config_manager.save(self.config)
 
     def _on_close(self) -> None:
-        if self._monitor:
-            self._monitor.stop()
+        self._controller.shutdown()
         self._tray.stop()
         self._save_config()
         self._db.close()
