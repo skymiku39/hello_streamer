@@ -51,8 +51,7 @@ from stream_monitor.channel_row import ChannelRow
 from stream_monitor.channel_reorder import (
     ROW_SLOT_HEIGHT,
     apply_list_move,
-    nudge_insert_index,
-    target_index_for_drag_source,
+    target_index_for_drag_preview,
 )
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
@@ -362,8 +361,10 @@ class App(ctk.CTk):
             self,
             on_idle=self._on_scroll_repaint_idle,
         )
-        self.scroll_frame._parent_canvas.bind(
-            "<MouseWheel>", self._on_channel_reorder_wheel_block, add="+"
+        # Persistent drag handlers — never unbind_all (that breaks list scroll).
+        self.bind_all("<B1-Motion>", self._on_channel_reorder_motion_global, add="+")
+        self.bind_all(
+            "<ButtonRelease-1>", self._on_channel_reorder_release_global, add="+"
         )
 
         self.empty_label = ctk.CTkLabel(
@@ -774,6 +775,7 @@ class App(ctk.CTk):
 
     def _repack_channel_rows(self, *, spacer_at: int | None = None) -> None:
         spacer = self._reorder_spacer
+        drag_row = self._reorder_drag_row
         for row in self._channel_rows:
             row.pack_forget()
         if spacer is not None:
@@ -783,7 +785,8 @@ class App(ctk.CTk):
             for index, row in enumerate(self._channel_rows):
                 if index == spacer_at:
                     spacer.pack(fill="x", pady=3)
-                row.pack(fill="x", pady=3)
+                if row is not drag_row:
+                    row.pack(fill="x", pady=3)
             if spacer_at >= len(self._channel_rows):
                 spacer.pack(fill="x", pady=3)
         else:
@@ -815,13 +818,6 @@ class App(ctk.CTk):
             self._reorder_spacer.pack_propagate(False)
 
         self._apply_reorder_preview()
-        self.bind_all("<MouseWheel>", self._on_channel_reorder_wheel, add="+")
-        self.bind_all("<Button-4>", self._on_channel_reorder_wheel_linux, add="+")
-        self.bind_all("<Button-5>", self._on_channel_reorder_wheel_linux, add="+")
-        self.bind_all("<B1-Motion>", self._on_channel_reorder_motion_global, add="+")
-        self.bind_all(
-            "<ButtonRelease-1>", self._on_channel_reorder_release_global, add="+"
-        )
         _reorder_debug(
             "begin",
             source=source_index,
@@ -829,18 +825,25 @@ class App(ctk.CTk):
             channel=row.channel.get("name"),
         )
 
-    def _on_channel_reorder_wheel_block(self, event: Any) -> str:
-        if self._reorder_drag_row is not None:
-            self._on_channel_reorder_wheel(event)
-            return "break"
-        return ""
+    def _drag_preview_slot_tops(self) -> list[int]:
+        tops: list[int] = []
+        spacer = self._reorder_spacer
+        drag = self._reorder_drag_row
+        spacer_at = self._reorder_target_index
+        for index, row in enumerate(self._channel_rows):
+            if spacer_at is not None and index == spacer_at and spacer is not None:
+                tops.append(spacer.winfo_rooty())
+            if row is drag:
+                continue
+            tops.append(row.winfo_rooty())
+        return tops
 
     def _target_index_for_pointer(self, y_root: int) -> int:
         self.update_idletasks()
-        return target_index_for_drag_source(
+        return target_index_for_drag_preview(
             y_root,
             source_index=self._reorder_source_index,
-            rows=self._channel_rows,
+            slot_tops=self._drag_preview_slot_tops(),
         )
 
     def _update_channel_reorder(self, y_root: int) -> None:
@@ -867,36 +870,6 @@ class App(ctk.CTk):
         self._repack_channel_rows(spacer_at=target)
         self.update_idletasks()
 
-    def _wheel_step(self, event: Any) -> int:
-        delta = getattr(event, "delta", 0)
-        if delta:
-            if delta % 120 == 0:
-                return -delta // 120
-            return -1 if delta > 0 else 1
-        num = getattr(event, "num", 0)
-        if num == 4:
-            return -1
-        if num == 5:
-            return 1
-        return 0
-
-    def _on_channel_reorder_wheel(self, event: Any) -> str | None:
-        if self._reorder_drag_row is None:
-            return None
-        step = self._wheel_step(event)
-        if step == 0:
-            return "break"
-        self._reorder_target_index = nudge_insert_index(
-            self._reorder_target_index,
-            step,
-            length=len(self._channel_rows),
-        )
-        self._apply_reorder_preview()
-        return "break"
-
-    def _on_channel_reorder_wheel_linux(self, event: Any) -> str | None:
-        return self._on_channel_reorder_wheel(event)
-
     def _on_channel_reorder_motion_global(self, event: Any) -> None:
         if self._reorder_drag_row is not None:
             self._update_channel_reorder(event.y_root)
@@ -909,12 +882,6 @@ class App(ctk.CTk):
         row = self._reorder_drag_row
         if row is None:
             return
-
-        self.unbind_all("<MouseWheel>")
-        self.unbind_all("<Button-4>")
-        self.unbind_all("<Button-5>")
-        self.unbind_all("<B1-Motion>")
-        self.unbind_all("<ButtonRelease-1>")
 
         source = self._reorder_source_index
         target = self._reorder_target_index

@@ -8,6 +8,8 @@ from stream_monitor.channel_reorder import (
     apply_list_move,
     insert_index_for_pointer,
     nudge_insert_index,
+    target_index_for_drag_preview,
+    visual_gap_for_pointer,
 )
 
 
@@ -45,3 +47,17 @@ def test_nudge_insert_index_clamps() -> None:
     assert nudge_insert_index(0, -1, length=3) == 0
     assert nudge_insert_index(2, 1, length=3) == 3
     assert nudge_insert_index(1, -1, length=3) == 0
+
+
+def test_visual_gap_for_pointer_fixed_slots() -> None:
+    tops = [100, 164, 228]
+    assert visual_gap_for_pointer(120, tops) == 0
+    assert visual_gap_for_pointer(132, tops) == 1
+    assert visual_gap_for_pointer(196, tops) == 2
+    assert visual_gap_for_pointer(300, tops) == 3
+
+
+def test_target_index_for_drag_preview() -> None:
+    tops = [100, 164, 228]
+    assert target_index_for_drag_preview(196, source_index=1, slot_tops=tops) == 3
+    assert target_index_for_drag_preview(120, source_index=1, slot_tops=tops) == 0

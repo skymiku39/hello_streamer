@@ -11,8 +11,10 @@ from stream_monitor.channel_reorder import (
     apply_list_move,
     nudge_insert_index,
     reorder_list,
+    target_index_for_drag_preview,
     target_index_for_drag_source,
     target_index_from_reduced_gap,
+    visual_gap_for_pointer,
 )
 
 
@@ -55,6 +57,22 @@ def test_target_index_adjacent_noop() -> None:
     assert target == 2
     assert apply_list_move(1, 2, 3) is None
     assert reorder_list(["A", "B", "C"], 1, target) is None
+
+
+def test_visual_gap_snaps_one_slot_per_row_height() -> None:
+    tops = [100, 164, 228]
+    assert visual_gap_for_pointer(120, tops) == 0
+    assert visual_gap_for_pointer(132, tops) == 1
+    assert visual_gap_for_pointer(196, tops) == 2
+    assert visual_gap_for_pointer(300, tops) == 3
+
+
+def test_target_index_for_drag_preview_moves_one_slot() -> None:
+    tops = [100, 164, 228]
+    assert target_index_for_drag_preview(120, source_index=1, slot_tops=tops) == 0
+    assert target_index_for_drag_preview(196, source_index=1, slot_tops=tops) == 3
+    # Adjacent gap → noop at apply_list_move (source=1, target=2).
+    assert target_index_for_drag_preview(132, source_index=1, slot_tops=tops) == 2
 
 
 def test_wheel_nudge_then_commit_sequence() -> None:

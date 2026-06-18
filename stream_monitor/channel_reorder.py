@@ -65,6 +65,36 @@ def target_index_from_reduced_gap(reduced_index: int, *, source_index: int) -> i
     return reduced_index + 1
 
 
+def visual_gap_for_pointer(
+    pointer_y_root: int,
+    slot_tops: list[int],
+    *,
+    slot_height: int = ROW_SLOT_HEIGHT,
+) -> int:
+    """Gap index (0..len(slot_tops)) using fixed-height slots in pack order."""
+    if not slot_tops:
+        return 0
+    for index, top in enumerate(slot_tops):
+        midpoint = top + slot_height // 2
+        if pointer_y_root < midpoint:
+            return index
+    return len(slot_tops)
+
+
+def target_index_for_drag_preview(
+    pointer_y_root: int,
+    *,
+    source_index: int,
+    slot_tops: list[int],
+    slot_height: int = ROW_SLOT_HEIGHT,
+) -> int:
+    """Map pointer Y to a full-list insert index during an in-progress drag."""
+    visual_gap = visual_gap_for_pointer(
+        pointer_y_root, slot_tops, slot_height=slot_height
+    )
+    return target_index_from_reduced_gap(visual_gap, source_index=source_index)
+
+
 def target_index_for_drag_source(
     pointer_y_root: int,
     *,
