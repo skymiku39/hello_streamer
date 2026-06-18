@@ -145,3 +145,27 @@ def saved_at_epoch(cache: Any) -> float:
         return 0.0
     dt = parse_iso_datetime(str(cache.get("saved_at", "")))
     return dt.timestamp() if dt is not None else 0.0
+
+
+def _coerce_channel_status(status: Any) -> ChannelStatus | None:
+    if isinstance(status, ChannelStatus):
+        if serialize_status(status) is None:
+            return None
+        return status
+    data = serialize_status(status)
+    if data is None:
+        return None
+    return _deserialize_status(data)
+
+
+def merge_status_maps(
+    *sources: dict[str, Any],
+) -> dict[str, ChannelStatus]:
+    """Merge status dicts left-to-right; later snapshots win per channel key."""
+    merged: dict[str, ChannelStatus] = {}
+    for source in sources:
+        for key, status in source.items():
+            coerced = _coerce_channel_status(status)
+            if coerced is not None:
+                merged[key] = coerced
+    return merged

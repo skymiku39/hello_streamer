@@ -522,14 +522,43 @@ class LanguageDialog(ctk.CTkToplevel):
 # ═══════════════════════════════════════════════════════════════════════════
 # Browser Settings Dialog
 # ═══════════════════════════════════════════════════════════════════════════
+_VIEWER_ENGAGEMENT_TOGGLES: tuple[tuple[str, str, str], ...] = (
+    (
+        "force_visible",
+        "engagement.toggle.force_visible",
+        "engagement.toggle.force_visible.hint",
+    ),
+    (
+        "keep_system_awake",
+        "engagement.toggle.keep_awake",
+        "engagement.toggle.keep_awake.hint",
+    ),
+    (
+        "whitelist_performance",
+        "engagement.toggle.whitelist",
+        "engagement.toggle.whitelist.hint",
+    ),
+    (
+        "bring_to_front",
+        "engagement.toggle.bring_front",
+        "engagement.toggle.bring_front.hint",
+    ),
+)
+
+
 class BrowserSettingsDialog(ctk.CTkToplevel):
     """Modal dialog for configuring how stream pages are opened in the browser."""
 
-    def __init__(self, parent: ctk.CTk, current: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        parent: ctk.CTk,
+        current: dict[str, Any],
+        viewer_engagement: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.title(tr("browser.title"))
         screen_height = max(self.winfo_screenheight(), 640)
-        self.geometry(f"580x{min(780, screen_height - 80)}")
+        self.geometry(f"580x{min(820, screen_height - 80)}")
         self.minsize(500, 540)
         self.resizable(True, True)
         self.transient(parent)
@@ -541,7 +570,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
         self.result: dict[str, Any] | None = None
+        self.viewer_engagement_result: dict[str, Any] | None = None
         settings = {**DEFAULT_BROWSER_SETTINGS, **(current or {})}
+        ve_settings = {**DEFAULT_VIEWER_ENGAGEMENT, **(viewer_engagement or {})}
         self._new_window_before_app_mode = bool(settings.get("new_window", False))
         profile_stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
         self._test_profile_dir = Path(tempfile.gettempdir()) / (
@@ -1004,6 +1035,83 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._hide_taskbar_hint.pack(anchor="w", pady=(0, 2))
 
+        self._engagement_card = _browser_card(self._settings_body, pady=(0, 10))
+        engagement_card = self._engagement_card
+        self._engagement_section_label = ctk.CTkLabel(
+            engagement_card,
+            text=tr("browser.section.engagement"),
+            font=_font(13, "bold"),
+            anchor="w",
+        )
+        self._engagement_section_label.pack(padx=12, pady=(12, 4), anchor="w")
+        self._engagement_intro = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.intro"),
+            font=_font(11),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=500,
+            justify="left",
+        )
+        self._engagement_intro.pack(padx=12, pady=(0, 8), anchor="w")
+        self.engagement_enabled_var = ctk.BooleanVar(
+            value=bool(ve_settings.get("enabled"))
+        )
+        self._engagement_enabled_switch = ctk.CTkSwitch(
+            engagement_card,
+            text=tr("engagement.toggle.enabled"),
+            variable=self.engagement_enabled_var,
+            command=self._sync_engagement_enabled_state,
+            font=_font(12, "bold"),
+        )
+        self._engagement_enabled_switch.pack(padx=12, pady=(0, 2), anchor="w")
+        self._engagement_enabled_hint = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.toggle.enabled.hint"),
+            font=_font(10),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        )
+        self._engagement_enabled_hint.pack(padx=12, pady=(0, 8), anchor="w")
+        self._engagement_toggle_vars: dict[str, ctk.BooleanVar] = {}
+        self._engagement_sub_switches: list[ctk.CTkSwitch] = []
+        self._engagement_sub_hints: list[ctk.CTkLabel] = []
+        for key, label_key, hint_key in _VIEWER_ENGAGEMENT_TOGGLES:
+            var = ctk.BooleanVar(value=bool(ve_settings.get(key)))
+            self._engagement_toggle_vars[key] = var
+            switch = ctk.CTkSwitch(
+                engagement_card,
+                text=tr(label_key),
+                variable=var,
+                font=_font(12),
+            )
+            switch.pack(padx=12, pady=(6, 2), anchor="w")
+            self._engagement_sub_switches.append(switch)
+            hint = ctk.CTkLabel(
+                engagement_card,
+                text=tr(hint_key),
+                font=_font(10),
+                text_color="#9aa0b4",
+                anchor="w",
+                wraplength=470,
+                justify="left",
+            )
+            hint.pack(padx=12, pady=(0, 4), anchor="w")
+            self._engagement_sub_hints.append(hint)
+        self._engagement_tips = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.tips"),
+            font=_font(11),
+            text_color="#e0af68",
+            anchor="w",
+            wraplength=500,
+            justify="left",
+        )
+        self._engagement_tips.pack(padx=12, pady=(4, 12), anchor="w")
+        self._sync_engagement_enabled_state()
+
         self._more_card = _browser_card(self._settings_body, pady=(0, 10))
         more_card = self._more_card
         self._more_section_label = ctk.CTkLabel(
@@ -1207,6 +1315,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._on_dimension_change()
         self._on_path_change()
         self._initial_snapshot = self._snapshot_browser_settings()
+        self._initial_engagement_snapshot = self._snapshot_viewer_engagement()
 
         self._unsub_i18n = i18n.subscribe(self._retranslate)
         self.bind("<Destroy>", self._on_destroy, add="+")
@@ -1262,6 +1371,21 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._close_off_topic_hint.configure(text=tr("browser.toggle.close_off_topic.hint"))
         self.hide_from_taskbar_cb.configure(text=tr("browser.toggle.hide_taskbar"))
         self._hide_taskbar_hint.configure(text=tr("browser.toggle.hide_taskbar.hint"))
+        self._engagement_section_label.configure(text=tr("browser.section.engagement"))
+        self._engagement_intro.configure(text=tr("engagement.intro"))
+        self._engagement_enabled_switch.configure(text=tr("engagement.toggle.enabled"))
+        self._engagement_enabled_hint.configure(
+            text=tr("engagement.toggle.enabled.hint")
+        )
+        for switch, (key, label_key, hint_key), hint in zip(
+            self._engagement_sub_switches,
+            _VIEWER_ENGAGEMENT_TOGGLES,
+            self._engagement_sub_hints,
+            strict=True,
+        ):
+            switch.configure(text=tr(label_key))
+            hint.configure(text=tr(hint_key))
+        self._engagement_tips.configure(text=tr("engagement.tips"))
         self._profile_title.configure(text=tr("browser.profile.per_channel"))
         self.per_channel_profile_cb.configure(text=tr("browser.profile.per_channel"))
         self._profile_per_channel_hint.configure(text=tr("browser.profile.per_channel.hint"))
@@ -1538,6 +1662,20 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self._set_compat("browser.compat.unknown", "#90caf9")
             self._refresh_win32_management_state()
 
+    def _sync_engagement_enabled_state(self) -> None:
+        state = "normal" if self.engagement_enabled_var.get() else "disabled"
+        for switch in self._engagement_sub_switches:
+            switch.configure(state=state)
+
+    def _collect_viewer_engagement(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"enabled": self.engagement_enabled_var.get()}
+        for key, _label, _hint in _VIEWER_ENGAGEMENT_TOGGLES:
+            data[key] = self._engagement_toggle_vars[key].get()
+        return data
+
+    def _snapshot_viewer_engagement(self) -> dict[str, Any]:
+        return self._collect_viewer_engagement()
+
     def _collect(self) -> dict[str, Any] | None:
         apply_geometry = bool(self.apply_geometry_var.get())
 
@@ -1610,7 +1748,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         }
 
     def _has_unsaved_changes(self) -> bool:
-        return self._snapshot_browser_settings() != self._initial_snapshot
+        return (
+            self._snapshot_browser_settings() != self._initial_snapshot
+            or self._snapshot_viewer_engagement()
+            != self._initial_engagement_snapshot
+        )
 
     def _on_cancel(self) -> None:
         # Route through the same unsaved-changes prompt the [X] button uses;
@@ -1747,168 +1889,6 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         if data is None:
             return
         self.result = data
-        self.destroy()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Viewer Engagement Dialog (Twitch watch-time assist)
-# ═══════════════════════════════════════════════════════════════════════════
-class ViewerEngagementDialog(ctk.CTkToplevel):
-    """Modal dialog to opt in to Twitch watch-time assist mitigations."""
-
-    # (config key, label i18n key, hint i18n key)
-    _TOGGLES: tuple[tuple[str, str, str], ...] = (
-        (
-            "force_visible",
-            "engagement.toggle.force_visible",
-            "engagement.toggle.force_visible.hint",
-        ),
-        (
-            "keep_system_awake",
-            "engagement.toggle.keep_awake",
-            "engagement.toggle.keep_awake.hint",
-        ),
-        (
-            "whitelist_performance",
-            "engagement.toggle.whitelist",
-            "engagement.toggle.whitelist.hint",
-        ),
-        (
-            "bring_to_front",
-            "engagement.toggle.bring_front",
-            "engagement.toggle.bring_front.hint",
-        ),
-    )
-
-    def __init__(self, parent: ctk.CTk, current: dict[str, Any]) -> None:
-        super().__init__(parent)
-        self.title(tr("engagement.title"))
-        screen_height = max(self.winfo_screenheight(), 600)
-        self.geometry(f"560x{min(640, screen_height - 80)}")
-        self.minsize(480, 460)
-        self.resizable(True, True)
-        self.transient(parent)
-        self.configure(fg_color=_CLR_BG_DARK)
-
-        if sys.platform != "win32":
-            self.update()
-        self.grab_set()
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
-
-        self.result: dict[str, Any] | None = None
-        settings = {**DEFAULT_VIEWER_ENGAGEMENT, **(current or {})}
-
-        self.enabled_var = ctk.BooleanVar(value=bool(settings.get("enabled")))
-        self._toggle_vars: dict[str, ctk.BooleanVar] = {
-            key: ctk.BooleanVar(value=bool(settings.get(key)))
-            for key, _label, _hint in self._TOGGLES
-        }
-
-        content = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        content.pack(padx=12, pady=(8, 0), fill="both", expand=True)
-
-        ctk.CTkLabel(
-            content,
-            text=tr("engagement.intro"),
-            font=_font(12),
-            text_color="#aaaabb",
-            anchor="w",
-            justify="left",
-            wraplength=500,
-        ).pack(padx=16, pady=(12, 8), fill="x")
-
-        main_card = _browser_card(content, pady=(0, 12))
-        self._enabled_switch = ctk.CTkSwitch(
-            main_card,
-            text=tr("engagement.toggle.enabled"),
-            variable=self.enabled_var,
-            command=self._sync_enabled_state,
-            font=_font(13, "bold"),
-        )
-        self._enabled_switch.pack(padx=12, pady=(12, 4), anchor="w")
-        ctk.CTkLabel(
-            main_card,
-            text=tr("engagement.toggle.enabled.hint"),
-            font=_font(11),
-            text_color="#9aa0b4",
-            anchor="w",
-            justify="left",
-            wraplength=480,
-        ).pack(padx=12, pady=(0, 12), anchor="w")
-
-        self._sub_switches: list[ctk.CTkSwitch] = []
-        options_card = _browser_card(content, pady=(0, 12))
-        for key, label_key, hint_key in self._TOGGLES:
-            switch = ctk.CTkSwitch(
-                options_card,
-                text=tr(label_key),
-                variable=self._toggle_vars[key],
-                font=_font(12),
-            )
-            switch.pack(padx=12, pady=(10, 2), anchor="w")
-            self._sub_switches.append(switch)
-            ctk.CTkLabel(
-                options_card,
-                text=tr(hint_key),
-                font=_font(10),
-                text_color="#9aa0b4",
-                anchor="w",
-                justify="left",
-                wraplength=470,
-            ).pack(padx=12, pady=(0, 6), anchor="w")
-
-        ctk.CTkLabel(
-            content,
-            text=tr("engagement.tips"),
-            font=_font(11),
-            text_color="#e0af68",
-            anchor="w",
-            justify="left",
-            wraplength=500,
-        ).pack(padx=16, pady=(0, 12), fill="x")
-
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(padx=16, pady=(4, 12), fill="x")
-
-        self._save_btn = ctk.CTkButton(
-            btn_frame,
-            text=tr("engagement.btn.save"),
-            width=_button_width(
-                tr("engagement.btn.save"), min_width=96, weight="bold"
-            ),
-            height=40,
-            fg_color=_CLR_ADD,
-            hover_color=_CLR_ADD_HOVER,
-            font=_font(13, "bold"),
-            command=self._on_save,
-        )
-        self._save_btn.pack(side="right", pady=4)
-
-        self._cancel_btn = ctk.CTkButton(
-            btn_frame,
-            text=tr("engagement.btn.cancel"),
-            width=_button_width(tr("engagement.btn.cancel"), min_width=96),
-            height=40,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
-            font=_font(13),
-            command=self.destroy,
-        )
-        self._cancel_btn.pack(side="right", padx=(0, 8), pady=4)
-
-        self._sync_enabled_state()
-
-    def _sync_enabled_state(self) -> None:
-        state = "normal" if self.enabled_var.get() else "disabled"
-        for switch in self._sub_switches:
-            switch.configure(state=state)
-
-    def _on_save(self) -> None:
-        data = {"enabled": self.enabled_var.get()}
-        for key, _label, _hint in self._TOGGLES:
-            data[key] = self._toggle_vars[key].get()
-        self.result = data
+        self.viewer_engagement_result = self._collect_viewer_engagement()
         self.destroy()
 

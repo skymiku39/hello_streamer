@@ -15,7 +15,6 @@ from stream_monitor.app_dialogs import (
     AddChannelDialog,
     BrowserSettingsDialog,
     LanguageDialog,
-    ViewerEngagementDialog,
 )
 from stream_monitor.app_ui import (
     _CLR_ACCENT,
@@ -163,9 +162,9 @@ class App(ctk.CTk):
     def quit_app(self) -> None:
         """Full exit — called from tray menu or explicit quit."""
         self._truly_quitting = True
+        self._save_status_cache()
         self._controller.shutdown()
         self._tray.stop()
-        self._save_status_cache()
         self._save_config()
         self._db.close()
         if getattr(self, "_unsub_i18n", None):
@@ -290,28 +289,6 @@ class App(ctk.CTk):
         )
         self.browser_settings_btn.pack(side="right", padx=(0, 8))
         _tooltip_tr(self.browser_settings_btn, "tooltip.browser_settings")
-
-        self.viewer_engagement_btn = ctk.CTkButton(
-            title_bar,
-            text=tr("toolbar.viewer_engagement"),
-            width=_button_width(
-                tr("toolbar.viewer_engagement"),
-                min_width=110,
-                size=13,
-                weight="bold",
-            ),
-            height=36,
-            corner_radius=8,
-            fg_color="transparent",
-            border_width=1,
-            border_color=_CLR_LINK,
-            hover_color=_CLR_LINK_HOVER,
-            text_color=_CLR_LINK,
-            font=_font(13, "bold"),
-            command=self._on_viewer_engagement,
-        )
-        self.viewer_engagement_btn.pack(side="right", padx=(0, 8))
-        _tooltip_tr(self.viewer_engagement_btn, "tooltip.viewer_engagement")
 
         self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
         self.startup_switch = ctk.CTkSwitch(
@@ -531,13 +508,6 @@ class App(ctk.CTk):
             weight="bold",
         )
         _fit_button(
-            self.viewer_engagement_btn,
-            tr("toolbar.viewer_engagement"),
-            min_width=110,
-            size=13,
-            weight="bold",
-        )
-        _fit_button(
             self.start_btn,
             tr("toolbar.start"),
             min_width=108,
@@ -589,20 +559,37 @@ class App(ctk.CTk):
             if status is not None:
                 row.set_status(status, pending=True)
 
+    def _collect_statuses_for_cache(self) -> dict[str, ChannelStatus]:
+        """Merge persisted, row UI, and monitor snapshots (monitor wins)."""
+        existing = status_cache.restore_statuses(
+            self.config.get("channel_status_cache")
+        )
+        from_rows = {
+            row.key: snapshot
+            for row in self._channel_rows
+            if (snapshot := row.status_snapshot()) is not None
+        }
+        from_monitor = {
+            key: status
+            for key, status in self._controller.snapshot_statuses().items()
+            if status_cache.serialize_status(status) is not None
+        }
+        return status_cache.merge_status_maps(existing, from_rows, from_monitor)
+
     def _save_status_cache(self) -> None:
         """Snapshot confirmed statuses into config for the next launch.
 
-        Prefer the monitor's last_status (post-poll, already confirmed) over row
-        snapshots, because the event bridge may not have flushed every row yet.
+        Never overwrite a non-empty cache with an empty snapshot — that would
+        erase the last good session when the monitor was already stopped.
         """
-        statuses = self._controller.snapshot_statuses()
+        statuses = self._collect_statuses_for_cache()
         if not statuses:
-            statuses = {
-                row.key: snapshot
-                for row in self._channel_rows
-                if (snapshot := row.status_snapshot()) is not None
-            }
+            return
         names = self._controller.snapshot_display_names()
+        for row in self._channel_rows:
+            display = (row.channel.get("display_name") or "").strip()
+            if display and row.key not in names:
+                names[row.key] = display
         self.config["channel_status_cache"] = status_cache.build_cache(
             statuses, names
         )
@@ -894,6 +881,8 @@ class App(ctk.CTk):
         self._tray.update_tooltip_key("tray.tooltip.watch")
 
     def on_stop(self, *, is_user_action: bool = True) -> None:
+        self._save_status_cache()
+        self._save_config()
         self._controller.stop()
         self._apply_monitor_mode_buttons()
         self._set_status_text("status.stopped", _CLR_OFFLINE)
@@ -935,24 +924,21 @@ class App(ctk.CTk):
 
     def _on_browser_settings(self) -> None:
         dialog = BrowserSettingsDialog(
-            self, self.config.get("browser_settings", {}) or {}
+            self,
+            self.config.get("browser_settings", {}) or {},
+            self.config.get("viewer_engagement", {}) or {},
         )
         self.wait_window(dialog)
         if dialog.result is not None:
             self.config["browser_settings"] = dialog.result
+            if dialog.viewer_engagement_result is not None:
+                self.config["viewer_engagement"] = dialog.viewer_engagement_result
+                configure_viewer_engagement(
+                    ViewerEngagementSettings.from_dict(
+                        dialog.viewer_engagement_result
+                    )
+                )
             self._save_config()
-
-    def _on_viewer_engagement(self) -> None:
-        dialog = ViewerEngagementDialog(
-            self, self.config.get("viewer_engagement", {}) or {}
-        )
-        self.wait_window(dialog)
-        if dialog.result is not None:
-            self.config["viewer_engagement"] = dialog.result
-            self._save_config()
-            configure_viewer_engagement(
-                ViewerEngagementSettings.from_dict(dialog.result)
-            )
 
     # ------------------------------------------------------------------
     # Event bridge (monitor thread -> UI thread)

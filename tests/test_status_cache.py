@@ -126,3 +126,31 @@ def test_saved_at_epoch_missing_returns_zero() -> None:
     assert status_cache.saved_at_epoch({}) == 0.0
     assert status_cache.saved_at_epoch(None) == 0.0
     assert status_cache.saved_at_epoch({"saved_at": "not-a-date"}) == 0.0
+
+
+def test_merge_status_maps_later_sources_win() -> None:
+    base = {
+        "twitch|a": ChannelStatus(status=True, title="old"),
+        "twitch|b": ChannelStatus(status=False),
+    }
+    rows = {
+        "twitch|a": ChannelStatus(status=True, title="new"),
+        "youtube|c": ChannelStatus(status="upcoming"),
+    }
+    monitor = {
+        "twitch|a": ChannelStatus(status=False, title="monitor"),
+    }
+    merged = status_cache.merge_status_maps(base, rows, monitor)
+    assert merged["twitch|a"].title == "monitor"
+    assert merged["twitch|a"].status is False
+    assert merged["twitch|b"].status is False
+    assert merged["youtube|c"].status == "upcoming"
+
+
+def test_merge_status_maps_skips_none_and_unserializable() -> None:
+    merged = status_cache.merge_status_maps(
+        {"a": None, "b": ChannelStatus(status=None)},
+        {"c": ChannelStatus(status=True)},
+    )
+    assert set(merged) == {"c"}
+    assert merged["c"].status is True
