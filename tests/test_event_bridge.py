@@ -320,3 +320,31 @@ def test_defer_channel_row_repaints_skips_row_updates() -> None:
     assert row.applied == []
     assert sink.applied_display_names == []
     assert sink.poll_subline_calls == []
+
+
+def test_deferred_display_names_flush_when_repaints_resume() -> None:
+    from stream_monitor.monitor import ChannelStatus
+
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="watch")
+    sink.defer_channel_row_repaints = True
+    row = _FakeRow("twitch:hello")
+    sink._channel_rows = [row]
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(
+        PollStatusUpdate(
+            statuses={"twitch:hello": ChannelStatus(status=True)},
+            display_names={"twitch:hello": "Hello"},
+        )
+    )
+
+    bridge.tick()
+
+    assert sink.applied_display_names == []
+    assert row.applied == []
+
+    sink.defer_channel_row_repaints = False
+    bridge.tick()
+
+    assert sink.applied_display_names == [{"twitch:hello": "Hello"}]
+    assert len(row.applied) == 1

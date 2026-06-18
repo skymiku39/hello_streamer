@@ -78,6 +78,26 @@ class PendingStatusStore:
         return applied
 
 
+class PendingDisplayNamesStore:
+    """Buffers display-name updates until row repaints are allowed."""
+
+    def __init__(self) -> None:
+        self._pending: dict[str, str] = {}
+
+    def clear(self) -> None:
+        self._pending.clear()
+
+    def update(self, names: dict[str, str]) -> None:
+        if names:
+            self._pending.update(names)
+
+    def flush(self, sink: AppEventSink) -> None:
+        if not self._pending:
+            return
+        sink.apply_display_names(dict(self._pending))
+        self._pending.clear()
+
+
 class MonitorEventBridge:
     """Subscribes to ``MonitorEventBus`` and maps events to UI side-effects."""
 
@@ -85,10 +105,12 @@ class MonitorEventBridge:
         self._sink = sink
         self._bus = event_bus
         self._pending = PendingStatusStore()
+        self._pending_display_names = PendingDisplayNamesStore()
 
     def reset(self) -> None:
         """Drop buffered status updates (called when monitoring stops)."""
         self._pending.clear()
+        self._pending_display_names.clear()
 
     def tick(self) -> None:
         sink = self._sink
@@ -100,7 +122,6 @@ class MonitorEventBridge:
         offline_events: list[tuple[Any, Any]] = []
         poll_complete = False
         latest_poll_activity: tuple[ChannelEntry, str, str] | None = None
-        pending_names: dict[str, str] = {}
         max_events_per_tick = 12
         events_processed = 0
         buffered = self._bus.drain()
@@ -130,9 +151,9 @@ class MonitorEventBridge:
             elif isinstance(event, PartialStatusUpdate):
                 for key, status in event.statuses.items():
                     self._pending.merge(key, status)
-                pending_names.update(event.display_names)
+                self._pending_display_names.update(event.display_names)
             elif isinstance(event, PollStatusUpdate):
-                pending_names.update(event.display_names)
+                self._pending_display_names.update(event.display_names)
                 for row in sink.iter_channel_rows():
                     if row.key in event.statuses:
                         self._pending.set(row.key, event.statuses[row.key])
@@ -140,8 +161,12 @@ class MonitorEventBridge:
                         self._pending.set(row.key, None)
                 poll_complete = True
 
-        if pending_names and not sink.defer_channel_row_repaints:
-            sink.apply_display_names(pending_names)
+        for entry, info in live_events:
+            if info.display_name:
+                self._pending_display_names.update({entry.key: info.display_name})
+
+        if not sink.defer_channel_row_repaints:
+            self._pending_display_names.flush(sink)
 
         if latest_poll_activity is not None and not sink.defer_channel_row_repaints:
             entry, phase, display_name = latest_poll_activity
@@ -195,8 +220,6 @@ class MonitorEventBridge:
         should_exit = False
 
         for entry, info in live_events:
-            if info.display_name and not sink.defer_channel_row_repaints:
-                sink.apply_display_names({entry.key: info.display_name})
             if not poll_complete and not sink.defer_channel_row_repaints:
                 sink.apply_live_row_status(entry, info)
 
