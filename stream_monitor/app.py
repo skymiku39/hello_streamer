@@ -811,6 +811,8 @@ class App(ctk.CTk):
     def _repack_channel_rows_preview(
         self, order: list[int], *, flush: bool = False
     ) -> None:
+        from stream_monitor.channel_reorder_ui import repack_preview_rows
+
         if order == self._preview_pack_order:
             return
         canvas = self.scroll_frame._parent_canvas
@@ -822,103 +824,27 @@ class App(ctk.CTk):
             else None
         )
         previous = self._preview_pack_order
-        mode = "full"
-        if previous is not None and source_index is not None:
-            from stream_monitor.channel_reorder import preview_visual_step
-
-            step = preview_visual_step(previous, order, source_index)
-            if step == 1 and self._incremental_move_preview_row(
-                rows, order, source_index
-            ):
-                mode = "incremental"
-            elif self._partial_repack_preview_rows(rows, order, previous):
-                mode = "partial"
-            else:
-                self._full_repack_preview_rows(rows, order)
-        elif previous is not None and self._partial_repack_preview_rows(
-            rows, order, previous
-        ):
-            mode = "partial"
-        else:
-            self._full_repack_preview_rows(rows, order)
+        mode = repack_preview_rows(rows, order, previous, source_index)
         self._preview_pack_order = list(order)
         canvas.yview_moveto(yview[0])
         if flush:
             canvas.update_idletasks()
+        from stream_monitor.channel_reorder_ui import visual_pack_order
+
         _reorder_debug(
             "repack",
             mode=mode,
             order=order,
             previous=previous,
+            visual=visual_pack_order(rows),
         )
-
-    def _partial_repack_preview_rows(
-        self,
-        rows: list[ChannelRow],
-        order: list[int],
-        previous: list[int],
-    ) -> bool:
-        from stream_monitor.channel_reorder import preview_order_delta
-
-        changed = preview_order_delta(previous, order)
-        if not changed:
-            return True
-        if len(changed) >= len(order):
-            return False
-        for idx in changed:
-            rows[idx].pack_forget()
-        forgotten = set(changed)
-        prev_row: ChannelRow | None = None
-        for idx in order:
-            if idx not in forgotten:
-                prev_row = rows[idx]
-                continue
-            row = rows[idx]
-            if prev_row is None:
-                anchor: ChannelRow | None = None
-                start = order.index(idx) + 1
-                for later in order[start:]:
-                    if later not in forgotten:
-                        anchor = rows[later]
-                        break
-                if anchor is not None:
-                    row.pack(fill="x", pady=3, before=anchor)
-                else:
-                    row.pack(fill="x", pady=3)
-            else:
-                row.pack(fill="x", pady=3, after=prev_row)
-            prev_row = row
-            forgotten.discard(idx)
-        return True
 
     def _full_repack_preview_rows(
         self, rows: list[ChannelRow], order: list[int]
     ) -> None:
-        for row in rows:
-            row.pack_forget()
-        for index in order:
-            rows[index].pack(fill="x", pady=3)
+        from stream_monitor.channel_reorder_ui import full_repack_rows
 
-    def _incremental_move_preview_row(
-        self,
-        rows: list[ChannelRow],
-        order: list[int],
-        moved_index: int,
-    ) -> bool:
-        from stream_monitor.channel_reorder import pack_anchor_for_moved_row
-
-        anchor = pack_anchor_for_moved_row(order, moved_index)
-        if anchor is None:
-            return False
-        side, anchor_index = anchor
-        row = rows[moved_index]
-        anchor_row = rows[anchor_index]
-        row.pack_forget()
-        if side == "before":
-            row.pack(fill="x", pady=3, before=anchor_row)
-        else:
-            row.pack(fill="x", pady=3, after=anchor_row)
-        return True
+        full_repack_rows(rows, order)
 
     def _begin_channel_reorder(self, row: ChannelRow, *, y_root: int | None = None) -> None:
         if self._reorder_mode.active:

@@ -120,7 +120,61 @@ def main() -> int:
         }
     )
 
-    ok = logic_ok and pointer_ok and ui_ok and timer_ok and geometry_ok and strategy_ok
+    # --- Layer 5: CTk pack geometry (incremental/partial ≡ full) ---
+    from stream_monitor.channel_reorder_ui import (
+        full_repack_rows,
+        repack_preview_rows,
+        visual_pack_order,
+    )
+
+    root2 = ctk.CTk()
+    root2.withdraw()
+    parent2 = ctk.CTkFrame(root2, width=400)
+    parent2.pack()
+    pack_rows = []
+    for _i in range(4):
+        frame = ctk.CTkFrame(parent2, height=58, width=380)
+        frame.pack_propagate(False)
+        pack_rows.append(frame)
+    identity4 = list(range(4))
+    pack_failures: list[str] = []
+    for src in range(4):
+        for tgt in range(5):
+            if reorder_list(identity4, src, tgt) is None:
+                continue
+            order = preview_row_indices(src, tgt, 4)
+            full_repack_rows(pack_rows, identity4)
+            root2.update_idletasks()
+            full_repack_rows(pack_rows, order)
+            root2.update_idletasks()
+            expected = visual_pack_order(pack_rows)
+            full_repack_rows(pack_rows, identity4)
+            root2.update_idletasks()
+            repack_preview_rows(pack_rows, order, identity4, src)
+            root2.update_idletasks()
+            actual = visual_pack_order(pack_rows)
+            if actual != expected or actual != order:
+                pack_failures.append(f"{src}->{tgt}")
+    pack_ok = not pack_failures
+    results.append(
+        {
+            "layer": "pack_e2e",
+            "ok": pack_ok,
+            "failures": pack_failures[:5],
+            "checked": 4 * 5,
+        }
+    )
+    root2.destroy()
+
+    ok = (
+        logic_ok
+        and pointer_ok
+        and ui_ok
+        and timer_ok
+        and geometry_ok
+        and strategy_ok
+        and pack_ok
+    )
     payload = {
         "ok": ok,
         "long_press_ms": LONG_PRESS_MS,

@@ -17,12 +17,15 @@ Row repaints from the monitor stay deferred for the session.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from stream_monitor.channel_reorder import (
     ROW_SLOT_HEIGHT,
     apply_list_move,
+    pack_anchor_for_moved_row,
+    preview_order_delta,
     preview_row_indices,
+    preview_visual_step,
     target_index_for_content_y,
 )
 
@@ -30,6 +33,110 @@ if TYPE_CHECKING:
     from stream_monitor.channel_row import ChannelRow
 
 SchedulePreviewRepack = Callable[[list[int]], None]
+
+ROW_PACK_KWARGS: dict[str, Any] = {"fill": "x", "pady": 3}
+
+
+class PackableRow(Protocol):
+    def pack_forget(self) -> None: ...
+    def pack(self, **kwargs: Any) -> None: ...
+    @property
+    def master(self) -> Any: ...
+
+
+def visual_pack_order(rows: list[PackableRow]) -> list[int]:
+    """Return row indices in current ``pack`` order (uses ``pack_slaves``, not ``winfo_y``)."""
+    if not rows:
+        return []
+    parent = rows[0].master
+    index_by_id = {id(row): index for index, row in enumerate(rows)}
+    return [
+        index_by_id[id(widget)]
+        for widget in parent.pack_slaves()
+        if id(widget) in index_by_id
+    ]
+
+
+def full_repack_rows(rows: list[PackableRow], order: list[int]) -> None:
+    for row in rows:
+        row.pack_forget()
+    for index in order:
+        rows[index].pack(**ROW_PACK_KWARGS)
+
+
+def partial_repack_rows(
+    rows: list[PackableRow], order: list[int], previous: list[int]
+) -> bool:
+    changed = preview_order_delta(previous, order)
+    if not changed:
+        return True
+    if len(changed) >= len(order):
+        return False
+    for idx in changed:
+        rows[idx].pack_forget()
+    forgotten = set(changed)
+    prev_row: PackableRow | None = None
+    for idx in order:
+        if idx not in forgotten:
+            prev_row = rows[idx]
+            continue
+        row = rows[idx]
+        if prev_row is None:
+            anchor: PackableRow | None = None
+            start = order.index(idx) + 1
+            for later in order[start:]:
+                if later not in forgotten:
+                    anchor = rows[later]
+                    break
+            if anchor is not None:
+                row.pack(**ROW_PACK_KWARGS, before=anchor)
+            else:
+                row.pack(**ROW_PACK_KWARGS)
+        else:
+            row.pack(**ROW_PACK_KWARGS, after=prev_row)
+        prev_row = row
+        forgotten.discard(idx)
+    return True
+
+
+def incremental_move_row(
+    rows: list[PackableRow], order: list[int], moved_index: int
+) -> bool:
+    anchor = pack_anchor_for_moved_row(order, moved_index)
+    if anchor is None:
+        return False
+    side, anchor_index = anchor
+    row = rows[moved_index]
+    anchor_row = rows[anchor_index]
+    row.pack_forget()
+    if side == "before":
+        row.pack(**ROW_PACK_KWARGS, before=anchor_row)
+    else:
+        row.pack(**ROW_PACK_KWARGS, after=anchor_row)
+    return True
+
+
+def repack_preview_rows(
+    rows: list[PackableRow],
+    order: list[int],
+    previous: list[int] | None,
+    source_index: int | None,
+) -> str:
+    """Apply preview repack; return ``skip``|``incremental``|``partial``|``full``."""
+    if order == previous:
+        return "skip"
+    if previous is not None and source_index is not None:
+        step = preview_visual_step(previous, order, source_index)
+        if step == 1 and incremental_move_row(rows, order, source_index):
+            return "incremental"
+        if partial_repack_rows(rows, order, previous):
+            return "partial"
+        full_repack_rows(rows, order)
+        return "full"
+    if previous is not None and partial_repack_rows(rows, order, previous):
+        return "partial"
+    full_repack_rows(rows, order)
+    return "full"
 
 
 class ChannelReorderMode:
