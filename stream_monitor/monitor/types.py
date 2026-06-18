@@ -154,9 +154,8 @@ def youtube_priority_entries(
 ) -> list[ChannelEntry]:
     """YouTube channels first, then all other platforms (config list order).
 
-    Used for sequential polls and as the dequeue order for the concurrent
-    priority pool: when a worker slot frees, the next pending YouTube runs
-    before any Twitch/other task.
+    Legacy helper for tests and callers that still want a YouTube-first list.
+    The live poll pool uses config list order instead; see ``_run_priority_pool``.
     """
     youtube = [entry for entry in entries if entry.platform == "youtube"]
     other = [entry for entry in entries if entry.platform != "youtube"]

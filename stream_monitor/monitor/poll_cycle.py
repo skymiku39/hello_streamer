@@ -16,7 +16,6 @@ from stream_monitor.monitor.types import (
     ChannelEntry,
     _ProbeSnapshot,
     poll_rest_overshoot_seconds,
-    youtube_priority_entries,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,15 +68,16 @@ class PollCycleMixin:
         entries: list[ChannelEntry],
         work_fn: Callable[[ChannelEntry], _T],
     ) -> list[_T]:
-        """Shared worker pool: YouTube-first dequeue, Twitch runs in parallel.
+        """Shared worker pool in config list order with a YouTube concurrency cap.
 
-        YouTube probes stay capped at ``_YOUTUBE_MAX_CONCURRENT`` (rate limit).
-        When a worker slot frees, the next pending YouTube channel is preferred
-        over Twitch, but Twitch does not wait for the entire YouTube batch.
+        Channels run in the order they appear in the user's list. When a YouTube
+        probe is already in flight (rate limit), workers skip to the next
+        runnable Twitch/other channel so both platforms are checked together
+        instead of batching all YouTube ahead of all Twitch.
         """
         if not entries:
             return []
-        ordered = youtube_priority_entries(entries)
+        ordered = list(entries)
         if len(ordered) == 1:
             try:
                 return [work_fn(ordered[0])]
@@ -180,9 +180,7 @@ class PollCycleMixin:
         enabled_entries = [e for e in entries if e.enabled]
 
         if run_wake_verify and enabled_entries:
-            return self._run_wake_verification(
-                youtube_priority_entries(enabled_entries), poll_started
-            )
+            return self._run_wake_verification(enabled_entries, poll_started)
 
         with self._lock:
             self._pending_offline_events.clear()
@@ -197,7 +195,7 @@ class PollCycleMixin:
         twitch_count = len(enabled_entries) - youtube_count
         logger.info(
             "Poll tier-1 start: enabled=%d youtube=%d twitch=%d "
-            "pool=%d youtube_concurrent=%d",
+            "pool=%d youtube_concurrent=%d order=config",
             len(enabled_entries),
             youtube_count,
             twitch_count,

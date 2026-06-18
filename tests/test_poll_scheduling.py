@@ -72,7 +72,7 @@ def test_should_not_run_wake_verification_after_slow_poll() -> None:
     assert monitor._should_run_wake_verification(1005.0) is False
 
 
-def test_priority_pool_prefers_youtube_when_slots_equal(monkeypatch) -> None:
+def test_priority_pool_serial_respects_config_order(monkeypatch) -> None:
     order: list[str] = []
 
     def fake_probe(entry: ChannelEntry) -> list:
@@ -91,12 +91,57 @@ def test_priority_pool_prefers_youtube_when_slots_equal(monkeypatch) -> None:
         max_concurrent=1,
     )
     monitor._tier1_probe_entries(list(monitor._entries))
-    assert order == ["youtube:yt", "twitch:tw"]
+    assert order == ["twitch:tw", "youtube:yt"]
+
+
+def test_priority_pool_interleaves_when_youtube_is_slow() -> None:
+    channels = [
+        {"platform": "twitch", "name": "tw1"},
+        {"platform": "youtube", "name": "yt1"},
+        {"platform": "twitch", "name": "tw2"},
+    ]
+    monitor = Monitor(channels=channels, max_concurrent=4)
+    started: list[str] = []
+    start_lock = threading.Lock()
+    yt_started = threading.Event()
+    yt_release = threading.Event()
+
+    def work(entry: ChannelEntry) -> None:
+        with start_lock:
+            started.append(entry.key)
+        if entry.platform == "youtube":
+            yt_started.set()
+            assert yt_release.wait(timeout=2.0)
+
+    entries = list(monitor._entries)
+    thread = threading.Thread(
+        target=monitor._run_priority_pool,
+        args=(entries, work),
+        daemon=True,
+    )
+    thread.start()
+    assert yt_started.wait(timeout=2.0)
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        with start_lock:
+            if len(started) >= 3:
+                break
+        time.sleep(0.01)
+    with start_lock:
+        assert "twitch:tw1" in started
+        assert "youtube:yt1" in started
+        assert "twitch:tw2" in started
+    yt_release.set()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
 
 
 def test_priority_pool_runs_twitch_parallel_with_youtube() -> None:
-    channels = [{"platform": "youtube", "name": "yt"}] + [
-        {"platform": "twitch", "name": f"tw{i}"} for i in range(3)
+    channels = [
+        {"platform": "twitch", "name": "tw0"},
+        {"platform": "youtube", "name": "yt"},
+        {"platform": "twitch", "name": "tw1"},
+        {"platform": "twitch", "name": "tw2"},
     ]
     monitor = Monitor(channels=channels, max_concurrent=4)
     active = 0
@@ -114,9 +159,8 @@ def test_priority_pool_runs_twitch_parallel_with_youtube() -> None:
             active -= 1
 
     entries = [
-        _entry("youtube", "yt"),
-        _entry("twitch", "tw0"),
         _entry("twitch", "tw1"),
+        _entry("youtube", "yt1"),
         _entry("twitch", "tw2"),
     ]
     monitor._run_priority_pool(entries, work)
