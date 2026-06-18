@@ -1361,6 +1361,7 @@ def test_configure_user32_signatures_sets_argtypes() -> None:
         GetWindowRect = FakeFn()
         GetWindowLongW = FakeFn()
         SetWindowLongW = FakeFn()
+        SetForegroundWindow = FakeFn()
 
     user32 = FakeUser32()
     notifier._configure_user32_signatures(user32)
@@ -1702,6 +1703,7 @@ def test_configure_user32_signatures_includes_getwindowlong() -> None:
         GetWindowRect = FakeFn()
         GetWindowLongW = FakeFn()
         SetWindowLongW = FakeFn()
+        SetForegroundWindow = FakeFn()
 
     user32 = FakeUser32()
     notifier._configure_user32_signatures(user32)

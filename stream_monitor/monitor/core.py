@@ -59,6 +59,8 @@ class Monitor(
         db: SeenVideoDB | None = None,
         event_bus: MonitorEventBus | None = None,
         max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
+        initial_statuses: dict[str, Any] | None = None,
+        last_activity_epoch: float = 0.0,
     ) -> None:
         self._entries = [
             ChannelEntry(
@@ -91,6 +93,34 @@ class Monitor(
         self._wake_verify_mode = False
         self._wake_verify_active = False
         self._last_maintenance_wall: float = 0.0
+
+        self._seed_initial_statuses(initial_statuses, last_activity_epoch)
+
+    def _seed_initial_statuses(
+        self,
+        initial_statuses: dict[str, Any] | None,
+        last_activity_epoch: float,
+    ) -> None:
+        """Prime cached status from a previous session's persisted snapshot.
+
+        Seeding ``last_status`` means a stream that was already live when the
+        app last closed is treated as a known-live edge, not a fresh went-live
+        (so we never re-open a player the user is already watching). When the
+        gap since that snapshot is long enough, treating it like a post-sleep
+        wake makes the first poll reconcile cache vs. reality before trusting
+        any edge — reusing the existing wake-verification path.
+        """
+        if initial_statuses:
+            keys = {entry.key for entry in self._entries}
+            seeded = {
+                key: status
+                for key, status in initial_statuses.items()
+                if key in keys
+            }
+            self._session.last_status.update(seeded)
+        if last_activity_epoch > 0:
+            self._last_poll_wall_ended = last_activity_epoch
+            self._last_poll_planned_rest = float(self._interval)
 
     # ------------------------------------------------------------------
     # ProbeSession proxies (keep mixin code unchanged after state moved out)

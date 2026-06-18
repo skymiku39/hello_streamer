@@ -183,6 +183,8 @@ def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
         "window_geometry": "720x520+10+10",
         "language": "zh_TW",
         "browser_settings": _migrated_default_browser_settings(),
+        "viewer_engagement": dict(config_manager.DEFAULT_VIEWER_ENGAGEMENT),
+        "channel_status_cache": {},
     }
 
 

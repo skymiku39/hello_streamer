@@ -15,6 +15,7 @@ from stream_monitor.app_dialogs import (
     AddChannelDialog,
     BrowserSettingsDialog,
     LanguageDialog,
+    ViewerEngagementDialog,
 )
 from stream_monitor.app_ui import (
     _CLR_ACCENT,
@@ -55,12 +56,15 @@ from stream_monitor.notifier import (
     browser_window_tracking_available,
     close_all_tracked_windows,
     close_browser_window_for_url,
+    configure_viewer_engagement,
     execute_action,
 )
+from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
 from stream_monitor.tray import TrayIcon
 from stream_monitor.util import channel_key
+from stream_monitor import status_cache
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +87,17 @@ class App(ctk.CTk):
         self._channel_rows: list[ChannelRow] = []
         self._silent = silent
         self._truly_quitting = False
+        # The persisted snapshot's saved_at is only meaningful for the very
+        # first monitor start (a long gap there means a stale cache that should
+        # be wake-verified); later restarts seed from live row state instead.
+        self._status_cache_consumed = False
         # Owns the event bus, bridge, monitor thread, and idle/trigger/watch mode.
         self._controller = MonitorController(self, self._db)
+        configure_viewer_engagement(
+            ViewerEngagementSettings.from_dict(
+                self.config.get("viewer_engagement")
+            )
+        )
 
         # Restore the saved language *before* any widget creation so all
         # labels/buttons are constructed in the user's chosen language.
@@ -99,6 +112,7 @@ class App(ctk.CTk):
 
         self._build_ui()
         self._populate_channels()
+        self._restore_status_cache()
         self._poll_events()
         self._tick_elapsed_labels()
         self.after(10_000, self._monitor_health_check)
@@ -135,6 +149,7 @@ class App(ctk.CTk):
         self.focus_force()
 
     def _hide_window(self) -> None:
+        self._save_status_cache()
         self._save_config()
         self.withdraw()
 
@@ -150,6 +165,7 @@ class App(ctk.CTk):
         self._truly_quitting = True
         self._controller.shutdown()
         self._tray.stop()
+        self._save_status_cache()
         self._save_config()
         self._db.close()
         if getattr(self, "_unsub_i18n", None):
@@ -274,6 +290,28 @@ class App(ctk.CTk):
         )
         self.browser_settings_btn.pack(side="right", padx=(0, 8))
         _tooltip_tr(self.browser_settings_btn, "tooltip.browser_settings")
+
+        self.viewer_engagement_btn = ctk.CTkButton(
+            title_bar,
+            text=tr("toolbar.viewer_engagement"),
+            width=_button_width(
+                tr("toolbar.viewer_engagement"),
+                min_width=110,
+                size=13,
+                weight="bold",
+            ),
+            height=36,
+            corner_radius=8,
+            fg_color="transparent",
+            border_width=1,
+            border_color=_CLR_LINK,
+            hover_color=_CLR_LINK_HOVER,
+            text_color=_CLR_LINK,
+            font=_font(13, "bold"),
+            command=self._on_viewer_engagement,
+        )
+        self.viewer_engagement_btn.pack(side="right", padx=(0, 8))
+        _tooltip_tr(self.viewer_engagement_btn, "tooltip.viewer_engagement")
 
         self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
         self.startup_switch = ctk.CTkSwitch(
@@ -493,6 +531,13 @@ class App(ctk.CTk):
             weight="bold",
         )
         _fit_button(
+            self.viewer_engagement_btn,
+            tr("toolbar.viewer_engagement"),
+            min_width=110,
+            size=13,
+            weight="bold",
+        )
+        _fit_button(
             self.start_btn,
             tr("toolbar.start"),
             min_width=108,
@@ -526,6 +571,65 @@ class App(ctk.CTk):
         for ch in channels:
             self._add_channel_row(ch)
         self._refresh_move_buttons()
+
+    # ------------------------------------------------------------------
+    # Channel status persistence (restore on launch, save on quit/hide)
+    # ------------------------------------------------------------------
+    def _restore_status_cache(self) -> None:
+        """Repaint rows from the previous session's snapshot, marked pending."""
+        cache = self.config.get("channel_status_cache")
+        statuses = status_cache.restore_statuses(cache)
+        if not statuses:
+            return
+        names = status_cache.restore_display_names(cache)
+        for row in self._channel_rows:
+            if names.get(row.key):
+                row.set_display_name(names[row.key])
+            status = statuses.get(row.key)
+            if status is not None:
+                row.set_status(status, pending=True)
+
+    def _save_status_cache(self) -> None:
+        """Snapshot confirmed statuses into config for the next launch.
+
+        Prefer the monitor's last_status (post-poll, already confirmed) over row
+        snapshots, because the event bridge may not have flushed every row yet.
+        """
+        statuses = self._controller.snapshot_statuses()
+        if not statuses:
+            statuses = {
+                row.key: snapshot
+                for row in self._channel_rows
+                if (snapshot := row.status_snapshot()) is not None
+            }
+        names = self._controller.snapshot_display_names()
+        self.config["channel_status_cache"] = status_cache.build_cache(
+            statuses, names
+        )
+
+    def save_status_cache(self) -> None:
+        """AppEventSink hook: refresh in-memory cache after each poll cycle."""
+        self._save_status_cache()
+
+    def _monitor_seed_args(self) -> tuple[dict[str, Any], float]:
+        """Build (initial_statuses, last_activity_epoch) for a monitor start.
+
+        Statuses come from the live rows so a stream that was already live is
+        not re-triggered as a fresh edge. The persisted ``saved_at`` gap only
+        feeds wake-verification on the first start after launch.
+        """
+        initial_statuses = {
+            row.key: snapshot
+            for row in self._channel_rows
+            if (snapshot := row.status_snapshot()) is not None
+        }
+        epoch = 0.0
+        if not self._status_cache_consumed:
+            epoch = status_cache.saved_at_epoch(
+                self.config.get("channel_status_cache")
+            )
+            self._status_cache_consumed = True
+        return initial_statuses, epoch
 
     def _refresh_empty_hint(self) -> None:
         if self._channel_rows:
@@ -757,7 +861,14 @@ class App(ctk.CTk):
 
     def _on_start(self) -> None:
         channels, interval = self._collect_monitor_config()
-        if not self._controller.start("trigger", channels, interval):
+        initial_statuses, epoch = self._monitor_seed_args()
+        if not self._controller.start(
+            "trigger",
+            channels,
+            interval,
+            initial_statuses=initial_statuses,
+            last_activity_epoch=epoch,
+        ):
             return
         self.config["monitor_mode"] = "trigger"
         self._save_config()
@@ -767,7 +878,14 @@ class App(ctk.CTk):
 
     def _on_watch(self) -> None:
         channels, interval = self._collect_monitor_config()
-        if not self._controller.start("watch", channels, interval):
+        initial_statuses, epoch = self._monitor_seed_args()
+        if not self._controller.start(
+            "watch",
+            channels,
+            interval,
+            initial_statuses=initial_statuses,
+            last_activity_epoch=epoch,
+        ):
             return
         self.config["monitor_mode"] = "watch"
         self._save_config()
@@ -823,6 +941,18 @@ class App(ctk.CTk):
         if dialog.result is not None:
             self.config["browser_settings"] = dialog.result
             self._save_config()
+
+    def _on_viewer_engagement(self) -> None:
+        dialog = ViewerEngagementDialog(
+            self, self.config.get("viewer_engagement", {}) or {}
+        )
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            self.config["viewer_engagement"] = dialog.result
+            self._save_config()
+            configure_viewer_engagement(
+                ViewerEngagementSettings.from_dict(dialog.result)
+            )
 
     # ------------------------------------------------------------------
     # Event bridge (monitor thread -> UI thread)

@@ -251,6 +251,9 @@ def _configure_user32_signatures(user32: Any) -> None:
     user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
     user32.SetWindowLongW.restype = wintypes.LONG
 
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+
     user32._hello_streamer_signed = True  # type: ignore[attr-defined]
 
 
@@ -328,6 +331,7 @@ def _apply_new_browser_window_settings_async(
     height = max(100, int(settings.get("height", 720) or 720))
     minimized = bool(settings.get("minimized"))
     hide_from_taskbar = bool(settings.get("hide_from_taskbar"))
+    bring_to_front = bool(settings.get("bring_to_front"))
     set_window_pos_flags = _SWP_NOZORDER | _SWP_NOACTIVATE
 
     def _worker() -> None:
@@ -408,6 +412,16 @@ def _apply_new_browser_window_settings_async(
                         _hide_window_from_taskbar(user32, hwnd)
                     if minimized:
                         user32.ShowWindow(hwnd, _SW_SHOWMINNOACTIVE)
+                    elif bring_to_front:
+                        # Viewer-engagement assist: a foreground, visible window
+                        # is what Twitch treats as an actively watched tab.
+                        user32.ShowWindow(hwnd, _SW_SHOW)
+                        try:
+                            user32.SetForegroundWindow(hwnd)
+                        except OSError:
+                            logger.debug(
+                                "SetForegroundWindow failed for HWND=%s", hwnd
+                            )
                     managed.add(hwnd)
                     if track_for_url:
                         _register_tracked_hwnd(
@@ -843,3 +857,72 @@ def close_browser_window_for_url(
                 closed += 1
 
     return closed
+
+
+# ---------------------------------------------------------------------------
+# System sleep suppression (viewer-engagement assist).
+#
+# Twitch stops crediting a view when the machine sleeps mid-stream. While the
+# user has an engagement-tracked Twitch window open we ask Windows to stay
+# awake. SetThreadExecutionState with ES_CONTINUOUS persists only while the
+# *calling thread* is alive, so a dedicated holder thread owns the request and
+# clears it on release.
+# ---------------------------------------------------------------------------
+_ES_CONTINUOUS = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+_ES_DISPLAY_REQUIRED = 0x00000002
+
+
+class _KeepAwakeManager:
+    """Hold a Windows execution-state request on a dedicated holder thread."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = False
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def set_active(self, active: bool) -> None:
+        if not _is_windows():
+            return
+        with self._lock:
+            if active and not self._active:
+                self._active = True
+                self._stop.clear()
+                self._thread = threading.Thread(
+                    target=self._run, daemon=True, name="keep-awake"
+                )
+                self._thread.start()
+            elif not active and self._active:
+                self._active = False
+                self._stop.set()
+                self._thread = None
+
+    def _run(self) -> None:
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+        except (ImportError, AttributeError, OSError):
+            logger.debug("keep-awake: kernel32 unavailable", exc_info=True)
+            return
+        try:
+            kernel32.SetThreadExecutionState(
+                _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED | _ES_DISPLAY_REQUIRED
+            )
+            logger.info("keep-awake: system sleep suppressed")
+            self._stop.wait()
+        finally:
+            try:
+                kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
+            except OSError:
+                logger.debug("keep-awake: failed to clear state", exc_info=True)
+            logger.info("keep-awake: system sleep suppression released")
+
+
+_KEEP_AWAKE = _KeepAwakeManager()
+
+
+def set_system_keep_awake(active: bool) -> None:
+    """Request (or release) Windows sleep suppression. No-op off Windows."""
+    _KEEP_AWAKE.set_active(active)

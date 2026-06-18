@@ -14,9 +14,20 @@ from stream_monitor.monitor_controller import MonitorController
 
 
 class _FakeMonitor:
-    def __init__(self, *, channels, interval, event_bus, db) -> None:
+    def __init__(
+        self,
+        *,
+        channels,
+        interval,
+        event_bus,
+        db,
+        initial_statuses=None,
+        last_activity_epoch=0.0,
+    ) -> None:
         self.channels = channels
         self.interval = interval
+        self.initial_statuses = initial_statuses
+        self.last_activity_epoch = last_activity_epoch
         self.event_bus = event_bus
         self.db = db
         self.is_running = False

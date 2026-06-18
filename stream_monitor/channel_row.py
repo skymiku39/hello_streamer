@@ -65,6 +65,9 @@ class ChannelRow(ctk.CTkFrame):
         self._vod_url: str = ""
         self._upcoming_url: str = ""
         self._ended_at_source: str = ""
+        # True while a row shows a status restored from the previous session
+        # that the running monitor has not re-confirmed yet (see status_cache).
+        self._verification_pending: bool = False
 
         color = _CLR_TWITCH if channel["platform"] == "twitch" else _CLR_YOUTUBE
         self._platform_color = color
@@ -485,9 +488,18 @@ class ChannelRow(ctk.CTkFrame):
                 hover_color="#243052",
             )
 
-    def set_status(self, status: bool | str | ChannelStatus | None) -> None:
+    def set_status(
+        self,
+        status: bool | str | ChannelStatus | None,
+        *,
+        pending: bool = False,
+    ) -> None:
         if not self.channel.get("enabled", True):
             return
+
+        # A real monitor update (pending=False) always clears the
+        # "restored, not yet re-checked" marker for this row.
+        self._verification_pending = pending
 
         detail = status if isinstance(status, ChannelStatus) else None
         state = detail.status if detail else status
@@ -528,6 +540,39 @@ class ChannelRow(ctk.CTkFrame):
 
         self._render_status_visuals()
 
+    def status_snapshot(self) -> ChannelStatus | None:
+        """Rebuild the row's current status as a ChannelStatus for persistence.
+
+        Returns ``None`` when there is nothing worth saving (blank/idle row).
+        """
+        state = self._status_state
+        if state == "live":
+            return ChannelStatus(
+                status=True,
+                url=self._active_url,
+                title=self._status_title,
+                started_at=self._status_timestamp,
+            )
+        if state == "upcoming":
+            return ChannelStatus(
+                status="upcoming",
+                url=self._active_url,
+                title=self._status_title,
+                scheduled_start=self._status_timestamp,
+            )
+        if state == "offline":
+            return ChannelStatus(
+                status=False,
+                url=self._active_url,
+                title=self._status_title,
+                ended_at=self._status_timestamp,
+                vod_url=self._vod_url,
+                upcoming_url=self._upcoming_url,
+                scheduled_start=self._status_scheduled_start,
+                ended_at_source=self._ended_at_source,
+            )
+        return None
+
     def _compose_time_label_text(self) -> str:
         """Build i18n time label from cached status timestamps."""
         state = self._status_state
@@ -554,6 +599,9 @@ class ChannelRow(ctk.CTkFrame):
                     self._status_elapsed,
                     ended_at_source=self._ended_at_source,
                 )
+        if self._verification_pending and state in ("live", "offline", "upcoming"):
+            suffix = tr("status.row.pending_suffix")
+            result = f"{result} {suffix}".strip() if result else suffix
         return result
 
     def refresh_elapsed_display(self) -> None:
@@ -660,6 +708,8 @@ class ChannelRow(ctk.CTkFrame):
                         elapsed=self._status_elapsed,
                     )
                 )
+        if self._verification_pending:
+            parts.append(tr("tooltip.row.status.pending"))
         if parts:
             return "\n".join(parts)
         if state == "upcoming":

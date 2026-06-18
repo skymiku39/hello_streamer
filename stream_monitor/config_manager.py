@@ -55,6 +55,16 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     "hide_from_taskbar": False,
 }
 
+# Twitch viewer-engagement assist (see viewer_engagement_model.py). Opt-in:
+# disabled by default so existing launch behaviour is unchanged.
+DEFAULT_VIEWER_ENGAGEMENT: dict[str, Any] = {
+    "enabled": False,
+    "force_visible": True,
+    "keep_system_awake": True,
+    "whitelist_performance": True,
+    "bring_to_front": False,
+}
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "channels": [],
     "check_interval": 60,
@@ -65,6 +75,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "window_geometry": None,
     "language": i18n.DEFAULT_LANGUAGE,
     "browser_settings": deepcopy(DEFAULT_BROWSER_SETTINGS),
+    "viewer_engagement": deepcopy(DEFAULT_VIEWER_ENGAGEMENT),
+    # Last-known per-channel status, written on quit / tray-hide and restored
+    # on the next launch so rows repaint immediately (see status_cache.py).
+    "channel_status_cache": {},
 }
 
 ACTION_KEYS: set[str] = {
@@ -272,6 +286,16 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
     return normalized
 
 
+def _normalize_viewer_engagement(value: Any) -> dict[str, Any]:
+    normalized = deepcopy(DEFAULT_VIEWER_ENGAGEMENT)
+    if isinstance(value, dict):
+        for key in normalized:
+            raw = value.get(key)
+            if isinstance(raw, bool):
+                normalized[key] = raw
+    return normalized
+
+
 def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(DEFAULT_CONFIG)
     normalized["channels"] = _normalize_channels(config.get("channels"))
@@ -306,6 +330,13 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized["browser_settings"] = _normalize_browser_settings(
         config.get("browser_settings")
     )
+    normalized["viewer_engagement"] = _normalize_viewer_engagement(
+        config.get("viewer_engagement")
+    )
+
+    status_cache = config.get("channel_status_cache")
+    if isinstance(status_cache, dict):
+        normalized["channel_status_cache"] = status_cache
 
     return normalized
 

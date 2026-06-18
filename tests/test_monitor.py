@@ -3352,3 +3352,55 @@ def test_monitor_request_stop_is_non_blocking(tmp_path) -> None:
     assert not monitor.is_running
     db.close()
 
+
+def test_seeded_live_status_suppresses_went_live(monkeypatch, tmp_path) -> None:
+    """A channel seeded as already-live must not re-fire a went-live edge."""
+    fetcher = FakeTwitchFetcher([True])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    entry = ChannelEntry(platform="twitch", name="foo")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "foo"}],
+        db=db,
+        initial_statuses={
+            entry.key: ChannelStatus(
+                status=True, started_at="2026-06-18T10:00:00+00:00"
+            )
+        },
+    )
+    assert monitor._probe_live(entry) == []
+    db.close()
+
+
+def test_seeded_offline_status_still_fires_went_live(monkeypatch, tmp_path) -> None:
+    """An offline seed that is now live is a genuine new edge and must fire."""
+    fetcher = FakeTwitchFetcher([True])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    entry = ChannelEntry(platform="twitch", name="foo")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "foo"}],
+        db=db,
+        initial_statuses={entry.key: ChannelStatus(status=False)},
+    )
+    events = monitor._probe_live(entry)
+    assert len(events) == 1
+    db.close()
+
+
+def test_last_activity_epoch_seeds_wake_verify_gap(tmp_path) -> None:
+    """A long gap since the persisted snapshot schedules wake verification."""
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "foo"}],
+        interval=60,
+        db=db,
+        last_activity_epoch=1000.0,
+    )
+    assert monitor._last_poll_wall_ended == 1000.0
+    assert monitor._last_poll_planned_rest == 60.0
+    # Big gap (5 intervals) → wake verify; small gap (1 interval) → normal poll.
+    assert monitor._should_run_wake_verification(1000.0 + 60 * 5) is True
+    assert monitor._should_run_wake_verification(1000.0 + 60) is False
+    db.close()
+

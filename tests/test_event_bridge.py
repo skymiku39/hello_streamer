@@ -50,6 +50,7 @@ class _RecordingSink:
         self.stop_calls: list[bool] = []
         self.quit_calls = 0
         self.restart_calls = 0
+        self.save_status_cache_calls = 0
         self._action_event = threading.Event()
 
     @property
@@ -93,6 +94,9 @@ class _RecordingSink:
 
     def maybe_restart_dead_monitor(self) -> None:
         self.restart_calls += 1
+
+    def save_status_cache(self) -> None:
+        self.save_status_cache_calls += 1
 
 
 def _live_info(channel: str = "hello") -> StreamInfo:
@@ -266,3 +270,26 @@ def test_reset_drops_buffered_pending_status() -> None:
 
     painted = sum(1 for row in rows if row.applied)
     assert painted == 3
+
+
+def test_poll_complete_refreshes_status_cache() -> None:
+    from stream_monitor.monitor import ChannelStatus
+
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="watch")
+    sink._channel_rows = [_FakeRow("twitch:hello")]
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(
+        PollStatusUpdate(
+            statuses={
+                "twitch:hello": ChannelStatus(
+                    status=True, started_at="2026-01-01T00:00:00+00:00"
+                )
+            },
+            display_names={"twitch:hello": "Hello"},
+        )
+    )
+
+    bridge.tick()
+
+    assert sink.save_status_cache_calls == 1

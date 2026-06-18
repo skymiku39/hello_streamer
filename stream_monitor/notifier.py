@@ -17,6 +17,7 @@ from stream_monitor.browser_settings_model import (
     BrowserSettings,
     coerce_browser_settings,
 )
+from stream_monitor.chrome_prefs import merge_tab_discarding_exceptions
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
 from stream_monitor.url_parser import parse_url
@@ -96,12 +97,85 @@ from stream_monitor.browser_win32 import (  # noqa: E402, F401
     close_all_tracked_windows,
     close_browser_window_for_url,
     prune_off_topic_tracked_windows,
+    set_system_keep_awake,
     tracked_hwnds_for_url,
+)
+from stream_monitor.viewer_engagement_model import (  # noqa: E402
+    ViewerEngagementSettings,
+    coerce_viewer_engagement,
+    is_twitch_url,
 )
 
 logger = logging.getLogger(__name__)
 
 ActionCallback = Callable[[], None]
+
+# Process-wide viewer-engagement assist config (mirrors the module-global Win32
+# window tracking below; browser launching is inherently process-global). Set
+# by the App via ``configure_viewer_engagement`` and consulted when a Twitch URL
+# is opened through a custom browser launch.
+_VIEWER_ENGAGEMENT: ViewerEngagementSettings | None = None
+# Twitch URLs currently holding a keep-awake request, so we release it once the
+# last engagement window we opened is closed.
+_ENGAGEMENT_AWAKE_URLS: set[str] = set()
+
+
+def configure_viewer_engagement(
+    settings: ViewerEngagementSettings | dict[str, Any] | None,
+) -> None:
+    """Install the active viewer-engagement settings for subsequent launches."""
+    global _VIEWER_ENGAGEMENT
+    _VIEWER_ENGAGEMENT = coerce_viewer_engagement(settings)
+
+
+def _active_viewer_engagement() -> ViewerEngagementSettings | None:
+    """Return the engagement settings only when the feature is enabled."""
+    settings = _VIEWER_ENGAGEMENT
+    if settings is not None and settings.enabled:
+        return settings
+    return None
+
+
+def _release_engagement_keep_awake(url: str) -> None:
+    """Drop *url* from the keep-awake set; clear the request when none remain."""
+    if url in _ENGAGEMENT_AWAKE_URLS:
+        _ENGAGEMENT_AWAKE_URLS.discard(url)
+        if not _ENGAGEMENT_AWAKE_URLS:
+            set_system_keep_awake(False)
+
+
+# Wrap the Win32 close helpers so closing a window we opened for a Twitch URL
+# also releases its keep-awake request. ``app``/``app_dialogs`` import these
+# names from ``notifier``, so the wrappers transparently apply everywhere.
+_close_browser_window_for_url_impl = close_browser_window_for_url
+_close_all_tracked_windows_impl = close_all_tracked_windows
+
+
+def close_browser_window_for_url(
+    url: str, *, title_keywords: list[str] | None = None
+) -> int:
+    closed = _close_browser_window_for_url_impl(url, title_keywords=title_keywords)
+    _release_engagement_keep_awake(url)
+    return closed
+
+
+def close_all_tracked_windows() -> int:
+    closed = _close_all_tracked_windows_impl()
+    _ENGAGEMENT_AWAKE_URLS.clear()
+    set_system_keep_awake(False)
+    return closed
+
+# Chromium switches that stop a backgrounded / occluded Twitch tab from being
+# throttled or suspended, so its heartbeat keeps flowing and the view keeps
+# counting even when the window is not the foreground one. Only effective on a
+# cold master process (dedicated profile); harmless otherwise. Firefox has no
+# command-line equivalent, so these are Chromium-only.
+_ANTI_THROTTLE_FLAGS: tuple[str, ...] = (
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-features=CalculateNativeWinOcclusion",
+)
 
 _WINDOWS_BROWSER_ALIASES = {
     "chrome": "chrome",
@@ -447,6 +521,12 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
             "need the CLI flags to take effect at startup."
         )
 
+    # Viewer-engagement assist: keep the Twitch tab unthrottled so it stays
+    # "counted" while backgrounded. Applies to every Chromium open style (tab,
+    # new window, App Mode) but only when the assist is enabled for this URL.
+    if _active_viewer_engagement() is not None and is_twitch_url(url):
+        args.extend(_ANTI_THROTTLE_FLAGS)
+
     # Note: minimisation is NOT a CLI flag for Chromium (--start-minimized
     # doesn't actually exist as a switch). We handle it post-launch via
     # Win32 ShowWindow inside _open_with_browser_settings.
@@ -473,6 +553,40 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
 
     args.append(url)
     return args
+
+
+def _apply_viewer_engagement_to_launch(
+    url: str,
+    effective_settings: dict[str, Any],
+    effective_user_data_dir: str,
+) -> None:
+    """Adjust launch settings for the Twitch watch-credit assist (in place).
+
+    A minimised / taskbar-hidden window reads as a background tab to Twitch, so
+    when the assist is enabled for a Twitch URL we keep the window visible and
+    optionally bring it to the front. We also hold a system keep-awake request
+    while the window is open, and (for a dedicated profile) add twitch.tv to
+    Chrome's Memory Saver allowlist so the tab is not frozen.
+    """
+    engagement = _active_viewer_engagement()
+    if engagement is None or not is_twitch_url(url):
+        return
+    if engagement.force_visible:
+        effective_settings["minimized"] = False
+        effective_settings["hide_from_taskbar"] = False
+    effective_settings["bring_to_front"] = bool(engagement.bring_to_front)
+    if engagement.keep_system_awake:
+        _ENGAGEMENT_AWAKE_URLS.add(url)
+        set_system_keep_awake(True)
+    if engagement.whitelist_performance and effective_user_data_dir:
+        try:
+            merge_tab_discarding_exceptions(effective_user_data_dir)
+        except Exception:
+            logger.exception(
+                "viewer engagement: failed to merge Chrome performance "
+                "allowlist for %s",
+                effective_user_data_dir,
+            )
 
 
 def _open_with_browser_settings(
@@ -503,6 +617,10 @@ def _open_with_browser_settings(
     )
     effective_settings["user_data_dir"] = effective_user_data_dir
 
+    _apply_viewer_engagement_to_launch(
+        url, effective_settings, effective_user_data_dir
+    )
+
     args = _build_browser_args(url, effective_settings)
     family = detect_browser_family(args[0])
 
@@ -519,7 +637,7 @@ def _open_with_browser_settings(
                 "Could not create browser user_data_dir: %s", effective_user_data_dir
             )
 
-    want_minimize = bool(settings.get("minimized")) and _is_windows()
+    want_minimize = bool(effective_settings.get("minimized")) and _is_windows()
     new_window_expected = bool(settings.get("app_mode")) or bool(
         settings.get("new_window", True)
     )

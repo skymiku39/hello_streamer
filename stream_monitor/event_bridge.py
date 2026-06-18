@@ -158,6 +158,7 @@ class MonitorEventBridge:
         trigger_enabled = sink.monitor_mode == "trigger"
 
         if poll_complete:
+            sink.save_status_cache()
             raw_browser_settings = coerce_browser_settings(
                 sink.config.get("browser_settings")
             )

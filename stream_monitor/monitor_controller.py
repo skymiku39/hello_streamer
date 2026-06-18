@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import Any
 
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.event_bridge import MonitorEventBridge
@@ -50,19 +51,32 @@ class MonitorController:
     def snapshot_display_names(self) -> dict[str, str]:
         return self._monitor.snapshot_display_names() if self._monitor else {}
 
+    def snapshot_statuses(self) -> dict[str, Any]:
+        return self._monitor.snapshot_statuses() if self._monitor else {}
+
     def update_channels(self, channels: list[dict[str, str]]) -> None:
         """Push a channel-list change to a running monitor (no-op otherwise)."""
         if self._monitor is not None and self._monitor.is_running:
             self._monitor.update_channels(channels)
 
     def start(
-        self, mode: str, channels: list[dict[str, str]], interval: int
+        self,
+        mode: str,
+        channels: list[dict[str, str]],
+        interval: int,
+        initial_statuses: dict[str, Any] | None = None,
+        last_activity_epoch: float = 0.0,
     ) -> bool:
         """Enter ``mode`` and ensure the monitor is polling. False if no channels."""
         if not channels:
             return False
         self._mode = mode
-        self._ensure_running(channels, interval)
+        self._ensure_running(
+            channels,
+            interval,
+            initial_statuses=initial_statuses,
+            last_activity_epoch=last_activity_epoch,
+        )
         return True
 
     def stop(self) -> None:
@@ -98,7 +112,11 @@ class MonitorController:
             self._monitor.stop()
 
     def _ensure_running(
-        self, channels: list[dict[str, str]], interval: int
+        self,
+        channels: list[dict[str, str]],
+        interval: int,
+        initial_statuses: dict[str, Any] | None = None,
+        last_activity_epoch: float = 0.0,
     ) -> None:
         if self._monitor is not None and self._monitor.is_running:
             self._monitor.update_interval(interval)
@@ -113,5 +131,7 @@ class MonitorController:
                 interval=interval,
                 event_bus=self._bus,
                 db=self._db,
+                initial_statuses=initial_statuses,
+                last_activity_epoch=last_activity_epoch,
             )
             self._monitor.start()
