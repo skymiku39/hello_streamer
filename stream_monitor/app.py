@@ -51,6 +51,7 @@ from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelEntry, ChannelStatus
 from stream_monitor.monitor_controller import MonitorController
+from stream_monitor.scroll_guard import ScrollRepaintGuard
 from stream_monitor.notifier import (
     browser_window_tracking_available,
     close_all_tracked_windows,
@@ -199,6 +200,10 @@ class App(ctk.CTk):
     def wake_verify_active(self) -> bool:
         return self._controller.wake_verify_active
 
+    @property
+    def defer_channel_row_repaints(self) -> bool:
+        return self._scroll_guard.repaints_deferred
+
     def iter_channel_rows(self) -> list[ChannelRow]:
         return self._channel_rows
 
@@ -329,6 +334,11 @@ class App(ctk.CTk):
         )
         self.scroll_frame.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
         self.scroll_frame.grid_columnconfigure(0, weight=1)
+        self._scroll_guard = ScrollRepaintGuard(
+            self.scroll_frame,
+            self,
+            on_idle=self._on_scroll_repaint_idle,
+        )
 
         self.empty_label = ctk.CTkLabel(
             self.scroll_frame,
@@ -996,9 +1006,14 @@ class App(ctk.CTk):
                 info.url,
             )
 
+    def _on_scroll_repaint_idle(self) -> None:
+        """Flush queued row updates once scrolling has settled."""
+        self._controller.tick()
+
     def _tick_elapsed_labels(self) -> None:
-        for row in self._channel_rows:
-            row.refresh_elapsed_display()
+        if not self.defer_channel_row_repaints:
+            for row in self._channel_rows:
+                row.refresh_elapsed_display()
         self.after(30_000, self._tick_elapsed_labels)
 
     def _monitor_health_check(self) -> None:

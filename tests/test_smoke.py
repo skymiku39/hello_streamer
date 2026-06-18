@@ -21,6 +21,7 @@ class _FakeSink:
 
     monitor_mode = "watch"
     wake_verify_active = False
+    defer_channel_row_repaints = False
     config: dict = {"action": "notify_only"}
 
     def iter_channel_rows(self) -> list:

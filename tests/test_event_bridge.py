@@ -38,6 +38,7 @@ class _RecordingSink:
     def __init__(self, mode: str = "trigger", action: str = "open_and_stop") -> None:
         self._monitor_mode = mode
         self.wake_verify_active = False
+        self.defer_channel_row_repaints = False
         self._channel_rows: list[_FakeRow] = []
         self.config: dict[str, Any] = {"action": action}
 
@@ -293,3 +294,29 @@ def test_poll_complete_refreshes_status_cache() -> None:
     bridge.tick()
 
     assert sink.save_status_cache_calls == 1
+
+
+def test_defer_channel_row_repaints_skips_row_updates() -> None:
+    from stream_monitor.monitor import ChannelStatus
+
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="watch")
+    sink.defer_channel_row_repaints = True
+    row = _FakeRow("twitch:hello")
+    sink._channel_rows = [row]
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(
+        PartialStatusUpdate(
+            statuses={
+                "twitch:hello": ChannelStatus(status=True),
+            },
+            display_names={"twitch:hello": "Hello"},
+        )
+    )
+    bus.publish(PollActivity(entry=_entry(), phase="probe", display_name="Hello"))
+
+    bridge.tick()
+
+    assert row.applied == []
+    assert sink.applied_display_names == []
+    assert sink.poll_subline_calls == []

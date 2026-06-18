@@ -140,20 +140,21 @@ class MonitorEventBridge:
                         self._pending.set(row.key, None)
                 poll_complete = True
 
-        if pending_names:
+        if pending_names and not sink.defer_channel_row_repaints:
             sink.apply_display_names(pending_names)
 
-        if latest_poll_activity is not None:
+        if latest_poll_activity is not None and not sink.defer_channel_row_repaints:
             entry, phase, display_name = latest_poll_activity
             sink.update_poll_subline(entry, phase, display_name)
 
-        applied = self._pending.flush(sink.iter_channel_rows(), limit=3)
-        if applied:
-            logger.debug(
-                "UI status flush: %d row(s), %d queued",
-                applied,
-                len(self._pending),
-            )
+        if not sink.defer_channel_row_repaints:
+            applied = self._pending.flush(sink.iter_channel_rows(), limit=3)
+            if applied:
+                logger.debug(
+                    "UI status flush: %d row(s), %d queued",
+                    applied,
+                    len(self._pending),
+                )
 
         trigger_enabled = sink.monitor_mode == "trigger"
 
@@ -194,9 +195,9 @@ class MonitorEventBridge:
         should_exit = False
 
         for entry, info in live_events:
-            if info.display_name:
+            if info.display_name and not sink.defer_channel_row_repaints:
                 sink.apply_display_names({entry.key: info.display_name})
-            if not poll_complete:
+            if not poll_complete and not sink.defer_channel_row_repaints:
                 sink.apply_live_row_status(entry, info)
 
             if not trigger_enabled:
