@@ -45,6 +45,9 @@ _FETCH_FAILURE_REASONS = frozenset({"fetch returned None", "fetch exception"})
 _STABLE_STATUS_LOG_EVERY = 20
 _CONFIRMED_FUTURE_SLACK = timedelta(minutes=5)
 _DEFAULT_MAX_CONCURRENT = 4
+# YouTube fetcher enforces ~1 HTTP req/s globally; serial probes avoid idle workers
+# contending on the rate lock while Twitch runs in a separate phase afterward.
+_YOUTUBE_MAX_CONCURRENT = 1
 # Minimum rest between poll cycles when a cycle overruns check_interval.
 _MIN_POLL_REST_S = 5.0
 # Periodic housekeeping for SQLite seen_videos and YouTube watch-page cache.
@@ -135,6 +138,15 @@ def _sort_datetime(value: str, fallback: datetime) -> datetime:
 def _youtube_upcoming_is_usable(scheduled_start: str) -> bool:
     """True when a YouTube waiting-room schedule is worth surfacing."""
     return youtube_upcoming_schedule_is_surfacable(scheduled_start)
+
+
+def split_platform_entries(
+    entries: list[ChannelEntry],
+) -> tuple[list[ChannelEntry], list[ChannelEntry]]:
+    """Partition enabled channels into YouTube and all other platforms."""
+    youtube = [entry for entry in entries if entry.platform == "youtube"]
+    other = [entry for entry in entries if entry.platform != "youtube"]
+    return youtube, other
 
 
 def youtube_priority_entries(
