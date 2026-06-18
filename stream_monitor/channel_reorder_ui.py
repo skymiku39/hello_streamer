@@ -230,13 +230,13 @@ class ChannelReorderMode:
         self._ensure_gap()
         assert self._gap is not None
         y = gap_place_y(list_origin_y=self._list_origin_y, target_index=target_index)
-        self._gap.place(in_=self._inner, x=0, y=y, relwidth=1)
+        self._gap.place(x=0, y=y, relwidth=1)
         self._gap.lift()
 
     def _show_ghost_at(self, y: int) -> None:
         self._ensure_ghost_from_source()
         assert self._ghost is not None
-        self._ghost.place(in_=self._inner, x=0, y=y, relwidth=1)
+        self._ghost.place(x=0, y=y, relwidth=1)
         self._ghost.lift()
 
     def _hide_gap(self) -> None:
@@ -251,7 +251,7 @@ class ChannelReorderMode:
         if self._gap is not None:
             return
         self._gap = ctk.CTkFrame(
-            self._scroll_frame,
+            self._inner,
             height=self._slot_height,
             fg_color=_GAP_FG,
             border_width=2,
@@ -265,7 +265,7 @@ class ChannelReorderMode:
             self._update_ghost_label(source_row)
             return
         self._ghost = ctk.CTkFrame(
-            self._scroll_frame,
+            self._inner,
             height=self._body_height,
             fg_color=_GHOST_FG,
             border_width=2,
