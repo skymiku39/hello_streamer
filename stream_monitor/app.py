@@ -819,6 +819,9 @@ class App(ctk.CTk):
         self.bind_all("<Button-4>", self._on_channel_reorder_wheel_linux, add="+")
         self.bind_all("<Button-5>", self._on_channel_reorder_wheel_linux, add="+")
         self.bind_all("<B1-Motion>", self._on_channel_reorder_motion_global, add="+")
+        self.bind_all(
+            "<ButtonRelease-1>", self._on_channel_reorder_release_global, add="+"
+        )
         _reorder_debug(
             "begin",
             source=source_index,
@@ -901,6 +904,10 @@ class App(ctk.CTk):
         if self._reorder_drag_row is not None:
             self._update_channel_reorder(event.y_root)
 
+    def _on_channel_reorder_release_global(self, _event: Any) -> None:
+        if self._reorder_drag_row is not None:
+            self._end_channel_reorder(commit=True)
+
     def _end_channel_reorder(self, *, commit: bool) -> None:
         row = self._reorder_drag_row
         if row is None:
@@ -910,6 +917,7 @@ class App(ctk.CTk):
         self.unbind_all("<Button-4>")
         self.unbind_all("<Button-5>")
         self.unbind_all("<B1-Motion>")
+        self.unbind_all("<ButtonRelease-1>")
 
         source = self._reorder_source_index
         target = self._reorder_target_index
