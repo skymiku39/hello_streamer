@@ -28,6 +28,7 @@ from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelStatus
 from stream_monitor.notifier import open_url
 from stream_monitor.channel_reorder import LONG_PRESS_MS
+from stream_monitor.util import channel_key, channel_page_url
 
 logger = logging.getLogger(__name__)
 
