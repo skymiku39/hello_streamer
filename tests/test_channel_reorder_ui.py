@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from stream_monitor.channel_reorder import preview_row_indices
+from stream_monitor.channel_reorder import (
+    pack_anchor_for_moved_row,
+    preview_row_indices,
+)
 
 
 def test_preview_row_indices_pushes_cards_aside() -> None:
@@ -10,6 +13,10 @@ def test_preview_row_indices_pushes_cards_aside() -> None:
     assert preview_row_indices(0, 2, 4) == [1, 0, 2, 3]
 
 
-def test_preview_row_indices_noop_returns_identity() -> None:
-    assert preview_row_indices(1, 1, 4) == [0, 1, 2, 3]
-    assert preview_row_indices(1, 2, 4) == [0, 1, 2, 3]
+def test_pack_anchor_for_moved_row() -> None:
+    order = preview_row_indices(1, 3, 4)
+    assert pack_anchor_for_moved_row(order, 1) == ("before", 3)
+    order_top = preview_row_indices(2, 0, 4)
+    assert pack_anchor_for_moved_row(order_top, 2) == ("before", 0)
+    order_bottom = preview_row_indices(0, 4, 4)
+    assert pack_anchor_for_moved_row(order_bottom, 0) == ("after", 3)

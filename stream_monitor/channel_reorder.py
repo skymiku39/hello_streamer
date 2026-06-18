@@ -151,6 +151,22 @@ def preview_row_indices(
     return indices
 
 
+def pack_anchor_for_moved_row(
+    order: list[int], moved_index: int
+) -> tuple[str, int] | None:
+    """Return (``before``|``after``, anchor_row_index) for incremental ``pack`` placement."""
+    if moved_index not in order:
+        return None
+    pos = order.index(moved_index)
+    if len(order) <= 1:
+        return None
+    if pos == 0:
+        return ("before", order[1])
+    if pos == len(order) - 1:
+        return ("after", order[-2])
+    return ("before", order[pos + 1])
+
+
 @dataclass
 class ChannelDragPreview:
     source_index: int

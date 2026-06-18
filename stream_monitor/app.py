@@ -107,6 +107,7 @@ class App(ctk.CTk):
         # be wake-verified); later restarts seed from live row state instead.
         self._status_cache_consumed = False
         self._reorder_mode: ChannelReorderMode | None = None
+        self._preview_pack_order: list[int] | None = None
         # Owns the event bus, bridge, monitor thread, and idle/trigger/watch mode.
         self._controller = MonitorController(self, self._db)
         configure_viewer_engagement(
@@ -779,18 +780,65 @@ class App(ctk.CTk):
         return int(self._channel_rows[0].winfo_y())
 
     def _repack_channel_rows(self) -> None:
-        self._repack_channel_rows_preview(list(range(len(self._channel_rows))))
+        self._preview_pack_order = None
+        self._repack_channel_rows_preview(
+            list(range(len(self._channel_rows))), flush=True
+        )
 
-    def _repack_channel_rows_preview(self, order: list[int]) -> None:
+    def _repack_channel_rows_preview(
+        self, order: list[int], *, flush: bool = False
+    ) -> None:
+        if order == self._preview_pack_order:
+            return
         canvas = self.scroll_frame._parent_canvas
         yview = canvas.yview()
         rows = self._channel_rows
+        source_index = (
+            self._reorder_mode.source_index
+            if self._reorder_mode is not None and self._reorder_mode.active
+            else None
+        )
+        if (
+            self._preview_pack_order is not None
+            and source_index is not None
+            and self._incremental_move_preview_row(rows, order, source_index)
+        ):
+            pass
+        else:
+            self._full_repack_preview_rows(rows, order)
+        self._preview_pack_order = list(order)
+        canvas.yview_moveto(yview[0])
+        if flush:
+            canvas.update_idletasks()
+
+    def _full_repack_preview_rows(
+        self, rows: list[ChannelRow], order: list[int]
+    ) -> None:
         for row in rows:
             row.pack_forget()
         for index in order:
             rows[index].pack(fill="x", pady=3)
-        canvas.update_idletasks()
-        canvas.yview_moveto(yview[0])
+
+    def _incremental_move_preview_row(
+        self,
+        rows: list[ChannelRow],
+        order: list[int],
+        moved_index: int,
+    ) -> bool:
+        from stream_monitor.channel_reorder import pack_anchor_for_moved_row
+
+        anchor = pack_anchor_for_moved_row(order, moved_index)
+        if anchor is None:
+            return False
+        side, anchor_index = anchor
+        row = rows[moved_index]
+        anchor_row = rows[anchor_index]
+        row.pack_forget()
+        if side == "before":
+            row.pack(fill="x", pady=3, before=anchor_row)
+        else:
+            row.pack(fill="x", pady=3, after=anchor_row)
+        return True
 
     def _begin_channel_reorder(self, row: ChannelRow, *, y_root: int | None = None) -> None:
         if self._reorder_mode.active:
@@ -834,6 +882,7 @@ class App(ctk.CTk):
         insert_at = self._reorder_mode.finish(
             commit=commit, num_rows=len(self._channel_rows)
         )
+        self._preview_pack_order = None
         if commit and insert_at is not None and channel is not None:
             self._move_channel_to_index(channel, target)
         else:
