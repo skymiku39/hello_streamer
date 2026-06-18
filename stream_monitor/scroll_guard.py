@@ -35,7 +35,7 @@ class ScrollRepaintGuard:
         self._defer = False
         self._idle_after: str | None = None
 
-        for sequence in ("<MouseWheel>", "<ButtonPress-1>", "<B1-Motion>"):
+        for sequence in ("<MouseWheel>", "<ButtonPress-1>"):
             self._canvas.bind(sequence, self._on_scroll_activity, add="+")
         for sequence in ("<ButtonPress-1>", "<B1-Motion>"):
             self._scrollbar.bind(sequence, self._on_scroll_activity, add="+")

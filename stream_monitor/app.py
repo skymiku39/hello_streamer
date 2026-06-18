@@ -48,11 +48,8 @@ from stream_monitor.app_ui import (
 )
 from stream_monitor.browser_settings_model import BrowserSettings
 from stream_monitor.channel_row import ChannelRow
-from stream_monitor.channel_reorder import (
-    ROW_SLOT_HEIGHT,
-    apply_list_move,
-    target_index_for_content_y,
-)
+from stream_monitor.channel_reorder import apply_list_move
+from stream_monitor.channel_reorder_ui import ChannelReorderMode
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
@@ -109,10 +106,7 @@ class App(ctk.CTk):
         # first monitor start (a long gap there means a stale cache that should
         # be wake-verified); later restarts seed from live row state instead.
         self._status_cache_consumed = False
-        self._reorder_drag_row: ChannelRow | None = None
-        self._reorder_source_index = 0
-        self._reorder_target_index = 0
-        self._reorder_spacer: ctk.CTkFrame | None = None
+        self._reorder_mode: ChannelReorderMode | None = None
         # Owns the event bus, bridge, monitor thread, and idle/trigger/watch mode.
         self._controller = MonitorController(self, self._db)
         configure_viewer_engagement(
@@ -224,11 +218,8 @@ class App(ctk.CTk):
 
     @property
     def defer_channel_row_repaints(self) -> bool:
-        # Align with event_bridge: pause row repaints while scrolling or dragging.
-        return (
-            self._scroll_guard.repaints_deferred
-            or self._reorder_drag_row is not None
-        )
+        reorder = self._reorder_mode is not None and self._reorder_mode.active
+        return self._scroll_guard.repaints_deferred or reorder
 
     def iter_channel_rows(self) -> list[ChannelRow]:
         return self._channel_rows
@@ -364,6 +355,10 @@ class App(ctk.CTk):
             self.scroll_frame,
             self,
             on_idle=self._on_scroll_repaint_idle,
+        )
+        self._reorder_mode = ChannelReorderMode(
+            self.scroll_frame,
+            on_debug=_reorder_debug,
         )
         # Persistent drag handlers — never unbind_all (that breaks list scroll).
         self.bind_all("<B1-Motion>", self._on_channel_reorder_motion_global, add="+")
@@ -777,138 +772,67 @@ class App(ctk.CTk):
         self._refresh_move_buttons()
         self._controller.update_channels(channels)
 
-    def _repack_channel_rows(self, *, spacer_at: int | None = None) -> None:
+    def _channel_list_origin_y(self) -> int:
+        if not self._channel_rows:
+            return 0
+        return int(self._channel_rows[0].winfo_y())
+
+    def _repack_channel_rows(self) -> None:
         canvas = self.scroll_frame._parent_canvas
         yview = canvas.yview()
-        spacer = self._reorder_spacer
-        drag_row = self._reorder_drag_row
         for row in self._channel_rows:
             row.pack_forget()
-        if spacer is not None:
-            spacer.pack_forget()
-
-        if spacer is not None and spacer_at is not None:
-            for index, row in enumerate(self._channel_rows):
-                if index == spacer_at:
-                    spacer.pack(fill="x", pady=3)
-                if row is not drag_row:
-                    row.pack(fill="x", pady=3)
-            if spacer_at >= len(self._channel_rows):
-                spacer.pack(fill="x", pady=3)
-        else:
-            for row in self._channel_rows:
-                row.pack(fill="x", pady=3)
-
+        for row in self._channel_rows:
+            row.pack(fill="x", pady=3)
         canvas.update_idletasks()
         canvas.yview_moveto(yview[0])
 
     def _begin_channel_reorder(self, row: ChannelRow) -> None:
-        if self._reorder_drag_row is not None:
+        if self._reorder_mode.active:
             return
         try:
             source_index = self._channel_rows.index(row)
         except ValueError:
             return
-
-        self._reorder_drag_row = row
-        self._reorder_source_index = source_index
-        self._reorder_target_index = source_index
-        row.set_reorder_highlight(True)
-
-        if self._reorder_spacer is None:
-            self._reorder_spacer = ctk.CTkFrame(
-                self.scroll_frame,
-                height=ROW_SLOT_HEIGHT,
-                fg_color="#0f3460",
-                border_width=2,
-                border_color="#2196F3",
-                corner_radius=10,
-            )
-            self._reorder_spacer.pack_propagate(False)
-
-        self._apply_reorder_preview()
-        _reorder_debug(
-            "begin",
-            source=source_index,
-            rows=len(self._channel_rows),
-            channel=row.channel.get("name"),
-        )
-
-    def _pointer_content_y(self, y_root: int) -> float:
-        canvas = self.scroll_frame._parent_canvas
-        canvas_y = y_root - canvas.winfo_rooty()
-        return canvas.canvasy(canvas_y)
-
-    def _target_index_for_pointer(self, y_root: int) -> int:
-        return target_index_for_content_y(
-            self._pointer_content_y(y_root),
-            source_index=self._reorder_source_index,
+        self.update_idletasks()
+        self._reorder_mode.begin(
+            row,
+            source_index=source_index,
+            list_origin_y=self._channel_list_origin_y(),
             num_rows=len(self._channel_rows),
         )
 
     def _update_channel_reorder(self, y_root: int) -> None:
-        if self._reorder_drag_row is None:
+        if not self._reorder_mode.active:
             return
         if self._scroll_guard.repaints_deferred:
             return
-        target = self._target_index_for_pointer(y_root)
-        if target == self._reorder_target_index:
-            return
-        self._reorder_target_index = target
-        content_y = self._pointer_content_y(y_root)
-        _reorder_debug(
-            "motion",
-            y_root=y_root,
-            content_y=content_y,
-            target=target,
-            source=self._reorder_source_index,
+        self._reorder_mode.update_pointer(
+            y_root, num_rows=len(self._channel_rows)
         )
-        self._apply_reorder_preview()
-
-    def _apply_reorder_preview(self) -> None:
-        source = self._reorder_source_index
-        target = self._reorder_target_index
-        if apply_list_move(source, target, len(self._channel_rows)) is None:
-            self._repack_channel_rows()
-            return
-        self._repack_channel_rows(spacer_at=target)
 
     def _on_channel_reorder_motion_global(self, event: Any) -> None:
-        if self._reorder_drag_row is not None:
+        if self._reorder_mode.active:
             self._update_channel_reorder(event.y_root)
 
     def _on_channel_reorder_release_global(self, _event: Any) -> None:
-        if self._reorder_drag_row is not None:
+        if self._reorder_mode.active:
             self._end_channel_reorder(commit=True)
 
     def _end_channel_reorder(self, *, commit: bool) -> None:
-        row = self._reorder_drag_row
-        if row is None:
+        if not self._reorder_mode.active:
             return
-
-        source = self._reorder_source_index
-        target = self._reorder_target_index
-        channel = row.channel
-
-        self._reorder_drag_row = None
-        row.set_reorder_highlight(False)
-
-        insert_at = (
-            apply_list_move(source, target, len(self._channel_rows)) if commit else None
+        row = self._reorder_mode.source_row
+        target = self._reorder_mode.target_index
+        channel = row.channel if row is not None else None
+        insert_at = self._reorder_mode.finish(
+            commit=commit, num_rows=len(self._channel_rows)
         )
-        _reorder_debug(
-            "end",
-            commit=commit,
-            source=source,
-            target=target,
-            insert_at=insert_at,
-            channel=channel.get("name"),
-        )
-
-        if commit:
+        if commit and insert_at is not None and channel is not None:
             self._move_channel_to_index(channel, target)
         else:
             self._repack_channel_rows()
+        self._controller.tick()
 
     def _refresh_move_buttons(self) -> None:
         last_index = len(self._channel_rows) - 1
@@ -1198,6 +1122,11 @@ class App(ctk.CTk):
 
     def _on_scroll_repaint_idle(self) -> None:
         """Flush queued row updates once scrolling has settled."""
+        if self._reorder_mode.active:
+            self._reorder_mode.sync_list_origin(
+                self._channel_list_origin_y(),
+                num_rows=len(self._channel_rows),
+            )
         self._controller.tick()
 
     def _tick_elapsed_labels(self) -> None:
