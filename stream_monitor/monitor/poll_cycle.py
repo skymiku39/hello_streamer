@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Callable, TypeVar
 
 from stream_monitor.fetcher.base import StreamInfo
@@ -15,12 +17,40 @@ from stream_monitor.monitor.types import (
     _YOUTUBE_MAX_CONCURRENT,
     ChannelEntry,
     _ProbeSnapshot,
+    interleave_platform_entries,
     poll_rest_overshoot_seconds,
 )
 
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+# #region agent log
+_DEBUG_LOG = Path(__file__).resolve().parents[2] / "debug-f9fde6.log"
+
+
+def _agent_debug_log(
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict,
+) -> None:
+    try:
+        payload = {
+            "sessionId": "f9fde6",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with _DEBUG_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+# #endregion
 
 
 class PollCycleMixin:
@@ -67,17 +97,34 @@ class PollCycleMixin:
         self,
         entries: list[ChannelEntry],
         work_fn: Callable[[ChannelEntry], _T],
+        *,
+        pool_tag: str = "pool",
     ) -> list[_T]:
-        """Shared worker pool in config list order with a YouTube concurrency cap.
+        """Shared worker pool: platform-interleaved dequeue, YouTube cap 1.
 
-        Channels run in the order they appear in the user's list. When a YouTube
-        probe is already in flight (rate limit), workers skip to the next
-        runnable Twitch/other channel so both platforms are checked together
-        instead of batching all YouTube ahead of all Twitch.
+        Primary order: round-robin YouTube with Twitch/other (底层交錯).
+        Secondary order: user's ▲▼ list order within each platform.
         """
         if not entries:
             return []
-        ordered = list(entries)
+        config_order = list(entries)
+        ordered = interleave_platform_entries(entries)
+        # #region agent log
+        _agent_debug_log(
+            "H1",
+            "poll_cycle.py:_run_priority_pool",
+            "pool_start",
+            {
+                "pool_tag": pool_tag,
+                "config_order": [e.key for e in config_order],
+                "scheduling_order": [e.key for e in ordered],
+                "config_platforms": [e.platform for e in config_order],
+                "scheduling_platforms": [e.platform for e in ordered],
+                "max_concurrent": self._max_concurrent,
+                "workers": min(self._max_concurrent, len(ordered)),
+            },
+        )
+        # #endregion
         if len(ordered) == 1:
             try:
                 return [work_fn(ordered[0])]
@@ -93,6 +140,9 @@ class PollCycleMixin:
         state_lock = threading.Lock()
         youtube_active = 0
         cond = threading.Condition(state_lock)
+        claim_log: list[dict] = []
+        claim_log_lock = threading.Lock()
+        pool_t0 = time.monotonic()
 
         def _claim() -> ChannelEntry | None:
             nonlocal youtube_active
@@ -105,6 +155,25 @@ class PollCycleMixin:
                 pending.pop(index)
                 if entry.platform == "youtube":
                     youtube_active += 1
+                # #region agent log
+                event = {
+                    "pool_tag": pool_tag,
+                    "key": entry.key,
+                    "platform": entry.platform,
+                    "youtube_active": youtube_active,
+                    "pending_left": len(pending),
+                    "t_rel_ms": int((time.monotonic() - pool_t0) * 1000),
+                    "thread": threading.current_thread().name,
+                }
+                with claim_log_lock:
+                    claim_log.append(event)
+                _agent_debug_log(
+                    "H2",
+                    "poll_cycle.py:_claim",
+                    "claimed",
+                    event,
+                )
+                # #endregion
                 return entry
             return None
 
@@ -144,6 +213,19 @@ class PollCycleMixin:
             thread.start()
         for thread in threads:
             thread.join()
+        # #region agent log
+        _agent_debug_log(
+            "H4",
+            "poll_cycle.py:_run_priority_pool",
+            "pool_done",
+            {
+                "pool_tag": pool_tag,
+                "claim_sequence": [e["key"] for e in claim_log],
+                "claim_platforms": [e["platform"] for e in claim_log],
+                "elapsed_ms": int((time.monotonic() - pool_t0) * 1000),
+            },
+        )
+        # #endregion
         return results
 
     def _should_run_wake_verification(self, wall_now: float) -> bool:
@@ -179,6 +261,20 @@ class PollCycleMixin:
 
         enabled_entries = [e for e in entries if e.enabled]
 
+        # #region agent log
+        _agent_debug_log(
+            "H1",
+            "poll_cycle.py:_execute_poll_cycle",
+            "cycle_enabled_entries",
+            {
+                "poll_cycle": self._poll_cycle,
+                "keys": [e.key for e in enabled_entries],
+                "platforms": [e.platform for e in enabled_entries],
+                "max_concurrent": self._max_concurrent,
+            },
+        )
+        # #endregion
+
         if run_wake_verify and enabled_entries:
             return self._run_wake_verification(enabled_entries, poll_started)
 
@@ -195,7 +291,7 @@ class PollCycleMixin:
         twitch_count = len(enabled_entries) - youtube_count
         logger.info(
             "Poll tier-1 start: enabled=%d youtube=%d twitch=%d "
-            "pool=%d youtube_concurrent=%d order=config",
+            "pool=%d youtube_concurrent=%d order=interleaved",
             len(enabled_entries),
             youtube_count,
             twitch_count,
@@ -203,6 +299,15 @@ class PollCycleMixin:
             _YOUTUBE_MAX_CONCURRENT,
         )
         went_live_count = self._tier1_probe_entries(enabled_entries)
+
+        # #region agent log
+        _agent_debug_log(
+            "H4",
+            "poll_cycle.py:_execute_poll_cycle",
+            "tier1_complete",
+            {"tier1_elapsed_ms": int((time.monotonic() - tier1_started) * 1000)},
+        )
+        # #endregion
 
         if self._stop_event.is_set():
             return time.monotonic() - poll_started
@@ -212,7 +317,9 @@ class PollCycleMixin:
 
         logger.info("Poll tier-2 start: enabled=%d", len(enabled_entries))
         commits.extend(
-            self._run_priority_pool(enabled_entries, self._refresh_details)
+            self._run_priority_pool(
+                enabled_entries, self._refresh_details, pool_tag="tier2"
+            )
         )
 
         if self._stop_event.is_set():
@@ -301,7 +408,7 @@ class PollCycleMixin:
             with dispatch_lock:
                 went_live_count += self._dispatch_went_live_events(events)
 
-        self._run_priority_pool(entries, probe_and_dispatch)
+        self._run_priority_pool(entries, probe_and_dispatch, pool_tag="tier1")
         return went_live_count
 
     def _notify_poll_activity(self, entry: ChannelEntry, phase: str) -> None:

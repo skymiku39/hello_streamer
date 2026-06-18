@@ -9,6 +9,7 @@ from stream_monitor.domain import ChannelEntry
 from stream_monitor.monitor import Monitor
 from stream_monitor.monitor.types import (
     _YOUTUBE_MAX_CONCURRENT,
+    interleave_platform_entries,
     poll_rest_overshoot_seconds,
     split_platform_entries,
     youtube_priority_entries,
@@ -72,7 +73,43 @@ def test_should_not_run_wake_verification_after_slow_poll() -> None:
     assert monitor._should_run_wake_verification(1005.0) is False
 
 
-def test_priority_pool_serial_respects_config_order(monkeypatch) -> None:
+def test_interleave_platform_entries_round_robin() -> None:
+    entries = [
+        _entry("youtube", "y1"),
+        _entry("youtube", "y2"),
+        _entry("twitch", "t1"),
+        _entry("twitch", "t2"),
+        _entry("twitch", "t3"),
+        _entry("youtube", "y3"),
+        _entry("youtube", "y4"),
+    ]
+    assert [e.name for e in interleave_platform_entries(entries)] == [
+        "y1",
+        "t1",
+        "y2",
+        "t2",
+        "y3",
+        "t3",
+        "y4",
+    ]
+
+
+def test_interleave_preserves_secondary_order_within_platform() -> None:
+    entries = [
+        _entry("twitch", "t1"),
+        _entry("twitch", "t2"),
+        _entry("youtube", "y1"),
+        _entry("youtube", "y2"),
+    ]
+    assert [e.name for e in interleave_platform_entries(entries)] == [
+        "y1",
+        "t1",
+        "y2",
+        "t2",
+    ]
+
+
+def test_priority_pool_serial_interleaves_platforms(monkeypatch) -> None:
     order: list[str] = []
 
     def fake_probe(entry: ChannelEntry) -> list:
@@ -91,7 +128,7 @@ def test_priority_pool_serial_respects_config_order(monkeypatch) -> None:
         max_concurrent=1,
     )
     monitor._tier1_probe_entries(list(monitor._entries))
-    assert order == ["twitch:tw", "youtube:yt"]
+    assert order == ["youtube:yt", "twitch:tw"]
 
 
 def test_priority_pool_interleaves_when_youtube_is_slow() -> None:
