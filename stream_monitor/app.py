@@ -51,7 +51,7 @@ from stream_monitor.channel_row import ChannelRow
 from stream_monitor.channel_reorder import (
     ROW_SLOT_HEIGHT,
     apply_list_move,
-    target_index_for_drag_preview,
+    target_index_for_content_y,
 )
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
@@ -224,7 +224,11 @@ class App(ctk.CTk):
 
     @property
     def defer_channel_row_repaints(self) -> bool:
-        return self._scroll_guard.repaints_deferred
+        # Align with event_bridge: pause row repaints while scrolling or dragging.
+        return (
+            self._scroll_guard.repaints_deferred
+            or self._reorder_drag_row is not None
+        )
 
     def iter_channel_rows(self) -> list[ChannelRow]:
         return self._channel_rows
@@ -774,6 +778,8 @@ class App(ctk.CTk):
         self._controller.update_channels(channels)
 
     def _repack_channel_rows(self, *, spacer_at: int | None = None) -> None:
+        canvas = self.scroll_frame._parent_canvas
+        yview = canvas.yview()
         spacer = self._reorder_spacer
         drag_row = self._reorder_drag_row
         for row in self._channel_rows:
@@ -792,6 +798,9 @@ class App(ctk.CTk):
         else:
             for row in self._channel_rows:
                 row.pack(fill="x", pady=3)
+
+        canvas.update_idletasks()
+        canvas.yview_moveto(yview[0])
 
     def _begin_channel_reorder(self, row: ChannelRow) -> None:
         if self._reorder_drag_row is not None:
@@ -825,37 +834,32 @@ class App(ctk.CTk):
             channel=row.channel.get("name"),
         )
 
-    def _drag_preview_slot_tops(self) -> list[int]:
-        tops: list[int] = []
-        spacer = self._reorder_spacer
-        drag = self._reorder_drag_row
-        spacer_at = self._reorder_target_index
-        for index, row in enumerate(self._channel_rows):
-            if spacer_at is not None and index == spacer_at and spacer is not None:
-                tops.append(spacer.winfo_rooty())
-            if row is drag:
-                continue
-            tops.append(row.winfo_rooty())
-        return tops
+    def _pointer_content_y(self, y_root: int) -> float:
+        canvas = self.scroll_frame._parent_canvas
+        canvas_y = y_root - canvas.winfo_rooty()
+        return canvas.canvasy(canvas_y)
 
     def _target_index_for_pointer(self, y_root: int) -> int:
-        self.update_idletasks()
-        return target_index_for_drag_preview(
-            y_root,
+        return target_index_for_content_y(
+            self._pointer_content_y(y_root),
             source_index=self._reorder_source_index,
-            slot_tops=self._drag_preview_slot_tops(),
+            num_rows=len(self._channel_rows),
         )
 
     def _update_channel_reorder(self, y_root: int) -> None:
         if self._reorder_drag_row is None:
             return
+        if self._scroll_guard.repaints_deferred:
+            return
         target = self._target_index_for_pointer(y_root)
         if target == self._reorder_target_index:
             return
         self._reorder_target_index = target
+        content_y = self._pointer_content_y(y_root)
         _reorder_debug(
             "motion",
             y_root=y_root,
+            content_y=content_y,
             target=target,
             source=self._reorder_source_index,
         )
@@ -868,7 +872,6 @@ class App(ctk.CTk):
             self._repack_channel_rows()
             return
         self._repack_channel_rows(spacer_at=target)
-        self.update_idletasks()
 
     def _on_channel_reorder_motion_global(self, event: Any) -> None:
         if self._reorder_drag_row is not None:

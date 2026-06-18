@@ -8,6 +8,7 @@ from stream_monitor.channel_reorder import (
     apply_list_move,
     insert_index_for_pointer,
     nudge_insert_index,
+    target_index_for_content_y,
     target_index_for_drag_preview,
     visual_gap_for_pointer,
 )
@@ -55,6 +56,11 @@ def test_visual_gap_for_pointer_fixed_slots() -> None:
     assert visual_gap_for_pointer(132, tops) == 1
     assert visual_gap_for_pointer(196, tops) == 2
     assert visual_gap_for_pointer(300, tops) == 3
+
+
+def test_target_index_for_content_y_snaps_per_slot() -> None:
+    assert target_index_for_content_y(16, source_index=1, num_rows=4) == 0
+    assert target_index_for_content_y(144, source_index=1, num_rows=4) == 3
 
 
 def test_target_index_for_drag_preview() -> None:

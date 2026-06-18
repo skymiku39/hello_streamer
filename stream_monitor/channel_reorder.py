@@ -95,6 +95,25 @@ def target_index_for_drag_preview(
     return target_index_from_reduced_gap(visual_gap, source_index=source_index)
 
 
+def target_index_for_content_y(
+    content_y: float,
+    *,
+    source_index: int,
+    num_rows: int,
+    slot_height: int = ROW_SLOT_HEIGHT,
+) -> int:
+    """Map scroll-canvas Y to a full-list insert index (fixed ``ROW_SLOT_HEIGHT`` grid)."""
+    if num_rows <= 0:
+        return 0
+    slot_tops = [index * slot_height for index in range(num_rows)]
+    return target_index_for_drag_preview(
+        int(content_y),
+        source_index=source_index,
+        slot_tops=slot_tops,
+        slot_height=slot_height,
+    )
+
+
 def target_index_for_drag_source(
     pointer_y_root: int,
     *,

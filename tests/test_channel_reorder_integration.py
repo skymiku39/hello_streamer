@@ -11,6 +11,7 @@ from stream_monitor.channel_reorder import (
     apply_list_move,
     nudge_insert_index,
     reorder_list,
+    target_index_for_content_y,
     target_index_for_drag_preview,
     target_index_for_drag_source,
     target_index_from_reduced_gap,
