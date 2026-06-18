@@ -137,27 +137,18 @@ def _youtube_upcoming_is_usable(scheduled_start: str) -> bool:
     return youtube_upcoming_schedule_is_surfacable(scheduled_start)
 
 
-def interleave_platform_entries(
+def youtube_priority_entries(
     entries: list[ChannelEntry],
 ) -> list[ChannelEntry]:
-    """Round-robin merge YouTube and other platforms for fair poll scheduling.
+    """YouTube channels first, then all other platforms (config list order).
 
-    Keeps each platform's relative order (config list order). Example with
-    3 YouTube and 5 Twitch: YT0, TW0, YT1, TW1, YT2, TW2, TW3, TW4.
+    Used for sequential polls and as the dequeue order for the concurrent
+    priority pool: when a worker slot frees, the next pending YouTube runs
+    before any Twitch/other task.
     """
     youtube = [entry for entry in entries if entry.platform == "youtube"]
     other = [entry for entry in entries if entry.platform != "youtube"]
-    merged: list[ChannelEntry] = []
-    yi = 0
-    ti = 0
-    while yi < len(youtube) or ti < len(other):
-        if yi < len(youtube):
-            merged.append(youtube[yi])
-            yi += 1
-        if ti < len(other):
-            merged.append(other[ti])
-            ti += 1
-    return merged
+    return youtube + other
 
 
 def poll_rest_overshoot_seconds(

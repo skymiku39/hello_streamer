@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable
+from typing import Callable, TypeVar
 
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor.probes import get_platform_probe
@@ -13,15 +15,80 @@ from stream_monitor.monitor.types import (
     _POST_RESUME_GAP_MULTIPLIER,
     ChannelEntry,
     _ProbeSnapshot,
-    interleave_platform_entries,
     poll_rest_overshoot_seconds,
+    youtube_priority_entries,
 )
 
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 
 class PollCycleMixin:
     """Runs one full poll cycle and the tier-1/tier-2 probe orchestration."""
+
+    def _run_youtube_priority_pool(
+        self,
+        entries: list[ChannelEntry],
+        work_fn: Callable[[ChannelEntry], _T],
+    ) -> list[_T]:
+        """Run work on a fixed pool; free slots always take pending YouTube first."""
+        youtube_q: deque[ChannelEntry] = deque(
+            entry for entry in entries if entry.platform == "youtube"
+        )
+        other_q: deque[ChannelEntry] = deque(
+            entry for entry in entries if entry.platform != "youtube"
+        )
+        if not youtube_q and not other_q:
+            return []
+
+        queue_lock = threading.Lock()
+        results: list[_T] = []
+        results_lock = threading.Lock()
+
+        def pop_next() -> ChannelEntry | None:
+            with queue_lock:
+                if youtube_q:
+                    return youtube_q.popleft()
+                if other_q:
+                    return other_q.popleft()
+                return None
+
+        def worker() -> None:
+            while not self._stop_event.is_set():
+                entry = pop_next()
+                if entry is None:
+                    return
+                try:
+                    result = work_fn(entry)
+                except Exception:
+                    logger.exception(
+                        "Priority pool work failed for %s, skipping", entry.key
+                    )
+                    continue
+                with results_lock:
+                    results.append(result)
+
+        if self._max_concurrent <= 1 or len(entries) <= 1:
+            for entry in youtube_priority_entries(entries):
+                if self._stop_event.is_set():
+                    break
+                try:
+                    results.append(work_fn(entry))
+                except Exception:
+                    logger.exception(
+                        "Priority pool work failed for %s, skipping", entry.key
+                    )
+            return results
+
+        workers = min(self._max_concurrent, len(entries))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(worker) for _ in range(workers)]
+            for future in as_completed(futures):
+                if self._stop_event.is_set():
+                    break
+                future.result()
+        return results
 
     def _should_run_wake_verification(self, wall_now: float) -> bool:
         """True when the host likely slept past the planned inter-poll rest."""
@@ -58,7 +125,7 @@ class PollCycleMixin:
 
         if run_wake_verify and enabled_entries:
             return self._run_wake_verification(
-                interleave_platform_entries(enabled_entries), poll_started
+                youtube_priority_entries(enabled_entries), poll_started
             )
 
         with self._lock:
@@ -72,15 +139,15 @@ class PollCycleMixin:
         tier1_started = time.monotonic()
         youtube_count = sum(1 for e in enabled_entries if e.platform == "youtube")
         twitch_count = len(enabled_entries) - youtube_count
-        tier1_order = interleave_platform_entries(enabled_entries)
         logger.info(
-            "Poll tier-1 start: enabled=%d youtube=%d twitch=%d concurrent=%d",
+            "Poll tier-1 start: enabled=%d youtube=%d twitch=%d concurrent=%d "
+            "(youtube-priority pool)",
             len(enabled_entries),
             youtube_count,
             twitch_count,
             self._max_concurrent,
         )
-        went_live_count += self._tier1_probe_entries(tier1_order)
+        went_live_count += self._tier1_probe_entries(enabled_entries)
 
         if self._stop_event.is_set():
             return time.monotonic() - poll_started
@@ -89,29 +156,18 @@ class PollCycleMixin:
         logger.info("Poll tier-1 done: %.2fs", tier1_elapsed)
 
         logger.info("Poll tier-2 start: enabled=%d", len(enabled_entries))
-        tier2_order = interleave_platform_entries(enabled_entries)
         if (
-            tier2_order
+            enabled_entries
             and self._max_concurrent > 1
-            and len(tier2_order) > 1
+            and len(enabled_entries) > 1
         ):
-            workers = min(self._max_concurrent, len(tier2_order))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                refresh_futures = [
-                    pool.submit(self._refresh_details, entry)
-                    for entry in tier2_order
-                ]
-                for future in as_completed(refresh_futures):
-                    if self._stop_event.is_set():
-                        break
-                    try:
-                        commits.append(future.result())
-                    except Exception:
-                        logger.exception(
-                            "Tier-2 refresh failed for a channel, skipping"
-                        )
+            commits.extend(
+                self._run_youtube_priority_pool(
+                    enabled_entries, self._refresh_details
+                )
+            )
         else:
-            for entry in tier2_order:
+            for entry in youtube_priority_entries(enabled_entries):
                 if self._stop_event.is_set():
                     break
                 try:
@@ -191,39 +247,30 @@ class PollCycleMixin:
         return len(events)
 
     def _tier1_probe_entries(self, entries: list[ChannelEntry]) -> int:
-        """Run tier-1 probes for a batch (YouTube or Twitch).
-
-        Dispatches went-live callbacks immediately as each probe finishes so
-        the UI can open players without waiting for tier-2 detail refresh.
-        """
+        """Run tier-1 probes; free pool slots prefer the next pending YouTube."""
         went_live_count = 0
         if not entries:
             return went_live_count
+
+        dispatch_lock = threading.Lock()
+
+        def probe_and_dispatch(entry: ChannelEntry) -> None:
+            nonlocal went_live_count
+            events = self._probe_live(entry)
+            with dispatch_lock:
+                went_live_count += self._dispatch_went_live_events(events)
+
         if self._max_concurrent > 1 and len(entries) > 1:
-            workers = min(self._max_concurrent, len(entries))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                probe_futures = [
-                    pool.submit(self._probe_live, entry) for entry in entries
-                ]
-                for future in as_completed(probe_futures):
-                    if self._stop_event.is_set():
-                        break
-                    try:
-                        went_live_count += self._dispatch_went_live_events(
-                            future.result()
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Tier-1 probe failed for a channel, skipping"
-                        )
+            self._run_youtube_priority_pool(
+                entries,
+                lambda entry: probe_and_dispatch(entry),
+            )
         else:
-            for entry in entries:
+            for entry in youtube_priority_entries(entries):
                 if self._stop_event.is_set():
                     break
                 try:
-                    went_live_count += self._dispatch_went_live_events(
-                        self._probe_live(entry)
-                    )
+                    probe_and_dispatch(entry)
                 except Exception:
                     logger.exception(
                         "Tier-1 probe failed for %s, skipping", entry.key
