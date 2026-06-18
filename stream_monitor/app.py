@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
+import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +75,17 @@ from stream_monitor.util import channel_key
 from stream_monitor import status_cache
 
 logger = logging.getLogger(__name__)
+
+_REORDER_DEBUG_LOG = Path(__file__).resolve().parents[1] / "debug-f9fde6.log"
+
+
+def _reorder_debug(event: str, **data: Any) -> None:
+    try:
+        payload = {"event": event, "t": time.time(), **data}
+        with _REORDER_DEBUG_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 ctk.set_appearance_mode("dark")
@@ -348,6 +361,9 @@ class App(ctk.CTk):
             self.scroll_frame,
             self,
             on_idle=self._on_scroll_repaint_idle,
+        )
+        self.scroll_frame._parent_canvas.bind(
+            "<MouseWheel>", self._on_channel_reorder_wheel_block, add="+"
         )
 
         self.empty_label = ctk.CTkLabel(
@@ -791,7 +807,7 @@ class App(ctk.CTk):
             self._reorder_spacer = ctk.CTkFrame(
                 self.scroll_frame,
                 height=ROW_SLOT_HEIGHT,
-                fg_color="transparent",
+                fg_color="#0f3460",
                 border_width=2,
                 border_color="#2196F3",
                 corner_radius=10,
@@ -803,11 +819,21 @@ class App(ctk.CTk):
         self.bind_all("<Button-4>", self._on_channel_reorder_wheel_linux, add="+")
         self.bind_all("<Button-5>", self._on_channel_reorder_wheel_linux, add="+")
         self.bind_all("<B1-Motion>", self._on_channel_reorder_motion_global, add="+")
-        self.bind_all(
-            "<ButtonRelease-1>", self._on_channel_reorder_release_global, add="+"
+        _reorder_debug(
+            "begin",
+            source=source_index,
+            rows=len(self._channel_rows),
+            channel=row.channel.get("name"),
         )
 
+    def _on_channel_reorder_wheel_block(self, event: Any) -> str:
+        if self._reorder_drag_row is not None:
+            self._on_channel_reorder_wheel(event)
+            return "break"
+        return ""
+
     def _target_index_for_pointer(self, y_root: int) -> int:
+        self.update_idletasks()
         source = self._reorder_source_index
         reduced_rows = [
             row for index, row in enumerate(self._channel_rows) if index != source
@@ -824,6 +850,12 @@ class App(ctk.CTk):
         if target == self._reorder_target_index:
             return
         self._reorder_target_index = target
+        _reorder_debug(
+            "motion",
+            y_root=y_root,
+            target=target,
+            source=self._reorder_source_index,
+        )
         self._apply_reorder_preview()
 
     def _apply_reorder_preview(self) -> None:
@@ -833,6 +865,7 @@ class App(ctk.CTk):
             self._repack_channel_rows()
             return
         self._repack_channel_rows(spacer_at=target)
+        self.update_idletasks()
 
     def _wheel_step(self, event: Any) -> int:
         delta = getattr(event, "delta", 0)
@@ -868,10 +901,6 @@ class App(ctk.CTk):
         if self._reorder_drag_row is not None:
             self._update_channel_reorder(event.y_root)
 
-    def _on_channel_reorder_release_global(self, _event: Any) -> None:
-        if self._reorder_drag_row is not None:
-            self._end_channel_reorder(commit=True)
-
     def _end_channel_reorder(self, *, commit: bool) -> None:
         row = self._reorder_drag_row
         if row is None:
@@ -881,7 +910,6 @@ class App(ctk.CTk):
         self.unbind_all("<Button-4>")
         self.unbind_all("<Button-5>")
         self.unbind_all("<B1-Motion>")
-        self.unbind_all("<ButtonRelease-1>")
 
         source = self._reorder_source_index
         target = self._reorder_target_index
@@ -889,6 +917,18 @@ class App(ctk.CTk):
 
         self._reorder_drag_row = None
         row.set_reorder_highlight(False)
+
+        insert_at = (
+            apply_list_move(source, target, len(self._channel_rows)) if commit else None
+        )
+        _reorder_debug(
+            "end",
+            commit=commit,
+            source=source,
+            target=target,
+            insert_at=insert_at,
+            channel=channel.get("name"),
+        )
 
         if commit:
             self._move_channel_to_index(channel, target)

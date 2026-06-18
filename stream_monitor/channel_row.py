@@ -85,6 +85,10 @@ class ChannelRow(ctk.CTkFrame):
         move_frame = ctk.CTkFrame(self, fg_color="transparent", width=30, height=46)
         move_frame.pack(side="left", padx=(6, 0), pady=8)
         move_frame.pack_propagate(False)
+        move_frame.grid_rowconfigure(0, minsize=20)
+        move_frame.grid_rowconfigure(1, minsize=6)
+        move_frame.grid_rowconfigure(2, minsize=20)
+        move_frame.grid_columnconfigure(0, weight=1)
 
         self.up_btn = ctk.CTkButton(
             move_frame,
@@ -97,23 +101,31 @@ class ChannelRow(ctk.CTkFrame):
             font=_font(10),
             command=on_move_up,
         )
-        self.up_btn.pack(anchor="n")
+        self.up_btn.grid(row=0, column=0, sticky="ew")
 
-        self.drag_handle = ctk.CTkButton(
+        self.drag_handle = ctk.CTkFrame(
             move_frame,
-            text="⠿",
             width=30,
             height=6,
             corner_radius=2,
-            fg_color="transparent",
-            hover_color="#243052",
-            font=_font(8),
+            fg_color="#1a2238",
+            border_width=0,
+            cursor="fleur",
         )
-        self.drag_handle.pack(pady=(0, 0))
+        self.drag_handle.grid(row=1, column=0, sticky="ew")
+        self.drag_handle.grid_propagate(False)
+        self._drag_grip = ctk.CTkLabel(
+            self.drag_handle,
+            text="⠿",
+            font=_font(8),
+            text_color="#8b93ab",
+            fg_color="transparent",
+            height=6,
+            width=30,
+        )
+        self._drag_grip.place(relx=0.5, rely=0.5, anchor="center")
         _tooltip_tr(self.drag_handle, "tooltip.row.drag")
-        self.drag_handle.bind("<ButtonPress-1>", self._on_drag_handle_press)
-        self.drag_handle.bind("<B1-Motion>", self._on_drag_handle_motion)
-        self.drag_handle.bind("<ButtonRelease-1>", self._on_drag_handle_release)
+        self._bind_drag_handle_events()
 
         self.down_btn = ctk.CTkButton(
             move_frame,
@@ -126,7 +138,7 @@ class ChannelRow(ctk.CTkFrame):
             font=_font(10),
             command=on_move_down,
         )
-        self.down_btn.pack(anchor="s", side="bottom")
+        self.down_btn.grid(row=2, column=0, sticky="ew")
 
         self.platform_label = ctk.CTkLabel(
             self,
@@ -773,8 +785,20 @@ class ChannelRow(ctk.CTkFrame):
     def set_reorder_highlight(self, active: bool) -> None:
         if active:
             self.configure(border_width=2, border_color="#2196F3")
+            self.drag_handle.configure(fg_color="#243052")
         else:
             self.configure(border_width=0)
+            self.drag_handle.configure(fg_color="#1a2238")
+
+    def _bind_drag_handle_events(self) -> None:
+        """Bind on the CTk canvas — outer Frame bindings miss pointer hits."""
+        canvas = self.drag_handle._canvas
+        for sequence, handler in (
+            ("<Button-1>", self._on_drag_handle_press),
+            ("<B1-Motion>", self._on_drag_handle_motion),
+            ("<ButtonRelease-1>", self._on_drag_handle_release),
+        ):
+            canvas.bind(sequence, handler, add="+")
 
     def _cancel_drag_long_press(self) -> None:
         if self._drag_long_press_id is not None:
@@ -786,22 +810,24 @@ class ChannelRow(ctk.CTkFrame):
         self._cancel_drag_long_press()
         self._drag_long_press_id = self.after(
             LONG_PRESS_MS,
-            lambda: self._arm_drag(event.y_root),
+            lambda y=event.y_root: self._arm_drag(y),
         )
 
     def _arm_drag(self, y_root: int) -> None:
         self._drag_long_press_id = None
         self._drag_active = True
         try:
-            self.drag_handle.grab_set()
+            self.drag_handle._canvas.grab_set()
         except Exception:  # noqa: BLE001
             pass
         if self._on_reorder_begin is not None:
             self._on_reorder_begin()
+        if self._on_reorder_motion is not None:
+            self._on_reorder_motion(y_root)
 
     def _on_drag_handle_motion(self, event: Any) -> None:
         if not self._drag_active:
-            if abs(event.y_root - self._drag_press_y) > 6:
+            if abs(event.y_root - self._drag_press_y) > 15:
                 self._cancel_drag_long_press()
             return
         if self._on_reorder_motion is not None:
@@ -813,11 +839,11 @@ class ChannelRow(ctk.CTkFrame):
         self._drag_active = False
         if was_active:
             try:
-                self.drag_handle.grab_release()
+                self.drag_handle._canvas.grab_release()
             except Exception:  # noqa: BLE001
                 pass
-        if was_active and self._on_reorder_release is not None:
-            self._on_reorder_release()
+            if self._on_reorder_release is not None:
+                self._on_reorder_release()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
