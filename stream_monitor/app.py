@@ -108,6 +108,8 @@ class App(ctk.CTk):
         self._status_cache_consumed = False
         self._reorder_mode: ChannelReorderMode | None = None
         self._preview_pack_order: list[int] | None = None
+        self._pending_preview_order: list[int] | None = None
+        self._preview_repack_after: str | None = None
         # Owns the event bus, bridge, monitor thread, and idle/trigger/watch mode.
         self._controller = MonitorController(self, self._db)
         configure_viewer_engagement(
@@ -359,7 +361,7 @@ class App(ctk.CTk):
         )
         self._reorder_mode = ChannelReorderMode(
             self.scroll_frame._parent_canvas,
-            repack_preview=self._repack_channel_rows_preview,
+            schedule_preview_repack=self._schedule_preview_repack,
             on_debug=_reorder_debug,
         )
         # Persistent drag handlers — never unbind_all (that breaks list scroll).
@@ -779,7 +781,28 @@ class App(ctk.CTk):
             return 0
         return int(self._channel_rows[0].winfo_y())
 
+    def _schedule_preview_repack(self, order: list[int]) -> None:
+        self._pending_preview_order = list(order)
+        if self._preview_repack_after is not None:
+            return
+        self._preview_repack_after = self.after_idle(self._flush_scheduled_preview_repack)
+
+    def _flush_scheduled_preview_repack(self) -> None:
+        self._preview_repack_after = None
+        order = self._pending_preview_order
+        self._pending_preview_order = None
+        if order is None:
+            return
+        self._repack_channel_rows_preview(order, flush=False)
+
+    def _cancel_scheduled_preview_repack(self) -> None:
+        if self._preview_repack_after is not None:
+            self.after_cancel(self._preview_repack_after)
+            self._preview_repack_after = None
+        self._pending_preview_order = None
+
     def _repack_channel_rows(self) -> None:
+        self._cancel_scheduled_preview_repack()
         self._preview_pack_order = None
         self._repack_channel_rows_preview(
             list(range(len(self._channel_rows))), flush=True
@@ -798,18 +821,26 @@ class App(ctk.CTk):
             if self._reorder_mode is not None and self._reorder_mode.active
             else None
         )
-        if (
-            self._preview_pack_order is not None
-            and source_index is not None
-            and self._incremental_move_preview_row(rows, order, source_index)
-        ):
-            pass
-        else:
+        previous = self._preview_pack_order
+        use_incremental = False
+        if previous is not None and source_index is not None:
+            from stream_monitor.channel_reorder import preview_visual_step
+
+            step = preview_visual_step(previous, order, source_index)
+            use_incremental = step == 1 and self._incremental_move_preview_row(
+                rows, order, source_index
+            )
+        if not use_incremental:
             self._full_repack_preview_rows(rows, order)
         self._preview_pack_order = list(order)
         canvas.yview_moveto(yview[0])
         if flush:
             canvas.update_idletasks()
+        _reorder_debug(
+            "repack",
+            mode="incremental" if use_incremental else "full",
+            order=order,
+        )
 
     def _full_repack_preview_rows(
         self, rows: list[ChannelRow], order: list[int]
@@ -882,6 +913,7 @@ class App(ctk.CTk):
         insert_at = self._reorder_mode.finish(
             commit=commit, num_rows=len(self._channel_rows)
         )
+        self._cancel_scheduled_preview_repack()
         self._preview_pack_order = None
         if commit and insert_at is not None and channel is not None:
             self._move_channel_to_index(channel, target)

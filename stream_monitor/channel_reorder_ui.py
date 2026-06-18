@@ -1,8 +1,18 @@
 """Trello-style channel list drag-reorder mode.
 
-Repacks the real channel rows in a preview order when the snapped target slot
-changes so neighbouring cards are pushed aside. Repaint from the monitor is
-deferred for the session; scroll position is preserved by the repack callback.
+Confirmed rendering model (CTk / Tk ``pack`` constraints):
+
+1. **Discrete slots** — pointer maps to a target index on a 64px grid; no
+   continuous floating card.
+2. **Push-aside preview** — when the target slot changes, widgets are shown in
+   ``preview_row_indices`` order so neighbours make room like Trello.
+3. **Repack policy** — adjacent one-slot moves use a single ``pack`` insert;
+   larger jumps use a full preview repack. **Never** call ``update_idletasks``
+   during the drag session (flush only on commit/cancel).
+4. **Coalescing** — the UI schedules at most one repack per idle frame via
+   ``after_idle`` to avoid motion-event storms.
+
+Row repaints from the monitor stay deferred for the session.
 """
 
 from __future__ import annotations
@@ -19,7 +29,7 @@ from stream_monitor.channel_reorder import (
 if TYPE_CHECKING:
     from stream_monitor.channel_row import ChannelRow
 
-RepackPreview = Callable[[list[int]], None]
+SchedulePreviewRepack = Callable[[list[int]], None]
 
 
 class ChannelReorderMode:
@@ -29,12 +39,12 @@ class ChannelReorderMode:
         self,
         canvas: object,
         *,
-        repack_preview: RepackPreview,
+        schedule_preview_repack: SchedulePreviewRepack,
         row_slot_height: int = ROW_SLOT_HEIGHT,
         on_debug: Callable[..., None] | None = None,
     ) -> None:
         self._canvas = canvas
-        self._repack_preview = repack_preview
+        self._schedule_preview_repack = schedule_preview_repack
         self._slot_height = row_slot_height
         self._on_debug = on_debug or (lambda *_a, **_k: None)
         self._active = False
@@ -87,7 +97,6 @@ class ChannelReorderMode:
         self._target_index = source_index
         self._list_origin_y = list_origin_y
         source_row.set_reorder_highlight(True)
-        self._apply_preview(num_rows)
         if y_root is not None:
             self.track_pointer(
                 y_root, num_rows=num_rows, allow_target_change=True
@@ -149,12 +158,13 @@ class ChannelReorderMode:
         return insert_at
 
     def _apply_preview(self, num_rows: int) -> None:
+        if apply_list_move(self._source_index, self._target_index, num_rows) is None:
+            return
         order = preview_row_indices(self._source_index, self._target_index, num_rows)
-        self._repack_preview(order)
+        self._schedule_preview_repack(order)
         row = self._source_row
         if row is not None:
             row.set_reorder_highlight(True)
-            row.lift()
 
     def _teardown(self) -> None:
         if self._source_row is not None:

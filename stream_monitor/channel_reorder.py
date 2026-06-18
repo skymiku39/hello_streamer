@@ -154,7 +154,7 @@ def preview_row_indices(
 def pack_anchor_for_moved_row(
     order: list[int], moved_index: int
 ) -> tuple[str, int] | None:
-    """Return (``before``|``after``, anchor_row_index) for incremental ``pack`` placement."""
+    """Return (``before``|``after``, anchor_row_index) for one-step adjacent ``pack``."""
     if moved_index not in order:
         return None
     pos = order.index(moved_index)
@@ -165,6 +165,15 @@ def pack_anchor_for_moved_row(
     if pos == len(order) - 1:
         return ("after", order[-2])
     return ("before", order[pos + 1])
+
+
+def preview_visual_step(
+    previous_order: list[int], new_order: list[int], moved_index: int
+) -> int:
+    """How many visual slots the dragged row shifted between two preview orders."""
+    if moved_index not in previous_order or moved_index not in new_order:
+        return 0
+    return abs(previous_order.index(moved_index) - new_order.index(moved_index))
 
 
 @dataclass
