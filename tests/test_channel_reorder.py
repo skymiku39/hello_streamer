@@ -8,6 +8,7 @@ from stream_monitor.channel_reorder import (
     apply_list_move,
     insert_index_for_pointer,
     nudge_insert_index,
+    preview_row_indices,
     target_index_for_content_y,
     target_index_for_drag_preview,
     visual_gap_for_pointer,
@@ -67,3 +68,10 @@ def test_target_index_for_drag_preview() -> None:
     tops = [100, 164, 228]
     assert target_index_for_drag_preview(196, source_index=1, slot_tops=tops) == 3
     assert target_index_for_drag_preview(120, source_index=1, slot_tops=tops) == 0
+
+
+def test_preview_row_indices_matches_reorder_list() -> None:
+    order = preview_row_indices(1, 3, 4)
+    names = ["a", "b", "c", "d"]
+    preview = [names[i] for i in order]
+    assert preview == ["a", "c", "b", "d"]

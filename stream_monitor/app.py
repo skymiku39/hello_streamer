@@ -357,7 +357,8 @@ class App(ctk.CTk):
             on_idle=self._on_scroll_repaint_idle,
         )
         self._reorder_mode = ChannelReorderMode(
-            self.scroll_frame,
+            self.scroll_frame._parent_canvas,
+            repack_preview=self._repack_channel_rows_preview,
             on_debug=_reorder_debug,
         )
         # Persistent drag handlers — never unbind_all (that breaks list scroll).
@@ -778,12 +779,16 @@ class App(ctk.CTk):
         return int(self._channel_rows[0].winfo_y())
 
     def _repack_channel_rows(self) -> None:
+        self._repack_channel_rows_preview(list(range(len(self._channel_rows))))
+
+    def _repack_channel_rows_preview(self, order: list[int]) -> None:
         canvas = self.scroll_frame._parent_canvas
         yview = canvas.yview()
-        for row in self._channel_rows:
+        rows = self._channel_rows
+        for row in rows:
             row.pack_forget()
-        for row in self._channel_rows:
-            row.pack(fill="x", pady=3)
+        for index in order:
+            rows[index].pack(fill="x", pady=3)
         canvas.update_idletasks()
         canvas.yview_moveto(yview[0])
 
@@ -1124,10 +1129,7 @@ class App(ctk.CTk):
     def _on_scroll_repaint_idle(self) -> None:
         """Flush queued row updates once scrolling has settled."""
         if self._reorder_mode.active:
-            self._reorder_mode.sync_list_origin(
-                self._channel_list_origin_y(),
-                num_rows=len(self._channel_rows),
-            )
+            self._reorder_mode.update_list_origin(self._channel_list_origin_y())
         self._controller.tick()
 
     def _tick_elapsed_labels(self) -> None:

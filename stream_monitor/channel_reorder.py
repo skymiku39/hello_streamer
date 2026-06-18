@@ -138,6 +138,19 @@ def reorder_list(items: list[Any], from_index: int, to_index: int) -> list[Any] 
     return result
 
 
+def preview_row_indices(
+    source_index: int, target_index: int, num_rows: int
+) -> list[int]:
+    """Original row indices in visual pack order (Trello-style push-aside preview)."""
+    indices = list(range(num_rows))
+    insert_at = apply_list_move(source_index, target_index, num_rows)
+    if insert_at is None:
+        return indices
+    dragged = indices.pop(source_index)
+    indices.insert(insert_at, dragged)
+    return indices
+
+
 @dataclass
 class ChannelDragPreview:
     source_index: int
