@@ -787,7 +787,7 @@ class App(ctk.CTk):
         canvas.update_idletasks()
         canvas.yview_moveto(yview[0])
 
-    def _begin_channel_reorder(self, row: ChannelRow) -> None:
+    def _begin_channel_reorder(self, row: ChannelRow, *, y_root: int | None = None) -> None:
         if self._reorder_mode.active:
             return
         try:
@@ -800,15 +800,16 @@ class App(ctk.CTk):
             source_index=source_index,
             list_origin_y=self._channel_list_origin_y(),
             num_rows=len(self._channel_rows),
+            y_root=y_root,
         )
 
     def _update_channel_reorder(self, y_root: int) -> None:
         if not self._reorder_mode.active:
             return
-        if self._scroll_guard.repaints_deferred:
-            return
-        self._reorder_mode.update_pointer(
-            y_root, num_rows=len(self._channel_rows)
+        self._reorder_mode.track_pointer(
+            y_root,
+            num_rows=len(self._channel_rows),
+            allow_target_change=not self._scroll_guard.repaints_deferred,
         )
 
     def _on_channel_reorder_motion_global(self, event: Any) -> None:

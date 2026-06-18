@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 # ChannelRow height (58) + pack pady (3 + 3).
+ROW_BODY_HEIGHT = 58
 ROW_SLOT_HEIGHT = 64
 LONG_PRESS_MS = 400
 
