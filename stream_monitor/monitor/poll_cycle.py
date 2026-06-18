@@ -17,8 +17,8 @@ from stream_monitor.monitor.types import (
     _YOUTUBE_MAX_CONCURRENT,
     ChannelEntry,
     _ProbeSnapshot,
-    interleave_platform_entries,
     poll_rest_overshoot_seconds,
+    split_platform_entries,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,15 +100,18 @@ class PollCycleMixin:
         *,
         pool_tag: str = "pool",
     ) -> list[_T]:
-        """Shared worker pool: platform-interleaved dequeue, YouTube cap 1.
+        """Shared worker pool: one YouTube wave + parallel Twitch fillers.
 
-        Primary order: round-robin YouTube with Twitch/other (底层交錯).
-        Secondary order: user's ▲▼ list order within each platform.
+        Primary: at most one YouTube probe at a time; remaining workers drain
+        the Twitch queue (e.g. YT1 + TW1/TW2/TW3 together, then YT2).
+        Secondary: ▲▼ list order within each platform queue.
         """
         if not entries:
             return []
         config_order = list(entries)
-        ordered = interleave_platform_entries(entries)
+        youtube_pending, twitch_pending = split_platform_entries(entries)
+        youtube_pending = list(youtube_pending)
+        twitch_pending = list(twitch_pending)
         # #region agent log
         _agent_debug_log(
             "H1",
@@ -117,24 +120,22 @@ class PollCycleMixin:
             {
                 "pool_tag": pool_tag,
                 "config_order": [e.key for e in config_order],
-                "scheduling_order": [e.key for e in ordered],
-                "config_platforms": [e.platform for e in config_order],
-                "scheduling_platforms": [e.platform for e in ordered],
+                "youtube_queue": [e.key for e in youtube_pending],
+                "twitch_queue": [e.key for e in twitch_pending],
                 "max_concurrent": self._max_concurrent,
-                "workers": min(self._max_concurrent, len(ordered)),
+                "workers": min(self._max_concurrent, len(entries)),
             },
         )
         # #endregion
-        if len(ordered) == 1:
+        if len(entries) == 1:
             try:
-                return [work_fn(ordered[0])]
+                return [work_fn(entries[0])]
             except Exception:
                 logger.exception(
-                    "Priority pool work failed for %s, skipping", ordered[0].key
+                    "Priority pool work failed for %s, skipping", entries[0].key
                 )
                 return []
 
-        pending = list(ordered)
         results: list[_T] = []
         results_lock = threading.Lock()
         state_lock = threading.Lock()
@@ -146,36 +147,37 @@ class PollCycleMixin:
 
         def _claim() -> ChannelEntry | None:
             nonlocal youtube_active
-            for index, entry in enumerate(pending):
-                if (
-                    entry.platform == "youtube"
-                    and youtube_active >= _YOUTUBE_MAX_CONCURRENT
-                ):
-                    continue
-                pending.pop(index)
-                if entry.platform == "youtube":
-                    youtube_active += 1
-                # #region agent log
-                event = {
-                    "pool_tag": pool_tag,
-                    "key": entry.key,
-                    "platform": entry.platform,
-                    "youtube_active": youtube_active,
-                    "pending_left": len(pending),
-                    "t_rel_ms": int((time.monotonic() - pool_t0) * 1000),
-                    "thread": threading.current_thread().name,
-                }
-                with claim_log_lock:
-                    claim_log.append(event)
-                _agent_debug_log(
-                    "H2",
-                    "poll_cycle.py:_claim",
-                    "claimed",
-                    event,
-                )
-                # #endregion
-                return entry
-            return None
+            if (
+                youtube_active < _YOUTUBE_MAX_CONCURRENT
+                and youtube_pending
+            ):
+                entry = youtube_pending.pop(0)
+                youtube_active += 1
+            elif twitch_pending:
+                entry = twitch_pending.pop(0)
+            else:
+                return None
+            # #region agent log
+            event = {
+                "pool_tag": pool_tag,
+                "key": entry.key,
+                "platform": entry.platform,
+                "youtube_active": youtube_active,
+                "youtube_left": len(youtube_pending),
+                "twitch_left": len(twitch_pending),
+                "t_rel_ms": int((time.monotonic() - pool_t0) * 1000),
+                "thread": threading.current_thread().name,
+            }
+            with claim_log_lock:
+                claim_log.append(event)
+            _agent_debug_log(
+                "H2",
+                "poll_cycle.py:_claim",
+                "claimed",
+                event,
+            )
+            # #endregion
+            return entry
 
         def _release(entry: ChannelEntry) -> None:
             nonlocal youtube_active
@@ -189,7 +191,7 @@ class PollCycleMixin:
                         entry = _claim()
                         if entry is not None:
                             break
-                        if not pending:
+                        if not youtube_pending and not twitch_pending:
                             return
                         cond.wait(timeout=0.25)
                 try:
@@ -205,7 +207,7 @@ class PollCycleMixin:
                         _release(entry)
                         cond.notify_all()
 
-        workers = min(self._max_concurrent, len(ordered))
+        workers = min(self._max_concurrent, len(entries))
         threads = [
             threading.Thread(target=worker, daemon=True) for _ in range(workers)
         ]
@@ -291,7 +293,7 @@ class PollCycleMixin:
         twitch_count = len(enabled_entries) - youtube_count
         logger.info(
             "Poll tier-1 start: enabled=%d youtube=%d twitch=%d "
-            "pool=%d youtube_concurrent=%d order=interleaved",
+            "pool=%d youtube_concurrent=%d order=platform_wave",
             len(enabled_entries),
             youtube_count,
             twitch_count,

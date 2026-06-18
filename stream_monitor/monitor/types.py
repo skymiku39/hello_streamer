@@ -154,39 +154,12 @@ def youtube_priority_entries(
 ) -> list[ChannelEntry]:
     """YouTube channels first, then all other platforms (config list order).
 
-    Legacy helper for tests only. Live polling uses ``interleave_platform_entries``.
+    Legacy helper for tests only. Live polling uses dual platform queues in
+    ``_run_priority_pool`` (one YouTube + parallel Twitch per wave).
     """
     youtube = [entry for entry in entries if entry.platform == "youtube"]
     other = [entry for entry in entries if entry.platform != "youtube"]
     return youtube + other
-
-
-def interleave_platform_entries(
-    entries: list[ChannelEntry],
-) -> list[ChannelEntry]:
-    """Round-robin YouTube with other platforms; ▲▼ order is secondary within each.
-
-    Primary scheduling: alternate platforms so Twitch is not deferred behind a
-    long YouTube prefix in the UI list. Within each platform, channels keep
-    their relative order from the user's ▲▼-sorted config list.
-    """
-    youtube: list[ChannelEntry] = []
-    other: list[ChannelEntry] = []
-    for entry in entries:
-        if entry.platform == "youtube":
-            youtube.append(entry)
-        else:
-            other.append(entry)
-    merged: list[ChannelEntry] = []
-    yi = oi = 0
-    while yi < len(youtube) or oi < len(other):
-        if yi < len(youtube):
-            merged.append(youtube[yi])
-            yi += 1
-        if oi < len(other):
-            merged.append(other[oi])
-            oi += 1
-    return merged
 
 
 def poll_rest_overshoot_seconds(

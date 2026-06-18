@@ -1,4 +1,4 @@
-"""Tests for poll scheduling: priority pool and wake-verify timing."""
+"""Tests for poll scheduling: platform waves and wake-verify timing."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from stream_monitor.domain import ChannelEntry
 from stream_monitor.monitor import Monitor
 from stream_monitor.monitor.types import (
     _YOUTUBE_MAX_CONCURRENT,
-    interleave_platform_entries,
     poll_rest_overshoot_seconds,
     split_platform_entries,
     youtube_priority_entries,
@@ -73,43 +72,61 @@ def test_should_not_run_wake_verification_after_slow_poll() -> None:
     assert monitor._should_run_wake_verification(1005.0) is False
 
 
-def test_interleave_platform_entries_round_robin() -> None:
-    entries = [
-        _entry("youtube", "y1"),
-        _entry("youtube", "y2"),
-        _entry("twitch", "t1"),
-        _entry("twitch", "t2"),
-        _entry("twitch", "t3"),
-        _entry("youtube", "y3"),
-        _entry("youtube", "y4"),
+def test_platform_wave_yt1_plus_all_twitch_then_yt2() -> None:
+    """YT1 + TW1/TW2/TW3 in parallel, then YT2 after YT1 releases the slot."""
+    channels = [
+        {"platform": "youtube", "name": "yt1"},
+        {"platform": "youtube", "name": "yt2"},
+        {"platform": "twitch", "name": "tw1"},
+        {"platform": "twitch", "name": "tw2"},
+        {"platform": "twitch", "name": "tw3"},
     ]
-    assert [e.name for e in interleave_platform_entries(entries)] == [
-        "y1",
-        "t1",
-        "y2",
-        "t2",
-        "y3",
-        "t3",
-        "y4",
-    ]
+    monitor = Monitor(channels=channels, max_concurrent=4)
+    claim_order: list[str] = []
+    order_lock = threading.Lock()
+    yt1_running = threading.Event()
+    yt1_release = threading.Event()
+    yt2_claimed = threading.Event()
+
+    def work(entry: ChannelEntry) -> None:
+        with order_lock:
+            claim_order.append(entry.key)
+        if entry.name == "yt1":
+            yt1_running.set()
+            assert yt1_release.wait(timeout=2.0)
+        if entry.name == "yt2":
+            yt2_claimed.set()
+
+    thread = threading.Thread(
+        target=monitor._run_priority_pool,
+        args=(list(monitor._entries), work),
+        kwargs={"pool_tag": "tier1"},
+        daemon=True,
+    )
+    thread.start()
+    assert yt1_running.wait(timeout=2.0)
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        with order_lock:
+            first_wave = list(claim_order)
+        if len(first_wave) >= 4:
+            break
+        time.sleep(0.01)
+    with order_lock:
+        assert first_wave[:4] == [
+            "youtube:yt1",
+            "twitch:tw1",
+            "twitch:tw2",
+            "twitch:tw3",
+        ]
+        assert "youtube:yt2" not in first_wave
+    yt1_release.set()
+    assert yt2_claimed.wait(timeout=2.0)
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
 
 
-def test_interleave_preserves_secondary_order_within_platform() -> None:
-    entries = [
-        _entry("twitch", "t1"),
-        _entry("twitch", "t2"),
-        _entry("youtube", "y1"),
-        _entry("youtube", "y2"),
-    ]
-    assert [e.name for e in interleave_platform_entries(entries)] == [
-        "y1",
-        "t1",
-        "y2",
-        "t2",
-    ]
-
-
-def test_priority_pool_serial_interleaves_platforms(monkeypatch) -> None:
+def test_priority_pool_serial_prefers_youtube_queue(monkeypatch) -> None:
     order: list[str] = []
 
     def fake_probe(entry: ChannelEntry) -> list:
@@ -131,52 +148,10 @@ def test_priority_pool_serial_interleaves_platforms(monkeypatch) -> None:
     assert order == ["youtube:yt", "twitch:tw"]
 
 
-def test_priority_pool_interleaves_when_youtube_is_slow() -> None:
-    channels = [
-        {"platform": "twitch", "name": "tw1"},
-        {"platform": "youtube", "name": "yt1"},
-        {"platform": "twitch", "name": "tw2"},
-    ]
-    monitor = Monitor(channels=channels, max_concurrent=4)
-    started: list[str] = []
-    start_lock = threading.Lock()
-    yt_started = threading.Event()
-    yt_release = threading.Event()
-
-    def work(entry: ChannelEntry) -> None:
-        with start_lock:
-            started.append(entry.key)
-        if entry.platform == "youtube":
-            yt_started.set()
-            assert yt_release.wait(timeout=2.0)
-
-    entries = list(monitor._entries)
-    thread = threading.Thread(
-        target=monitor._run_priority_pool,
-        args=(entries, work),
-        daemon=True,
-    )
-    thread.start()
-    assert yt_started.wait(timeout=2.0)
-    deadline = time.monotonic() + 0.5
-    while time.monotonic() < deadline:
-        with start_lock:
-            if len(started) >= 3:
-                break
-        time.sleep(0.01)
-    with start_lock:
-        assert "twitch:tw1" in started
-        assert "youtube:yt1" in started
-        assert "twitch:tw2" in started
-    yt_release.set()
-    thread.join(timeout=3.0)
-    assert not thread.is_alive()
-
-
 def test_priority_pool_runs_twitch_parallel_with_youtube() -> None:
     channels = [
-        {"platform": "twitch", "name": "tw0"},
         {"platform": "youtube", "name": "yt"},
+        {"platform": "twitch", "name": "tw0"},
         {"platform": "twitch", "name": "tw1"},
         {"platform": "twitch", "name": "tw2"},
     ]
@@ -195,10 +170,5 @@ def test_priority_pool_runs_twitch_parallel_with_youtube() -> None:
         with lock:
             active -= 1
 
-    entries = [
-        _entry("twitch", "tw1"),
-        _entry("youtube", "yt1"),
-        _entry("twitch", "tw2"),
-    ]
-    monitor._run_priority_pool(entries, work)
+    monitor._run_priority_pool(list(monitor._entries), work)
     assert peak >= 2
