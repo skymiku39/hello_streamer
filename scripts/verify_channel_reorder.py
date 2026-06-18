@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LOG = ROOT / "debug-f9fde6.log"
+LOG = ROOT / "debug-reorder-verify.json"
 
 
 def main() -> int:
@@ -17,6 +17,9 @@ def main() -> int:
 
     from stream_monitor.channel_reorder import (
         LONG_PRESS_MS,
+        preview_order_delta,
+        preview_row_indices,
+        preview_visual_step,
         reorder_list,
         target_index_for_drag_source,
     )
@@ -101,7 +104,23 @@ def main() -> int:
 
     root.destroy()
 
-    ok = logic_ok and pointer_ok and ui_ok and timer_ok and geometry_ok
+    # --- Layer 4: preview repack strategy (pure) ---
+    prev = list(range(4))
+    nxt = preview_row_indices(1, 3, 4)
+    delta = preview_order_delta(prev, nxt)
+    step = preview_visual_step(prev, nxt, 1)
+    strategy_ok = delta == {1, 2} and step == 1 and len(delta) < len(prev)
+    results.append(
+        {
+            "layer": "preview_repack",
+            "ok": strategy_ok,
+            "delta": sorted(delta),
+            "step": step,
+            "order": nxt,
+        }
+    )
+
+    ok = logic_ok and pointer_ok and ui_ok and timer_ok and geometry_ok and strategy_ok
     payload = {
         "ok": ok,
         "long_press_ms": LONG_PRESS_MS,

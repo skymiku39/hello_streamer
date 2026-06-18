@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from stream_monitor.channel_reorder import (
     pack_anchor_for_moved_row,
+    preview_order_delta,
     preview_row_indices,
     preview_visual_step,
 )
@@ -29,3 +30,12 @@ def test_preview_visual_step_detects_adjacent_move() -> None:
     assert preview_visual_step(prev, nxt, 1) == 1
     jump = preview_row_indices(0, 4, 4)
     assert preview_visual_step(prev, jump, 0) > 1
+
+
+def test_preview_order_delta_counts_moved_slice() -> None:
+    prev = list(range(4))
+    nxt = preview_row_indices(1, 3, 4)
+    assert preview_order_delta(prev, nxt) == {1, 2}
+    assert preview_order_delta(prev, prev) == set()
+    jump = preview_row_indices(0, 4, 4)
+    assert len(preview_order_delta(prev, jump)) == 4

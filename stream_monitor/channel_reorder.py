@@ -176,6 +176,19 @@ def preview_visual_step(
     return abs(previous_order.index(moved_index) - new_order.index(moved_index))
 
 
+def preview_order_delta(
+    previous_order: list[int], new_order: list[int]
+) -> set[int]:
+    """Row indices whose visual slot changed between two preview orders."""
+    if len(previous_order) != len(new_order):
+        return set(new_order)
+    return {
+        idx
+        for idx in new_order
+        if previous_order.index(idx) != new_order.index(idx)
+    }
+
+
 @dataclass
 class ChannelDragPreview:
     source_index: int

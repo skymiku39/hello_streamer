@@ -72,7 +72,7 @@ from stream_monitor import status_cache
 
 logger = logging.getLogger(__name__)
 
-_REORDER_DEBUG_LOG = Path(__file__).resolve().parents[1] / "debug-f9fde6.log"
+_REORDER_DEBUG_LOG = Path(__file__).resolve().parents[1] / "debug-reorder.log"
 
 
 def _reorder_debug(event: str, **data: Any) -> None:
@@ -822,15 +822,24 @@ class App(ctk.CTk):
             else None
         )
         previous = self._preview_pack_order
-        use_incremental = False
+        mode = "full"
         if previous is not None and source_index is not None:
             from stream_monitor.channel_reorder import preview_visual_step
 
             step = preview_visual_step(previous, order, source_index)
-            use_incremental = step == 1 and self._incremental_move_preview_row(
+            if step == 1 and self._incremental_move_preview_row(
                 rows, order, source_index
-            )
-        if not use_incremental:
+            ):
+                mode = "incremental"
+            elif self._partial_repack_preview_rows(rows, order, previous):
+                mode = "partial"
+            else:
+                self._full_repack_preview_rows(rows, order)
+        elif previous is not None and self._partial_repack_preview_rows(
+            rows, order, previous
+        ):
+            mode = "partial"
+        else:
             self._full_repack_preview_rows(rows, order)
         self._preview_pack_order = list(order)
         canvas.yview_moveto(yview[0])
@@ -838,9 +847,49 @@ class App(ctk.CTk):
             canvas.update_idletasks()
         _reorder_debug(
             "repack",
-            mode="incremental" if use_incremental else "full",
+            mode=mode,
             order=order,
+            previous=previous,
         )
+
+    def _partial_repack_preview_rows(
+        self,
+        rows: list[ChannelRow],
+        order: list[int],
+        previous: list[int],
+    ) -> bool:
+        from stream_monitor.channel_reorder import preview_order_delta
+
+        changed = preview_order_delta(previous, order)
+        if not changed:
+            return True
+        if len(changed) >= len(order):
+            return False
+        for idx in changed:
+            rows[idx].pack_forget()
+        forgotten = set(changed)
+        prev_row: ChannelRow | None = None
+        for idx in order:
+            if idx not in forgotten:
+                prev_row = rows[idx]
+                continue
+            row = rows[idx]
+            if prev_row is None:
+                anchor: ChannelRow | None = None
+                start = order.index(idx) + 1
+                for later in order[start:]:
+                    if later not in forgotten:
+                        anchor = rows[later]
+                        break
+                if anchor is not None:
+                    row.pack(fill="x", pady=3, before=anchor)
+                else:
+                    row.pack(fill="x", pady=3)
+            else:
+                row.pack(fill="x", pady=3, after=prev_row)
+            prev_row = row
+            forgotten.discard(idx)
+        return True
 
     def _full_repack_preview_rows(
         self, rows: list[ChannelRow], order: list[int]
@@ -879,6 +928,7 @@ class App(ctk.CTk):
         except ValueError:
             return
         self.update_idletasks()
+        self._preview_pack_order = list(range(len(self._channel_rows)))
         self._reorder_mode.begin(
             row,
             source_index=source_index,
