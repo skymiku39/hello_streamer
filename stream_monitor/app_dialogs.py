@@ -580,7 +580,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._last_test_url: str | None = None
 
-        self.content_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.content_frame = ctk.CTkScrollableFrame(self, fg_color=_CLR_BG_DARK)
         self.content_frame.pack(padx=12, pady=(8, 0), fill="both", expand=True)
         self.advanced_frame = self.content_frame
 

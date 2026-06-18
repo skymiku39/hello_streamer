@@ -323,7 +323,7 @@ class App(ctk.CTk):
         self.scroll_frame = ctk.CTkScrollableFrame(
             list_container,
             corner_radius=0,
-            fg_color="transparent",
+            fg_color=_CLR_ACCENT,
             scrollbar_button_color="#333355",
             scrollbar_button_hover_color="#444466",
         )
