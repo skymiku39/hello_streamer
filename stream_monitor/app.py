@@ -51,7 +51,7 @@ from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelEntry, ChannelStatus
 from stream_monitor.monitor_controller import MonitorController
-from stream_monitor.scroll_guard import ScrollRepaintGuard
+from stream_monitor.scroll_guard import ChannelListScrollController
 from stream_monitor.notifier import (
     browser_window_tracking_available,
     close_all_tracked_windows,
@@ -334,9 +334,10 @@ class App(ctk.CTk):
         )
         self.scroll_frame.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
         self.scroll_frame.grid_columnconfigure(0, weight=1)
-        self._scroll_guard = ScrollRepaintGuard(
+        self._scroll_guard = ChannelListScrollController(
             self.scroll_frame,
             self,
+            rows_provider=lambda: self._channel_rows,
             on_idle=self._on_scroll_repaint_idle,
         )
 
