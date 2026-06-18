@@ -27,7 +27,7 @@ from stream_monitor.app_ui import (
 from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelStatus
 from stream_monitor.notifier import open_url
-from stream_monitor.util import channel_key, channel_page_url
+from stream_monitor.channel_reorder import LONG_PRESS_MS
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +47,20 @@ class ChannelRow(ctk.CTkFrame):
         on_move_up: callable,
         on_move_down: callable,
         on_toggle_enabled: callable,
+        on_reorder_begin: Callable[[], None] | None = None,
+        on_reorder_motion: Callable[[int], None] | None = None,
+        on_reorder_release: Callable[[], None] | None = None,
         get_browser_settings: Callable[[], dict[str, Any] | None] | None = None,
     ) -> None:
         super().__init__(parent, corner_radius=10, fg_color=_CLR_CARD, height=58)
         self.channel = channel
         self._on_toggle_enabled = on_toggle_enabled
+        self._on_reorder_begin = on_reorder_begin
+        self._on_reorder_motion = on_reorder_motion
+        self._on_reorder_release = on_reorder_release
+        self._drag_long_press_id: str | None = None
+        self._drag_active = False
+        self._drag_press_y = 0
         self._get_browser_settings = get_browser_settings or (lambda: None)
         self._active_url = ""
         self._status_title = ""
@@ -72,7 +81,7 @@ class ChannelRow(ctk.CTkFrame):
         color = _CLR_TWITCH if channel["platform"] == "twitch" else _CLR_YOUTUBE
         self._platform_color = color
 
-        move_frame = ctk.CTkFrame(self, fg_color="transparent", width=30, height=42)
+        move_frame = ctk.CTkFrame(self, fg_color="transparent", width=30, height=46)
         move_frame.pack(side="left", padx=(6, 0), pady=8)
         move_frame.pack_propagate(False)
 
@@ -88,6 +97,22 @@ class ChannelRow(ctk.CTkFrame):
             command=on_move_up,
         )
         self.up_btn.pack(anchor="n")
+
+        self.drag_handle = ctk.CTkButton(
+            move_frame,
+            text="⠿",
+            width=30,
+            height=6,
+            corner_radius=2,
+            fg_color="transparent",
+            hover_color="#243052",
+            font=_font(8),
+        )
+        self.drag_handle.pack(pady=(0, 0))
+        _tooltip_tr(self.drag_handle, "tooltip.row.drag")
+        self.drag_handle.bind("<ButtonPress-1>", self._on_drag_handle_press)
+        self.drag_handle.bind("<B1-Motion>", self._on_drag_handle_motion)
+        self.drag_handle.bind("<ButtonRelease-1>", self._on_drag_handle_release)
 
         self.down_btn = ctk.CTkButton(
             move_frame,
@@ -743,6 +768,55 @@ class ChannelRow(ctk.CTkFrame):
     def set_move_state(self, can_move_up: bool, can_move_down: bool) -> None:
         self.up_btn.configure(state="normal" if can_move_up else "disabled")
         self.down_btn.configure(state="normal" if can_move_down else "disabled")
+
+    def set_reorder_highlight(self, active: bool) -> None:
+        if active:
+            self.configure(border_width=2, border_color="#2196F3")
+        else:
+            self.configure(border_width=0)
+
+    def _cancel_drag_long_press(self) -> None:
+        if self._drag_long_press_id is not None:
+            self.after_cancel(self._drag_long_press_id)
+            self._drag_long_press_id = None
+
+    def _on_drag_handle_press(self, event: Any) -> None:
+        self._drag_press_y = event.y_root
+        self._cancel_drag_long_press()
+        self._drag_long_press_id = self.after(
+            LONG_PRESS_MS,
+            lambda: self._arm_drag(event.y_root),
+        )
+
+    def _arm_drag(self, y_root: int) -> None:
+        self._drag_long_press_id = None
+        self._drag_active = True
+        try:
+            self.drag_handle.grab_set()
+        except Exception:  # noqa: BLE001
+            pass
+        if self._on_reorder_begin is not None:
+            self._on_reorder_begin()
+
+    def _on_drag_handle_motion(self, event: Any) -> None:
+        if not self._drag_active:
+            if abs(event.y_root - self._drag_press_y) > 6:
+                self._cancel_drag_long_press()
+            return
+        if self._on_reorder_motion is not None:
+            self._on_reorder_motion(event.y_root)
+
+    def _on_drag_handle_release(self, _event: Any) -> None:
+        was_active = self._drag_active
+        self._cancel_drag_long_press()
+        self._drag_active = False
+        if was_active:
+            try:
+                self.drag_handle.grab_release()
+            except Exception:  # noqa: BLE001
+                pass
+        if was_active and self._on_reorder_release is not None:
+            self._on_reorder_release()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

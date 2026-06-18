@@ -64,6 +64,7 @@ _ZH_TW: dict[str, str] = {
     # Channel row tooltips
     "tooltip.row.up": "上移",
     "tooltip.row.down": "下移",
+    "tooltip.row.drag": "長按後拖曳或滾輪調整順序",
     "tooltip.row.delete": "刪除頻道",
     "tooltip.row.link.default": "開啟頻道首頁",
     "tooltip.row.link.paused": "頻道已暫停；開啟頻道首頁",
@@ -351,6 +352,7 @@ _ZH_CN: dict[str, str] = {
     # Channel row tooltips
     "tooltip.row.up": "上移",
     "tooltip.row.down": "下移",
+    "tooltip.row.drag": "长按后拖曳或滚轮调整顺序",
     "tooltip.row.delete": "删除频道",
     "tooltip.row.link.default": "打开频道首页",
     "tooltip.row.link.paused": "频道已暂停；打开频道首页",
@@ -631,6 +633,7 @@ _EN: dict[str, str] = {
 
     "tooltip.row.up": "Move up",
     "tooltip.row.down": "Move down",
+    "tooltip.row.drag": "Long-press, then drag or scroll to reorder",
     "tooltip.row.delete": "Delete channel",
     "tooltip.row.link.default": "Open channel home page",
     "tooltip.row.link.paused": "Channel paused — open channel home page",
@@ -902,6 +905,7 @@ _JA: dict[str, str] = {
 
     "tooltip.row.up": "上へ",
     "tooltip.row.down": "下へ",
+    "tooltip.row.drag": "長押しでドラッグ、またはホイールで順序変更",
     "tooltip.row.delete": "チャンネルを削除",
     "tooltip.row.link.default": "チャンネルホームを開く",
     "tooltip.row.link.paused": "監視停止中：チャンネルホームを開く",
@@ -1174,6 +1178,7 @@ _KO: dict[str, str] = {
 
     "tooltip.row.up": "위로",
     "tooltip.row.down": "아래로",
+    "tooltip.row.drag": "길게 누른 뒤 드래그 또는 휠로 순서 변경",
     "tooltip.row.delete": "채널 삭제",
     "tooltip.row.link.default": "채널 홈 열기",
     "tooltip.row.link.paused": "채널 일시 정지 — 채널 홈 열기",
