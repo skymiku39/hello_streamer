@@ -149,7 +149,7 @@ class MonitorEventBridge:
 
         applied = self._pending.flush(sink.iter_channel_rows(), limit=3)
         if applied:
-            logger.info(
+            logger.debug(
                 "UI status flush: %d row(s), %d queued",
                 applied,
                 len(self._pending),

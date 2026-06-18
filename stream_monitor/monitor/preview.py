@@ -79,7 +79,7 @@ class PreviewMixin:
                 if isinstance(status, ChannelStatus)
                 else status
             )
-        logger.info(
+        logger.debug(
             "Tier preview %s: from_probe=%s status=%s ended_at_source=%s",
             entry.key,
             from_probe,

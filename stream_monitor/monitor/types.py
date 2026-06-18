@@ -137,3 +137,38 @@ def _youtube_upcoming_is_usable(scheduled_start: str) -> bool:
     return youtube_upcoming_schedule_is_surfacable(scheduled_start)
 
 
+def interleave_platform_entries(
+    entries: list[ChannelEntry],
+) -> list[ChannelEntry]:
+    """Round-robin merge YouTube and other platforms for fair poll scheduling.
+
+    Keeps each platform's relative order (config list order). Example with
+    3 YouTube and 5 Twitch: YT0, TW0, YT1, TW1, YT2, TW2, TW3, TW4.
+    """
+    youtube = [entry for entry in entries if entry.platform == "youtube"]
+    other = [entry for entry in entries if entry.platform != "youtube"]
+    merged: list[ChannelEntry] = []
+    yi = 0
+    ti = 0
+    while yi < len(youtube) or ti < len(other):
+        if yi < len(youtube):
+            merged.append(youtube[yi])
+            yi += 1
+        if ti < len(other):
+            merged.append(other[ti])
+            ti += 1
+    return merged
+
+
+def poll_rest_overshoot_seconds(
+    wall_now: float,
+    last_poll_wall_ended: float,
+    last_poll_planned_rest: float,
+) -> float:
+    """Seconds the next poll started beyond its planned rest (sleep detection)."""
+    if last_poll_wall_ended <= 0:
+        return 0.0
+    since_end = wall_now - last_poll_wall_ended
+    return since_end - last_poll_planned_rest
+
+

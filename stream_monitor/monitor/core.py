@@ -86,6 +86,8 @@ class Monitor(
         self._stable_status_polls: dict[str, int] = {}
         self._last_poll_ended: float = 0.0
         self._last_poll_wall_started: float = 0.0
+        self._last_poll_wall_ended: float = 0.0
+        self._last_poll_planned_rest: float = 0.0
         self._wake_verify_mode = False
         self._wake_verify_active = False
         self._last_maintenance_wall: float = 0.0
@@ -396,7 +398,10 @@ class Monitor(
                 logger.exception("Poll cycle failed unexpectedly, continuing")
                 elapsed = time.monotonic() - poll_started
             self._last_poll_ended = time.monotonic()
-            self._stop_event.wait(self._poll_rest_seconds(elapsed))
+            rest = self._poll_rest_seconds(elapsed)
+            self._last_poll_wall_ended = time.time()
+            self._last_poll_planned_rest = rest
+            self._stop_event.wait(rest)
 
     # ------------------------------------------------------------------
     # Dispatch

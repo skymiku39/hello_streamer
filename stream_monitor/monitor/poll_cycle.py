@@ -13,6 +13,8 @@ from stream_monitor.monitor.types import (
     _POST_RESUME_GAP_MULTIPLIER,
     ChannelEntry,
     _ProbeSnapshot,
+    interleave_platform_entries,
+    poll_rest_overshoot_seconds,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,19 +23,31 @@ logger = logging.getLogger(__name__)
 class PollCycleMixin:
     """Runs one full poll cycle and the tier-1/tier-2 probe orchestration."""
 
+    def _should_run_wake_verification(self, wall_now: float) -> bool:
+        """True when the host likely slept past the planned inter-poll rest."""
+        if self._last_poll_wall_ended <= 0:
+            return False
+        overshoot = poll_rest_overshoot_seconds(
+            wall_now,
+            self._last_poll_wall_ended,
+            self._last_poll_planned_rest,
+        )
+        grace_threshold = self._interval * _POST_RESUME_GAP_MULTIPLIER
+        if overshoot > grace_threshold:
+            logger.info(
+                "wake_verify_scheduled: rest_overshoot=%.1fs > %.1fs "
+                "(since_end=%.1fs planned_rest=%.1fs)",
+                overshoot,
+                grace_threshold,
+                wall_now - self._last_poll_wall_ended,
+                self._last_poll_planned_rest,
+            )
+            return True
+        return False
+
     def _execute_poll_cycle(self, poll_started: float) -> float:
         wall_now = time.time()
-        run_wake_verify = False
-        if self._last_poll_wall_started > 0:
-            wall_gap = wall_now - self._last_poll_wall_started
-            grace_threshold = self._interval * _POST_RESUME_GAP_MULTIPLIER
-            if wall_gap > grace_threshold:
-                run_wake_verify = True
-                logger.info(
-                    "wake_verify_scheduled: wall_gap=%.1fs > %.1fs",
-                    wall_gap,
-                    grace_threshold,
-                )
+        run_wake_verify = self._should_run_wake_verification(wall_now)
         self._last_poll_wall_started = wall_now
 
         self._poll_cycle += 1
@@ -43,7 +57,9 @@ class PollCycleMixin:
         enabled_entries = [e for e in entries if e.enabled]
 
         if run_wake_verify and enabled_entries:
-            return self._run_wake_verification(enabled_entries, poll_started)
+            return self._run_wake_verification(
+                interleave_platform_entries(enabled_entries), poll_started
+            )
 
         with self._lock:
             self._pending_offline_events.clear()
@@ -54,25 +70,17 @@ class PollCycleMixin:
         commits: list[Callable[[], None]] = []
 
         tier1_started = time.monotonic()
-        youtube_entries = [
-            entry for entry in enabled_entries if entry.platform == "youtube"
-        ]
-        twitch_entries = [
-            entry for entry in enabled_entries if entry.platform != "youtube"
-        ]
+        youtube_count = sum(1 for e in enabled_entries if e.platform == "youtube")
+        twitch_count = len(enabled_entries) - youtube_count
+        tier1_order = interleave_platform_entries(enabled_entries)
         logger.info(
             "Poll tier-1 start: enabled=%d youtube=%d twitch=%d concurrent=%d",
             len(enabled_entries),
-            len(youtube_entries),
-            len(twitch_entries),
+            youtube_count,
+            twitch_count,
             self._max_concurrent,
         )
-        if youtube_entries:
-            logger.info("Poll tier-1 youtube phase: %d channel(s)", len(youtube_entries))
-            went_live_count += self._tier1_probe_entries(youtube_entries)
-        if not self._stop_event.is_set() and twitch_entries:
-            logger.info("Poll tier-1 twitch phase: %d channel(s)", len(twitch_entries))
-            went_live_count += self._tier1_probe_entries(twitch_entries)
+        went_live_count += self._tier1_probe_entries(tier1_order)
 
         if self._stop_event.is_set():
             return time.monotonic() - poll_started
@@ -81,16 +89,17 @@ class PollCycleMixin:
         logger.info("Poll tier-1 done: %.2fs", tier1_elapsed)
 
         logger.info("Poll tier-2 start: enabled=%d", len(enabled_entries))
+        tier2_order = interleave_platform_entries(enabled_entries)
         if (
-            enabled_entries
+            tier2_order
             and self._max_concurrent > 1
-            and len(enabled_entries) > 1
+            and len(tier2_order) > 1
         ):
-            workers = min(self._max_concurrent, len(enabled_entries))
+            workers = min(self._max_concurrent, len(tier2_order))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 refresh_futures = [
                     pool.submit(self._refresh_details, entry)
-                    for entry in enabled_entries
+                    for entry in tier2_order
                 ]
                 for future in as_completed(refresh_futures):
                     if self._stop_event.is_set():
@@ -102,7 +111,7 @@ class PollCycleMixin:
                             "Tier-2 refresh failed for a channel, skipping"
                         )
         else:
-            for entry in enabled_entries:
+            for entry in tier2_order:
                 if self._stop_event.is_set():
                     break
                 try:
@@ -226,7 +235,7 @@ class PollCycleMixin:
             display_name = (self._display_names.get(entry.key) or "").strip()
         if not display_name:
             display_name = entry.name
-        logger.info("Poll activity: %s phase=%s", entry.key, phase)
+        logger.debug("Poll activity: %s phase=%s", entry.key, phase)
         if self._event_bus is None:
             return
         self._emit_poll_activity(entry, phase, display_name)

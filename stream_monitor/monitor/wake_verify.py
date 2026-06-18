@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from stream_monitor.monitor import deps as _monitor_deps
@@ -108,11 +109,45 @@ class WakeVerifyMixin:
                 self._pending_offline_events.clear()
                 self._probe_snapshots.clear()
 
+            observed_by_key: dict[str, str | None] = {}
+            workers = min(self._max_concurrent, len(enabled_entries))
+            if workers > 1 and len(enabled_entries) > 1:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {
+                        pool.submit(self._probe_channel_status, entry): entry
+                        for entry in enabled_entries
+                    }
+                    for future in as_completed(futures):
+                        entry = futures[future]
+                        if self._stop_event.is_set():
+                            break
+                        try:
+                            observed_by_key[entry.key] = future.result()
+                        except Exception:
+                            logger.exception(
+                                "wake_verify: status probe failed for %s",
+                                entry.key,
+                            )
+                            observed_by_key[entry.key] = None
+            else:
+                for entry in enabled_entries:
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        observed_by_key[entry.key] = self._probe_channel_status(
+                            entry
+                        )
+                    except Exception:
+                        logger.exception(
+                            "wake_verify: status probe failed for %s", entry.key
+                        )
+                        observed_by_key[entry.key] = None
+
             for entry in enabled_entries:
                 if self._stop_event.is_set():
                     break
                 cached = self._cached_status_bucket(entry)
-                observed = self._probe_channel_status(entry)
+                observed = observed_by_key.get(entry.key)
                 if observed is None:
                     deferred += 1
                     logger.info(
