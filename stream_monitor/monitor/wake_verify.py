@@ -8,11 +8,9 @@ from typing import Any
 
 from stream_monitor.monitor import deps as _monitor_deps
 from stream_monitor.monitor.types import (
-    _YOUTUBE_MAX_CONCURRENT,
     ChannelEntry,
     ChannelStatus,
     _youtube_upcoming_is_usable,
-    split_platform_entries,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,9 +109,6 @@ class WakeVerifyMixin:
                 self._probe_snapshots.clear()
 
             observed_by_key: dict[str, str | None] = {}
-            youtube_entries, twitch_entries = split_platform_entries(
-                enabled_entries
-            )
 
             def record_status(entry: ChannelEntry) -> None:
                 try:
@@ -126,18 +121,7 @@ class WakeVerifyMixin:
                     )
                     observed_by_key[entry.key] = None
 
-            if youtube_entries:
-                self._run_concurrent_pool(
-                    youtube_entries,
-                    record_status,
-                    max_concurrent=_YOUTUBE_MAX_CONCURRENT,
-                )
-            if not self._stop_event.is_set() and twitch_entries:
-                self._run_concurrent_pool(
-                    twitch_entries,
-                    record_status,
-                    max_concurrent=self._max_concurrent,
-                )
+            self._run_priority_pool(enabled_entries, record_status)
 
             for entry in enabled_entries:
                 if self._stop_event.is_set():

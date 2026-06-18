@@ -45,8 +45,8 @@ _FETCH_FAILURE_REASONS = frozenset({"fetch returned None", "fetch exception"})
 _STABLE_STATUS_LOG_EVERY = 20
 _CONFIRMED_FUTURE_SLACK = timedelta(minutes=5)
 _DEFAULT_MAX_CONCURRENT = 4
-# YouTube fetcher enforces ~1 HTTP req/s globally; serial probes avoid idle workers
-# contending on the rate lock while Twitch runs in a separate phase afterward.
+# YouTube fetcher enforces ~1 HTTP req/s globally; cap concurrent YouTube probes
+# while Twitch uses the remaining pool slots in parallel (YouTube-first dequeue).
 _YOUTUBE_MAX_CONCURRENT = 1
 # Minimum rest between poll cycles when a cycle overruns check_interval.
 _MIN_POLL_REST_S = 5.0

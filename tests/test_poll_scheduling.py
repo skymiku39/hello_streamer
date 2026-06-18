@@ -1,6 +1,9 @@
-"""Tests for poll scheduling: platform phases and wake-verify timing."""
+"""Tests for poll scheduling: priority pool and wake-verify timing."""
 
 from __future__ import annotations
+
+import threading
+import time
 
 from stream_monitor.domain import ChannelEntry
 from stream_monitor.monitor import Monitor
@@ -69,7 +72,7 @@ def test_should_not_run_wake_verification_after_slow_poll() -> None:
     assert monitor._should_run_wake_verification(1005.0) is False
 
 
-def test_tier1_phases_run_youtube_before_twitch(monkeypatch) -> None:
+def test_priority_pool_prefers_youtube_when_slots_equal(monkeypatch) -> None:
     order: list[str] = []
 
     def fake_probe(entry: ChannelEntry) -> list:
@@ -85,14 +88,36 @@ def test_tier1_phases_run_youtube_before_twitch(monkeypatch) -> None:
             {"platform": "twitch", "name": "tw"},
             {"platform": "youtube", "name": "yt"},
         ],
-        max_concurrent=4,
+        max_concurrent=1,
     )
-    monitor._tier1_probe_entries(
-        split_platform_entries(monitor._entries)[0],
-        max_concurrent=_YOUTUBE_MAX_CONCURRENT,
-    )
-    monitor._tier1_probe_entries(
-        split_platform_entries(monitor._entries)[1],
-        max_concurrent=monitor._max_concurrent,
-    )
+    monitor._tier1_probe_entries(list(monitor._entries))
     assert order == ["youtube:yt", "twitch:tw"]
+
+
+def test_priority_pool_runs_twitch_parallel_with_youtube() -> None:
+    channels = [{"platform": "youtube", "name": "yt"}] + [
+        {"platform": "twitch", "name": f"tw{i}"} for i in range(3)
+    ]
+    monitor = Monitor(channels=channels, max_concurrent=4)
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+    hold = 0.08
+
+    def work(entry: ChannelEntry) -> None:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(hold)
+        with lock:
+            active -= 1
+
+    entries = [
+        _entry("youtube", "yt"),
+        _entry("twitch", "tw0"),
+        _entry("twitch", "tw1"),
+        _entry("twitch", "tw2"),
+    ]
+    monitor._run_priority_pool(entries, work)
+    assert peak >= 2

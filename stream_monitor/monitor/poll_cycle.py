@@ -16,7 +16,6 @@ from stream_monitor.monitor.types import (
     ChannelEntry,
     _ProbeSnapshot,
     poll_rest_overshoot_seconds,
-    split_platform_entries,
     youtube_priority_entries,
 )
 
@@ -65,6 +64,88 @@ class PollCycleMixin:
                     )
         return results
 
+    def _run_priority_pool(
+        self,
+        entries: list[ChannelEntry],
+        work_fn: Callable[[ChannelEntry], _T],
+    ) -> list[_T]:
+        """Shared worker pool: YouTube-first dequeue, Twitch runs in parallel.
+
+        YouTube probes stay capped at ``_YOUTUBE_MAX_CONCURRENT`` (rate limit).
+        When a worker slot frees, the next pending YouTube channel is preferred
+        over Twitch, but Twitch does not wait for the entire YouTube batch.
+        """
+        if not entries:
+            return []
+        ordered = youtube_priority_entries(entries)
+        if len(ordered) == 1:
+            try:
+                return [work_fn(ordered[0])]
+            except Exception:
+                logger.exception(
+                    "Priority pool work failed for %s, skipping", ordered[0].key
+                )
+                return []
+
+        pending = list(ordered)
+        results: list[_T] = []
+        results_lock = threading.Lock()
+        state_lock = threading.Lock()
+        youtube_active = 0
+        cond = threading.Condition(state_lock)
+
+        def _claim() -> ChannelEntry | None:
+            nonlocal youtube_active
+            for index, entry in enumerate(pending):
+                if (
+                    entry.platform == "youtube"
+                    and youtube_active >= _YOUTUBE_MAX_CONCURRENT
+                ):
+                    continue
+                pending.pop(index)
+                if entry.platform == "youtube":
+                    youtube_active += 1
+                return entry
+            return None
+
+        def _release(entry: ChannelEntry) -> None:
+            nonlocal youtube_active
+            if entry.platform == "youtube":
+                youtube_active = max(0, youtube_active - 1)
+
+        def worker() -> None:
+            while not self._stop_event.is_set():
+                with cond:
+                    while True:
+                        entry = _claim()
+                        if entry is not None:
+                            break
+                        if not pending:
+                            return
+                        cond.wait(timeout=0.25)
+                try:
+                    item = work_fn(entry)
+                    with results_lock:
+                        results.append(item)
+                except Exception:
+                    logger.exception(
+                        "Priority pool work failed for %s, skipping", entry.key
+                    )
+                finally:
+                    with cond:
+                        _release(entry)
+                        cond.notify_all()
+
+        workers = min(self._max_concurrent, len(ordered))
+        threads = [
+            threading.Thread(target=worker, daemon=True) for _ in range(workers)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        return results
+
     def _should_run_wake_verification(self, wall_now: float) -> bool:
         """True when the host likely slept past the planned inter-poll rest."""
         if self._last_poll_wall_ended <= 0:
@@ -111,32 +192,19 @@ class PollCycleMixin:
         went_live_count = 0
         commits: list[Callable[[], None]] = []
 
-        youtube_entries, twitch_entries = split_platform_entries(enabled_entries)
-
         tier1_started = time.monotonic()
+        youtube_count = sum(1 for e in enabled_entries if e.platform == "youtube")
+        twitch_count = len(enabled_entries) - youtube_count
         logger.info(
             "Poll tier-1 start: enabled=%d youtube=%d twitch=%d "
-            "youtube_concurrent=%d twitch_concurrent=%d",
+            "pool=%d youtube_concurrent=%d",
             len(enabled_entries),
-            len(youtube_entries),
-            len(twitch_entries),
-            _YOUTUBE_MAX_CONCURRENT,
+            youtube_count,
+            twitch_count,
             self._max_concurrent,
+            _YOUTUBE_MAX_CONCURRENT,
         )
-        if youtube_entries:
-            logger.info(
-                "Poll tier-1 youtube phase: %d channel(s)", len(youtube_entries)
-            )
-            went_live_count += self._tier1_probe_entries(
-                youtube_entries, max_concurrent=_YOUTUBE_MAX_CONCURRENT
-            )
-        if not self._stop_event.is_set() and twitch_entries:
-            logger.info(
-                "Poll tier-1 twitch phase: %d channel(s)", len(twitch_entries)
-            )
-            went_live_count += self._tier1_probe_entries(
-                twitch_entries, max_concurrent=self._max_concurrent
-            )
+        went_live_count = self._tier1_probe_entries(enabled_entries)
 
         if self._stop_event.is_set():
             return time.monotonic() - poll_started
@@ -145,28 +213,9 @@ class PollCycleMixin:
         logger.info("Poll tier-1 done: %.2fs", tier1_elapsed)
 
         logger.info("Poll tier-2 start: enabled=%d", len(enabled_entries))
-        if youtube_entries:
-            logger.info(
-                "Poll tier-2 youtube phase: %d channel(s)", len(youtube_entries)
-            )
-            commits.extend(
-                self._run_concurrent_pool(
-                    youtube_entries,
-                    self._refresh_details,
-                    max_concurrent=_YOUTUBE_MAX_CONCURRENT,
-                )
-            )
-        if not self._stop_event.is_set() and twitch_entries:
-            logger.info(
-                "Poll tier-2 twitch phase: %d channel(s)", len(twitch_entries)
-            )
-            commits.extend(
-                self._run_concurrent_pool(
-                    twitch_entries,
-                    self._refresh_details,
-                    max_concurrent=self._max_concurrent,
-                )
-            )
+        commits.extend(
+            self._run_priority_pool(enabled_entries, self._refresh_details)
+        )
 
         if self._stop_event.is_set():
             return time.monotonic() - poll_started
@@ -240,8 +289,6 @@ class PollCycleMixin:
     def _tier1_probe_entries(
         self,
         entries: list[ChannelEntry],
-        *,
-        max_concurrent: int,
     ) -> int:
         """Run tier-1 probes; dispatch went-live as each probe finishes."""
         went_live_count = 0
@@ -256,11 +303,7 @@ class PollCycleMixin:
             with dispatch_lock:
                 went_live_count += self._dispatch_went_live_events(events)
 
-        self._run_concurrent_pool(
-            entries,
-            probe_and_dispatch,
-            max_concurrent=max_concurrent,
-        )
+        self._run_priority_pool(entries, probe_and_dispatch)
         return went_live_count
 
     def _notify_poll_activity(self, entry: ChannelEntry, phase: str) -> None:
