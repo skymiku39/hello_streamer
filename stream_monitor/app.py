@@ -51,8 +51,8 @@ from stream_monitor.channel_row import ChannelRow
 from stream_monitor.channel_reorder import (
     ROW_SLOT_HEIGHT,
     apply_list_move,
-    insert_index_for_rows,
     nudge_insert_index,
+    target_index_for_drag_source,
 )
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
@@ -837,14 +837,11 @@ class App(ctk.CTk):
 
     def _target_index_for_pointer(self, y_root: int) -> int:
         self.update_idletasks()
-        source = self._reorder_source_index
-        reduced_rows = [
-            row for index, row in enumerate(self._channel_rows) if index != source
-        ]
-        reduced_index = insert_index_for_rows(y_root, reduced_rows)
-        if reduced_index < source:
-            return reduced_index
-        return reduced_index + 1
+        return target_index_for_drag_source(
+            y_root,
+            source_index=self._reorder_source_index,
+            rows=self._channel_rows,
+        )
 
     def _update_channel_reorder(self, y_root: int) -> None:
         if self._reorder_drag_row is None:

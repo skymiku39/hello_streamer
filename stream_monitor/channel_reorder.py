@@ -58,6 +58,36 @@ def insert_index_for_rows(pointer_y_root: int, rows: list[RowGeometry]) -> int:
     return insert_index_for_pointer(pointer_y_root, tops, heights)
 
 
+def target_index_from_reduced_gap(reduced_index: int, *, source_index: int) -> int:
+    """Map a gap index in the list *without* the dragged row to a full-list index."""
+    if reduced_index < source_index:
+        return reduced_index
+    return reduced_index + 1
+
+
+def target_index_for_drag_source(
+    pointer_y_root: int,
+    *,
+    source_index: int,
+    rows: list[RowGeometry],
+) -> int:
+    """Insertion index in the full list for a drag originating at ``source_index``."""
+    reduced_rows = [row for index, row in enumerate(rows) if index != source_index]
+    reduced_index = insert_index_for_rows(pointer_y_root, reduced_rows)
+    return target_index_from_reduced_gap(reduced_index, source_index=source_index)
+
+
+def reorder_list(items: list[Any], from_index: int, to_index: int) -> list[Any] | None:
+    """Return a new list with one item moved, or ``None`` when the move is a no-op."""
+    insert_at = apply_list_move(from_index, to_index, len(items))
+    if insert_at is None:
+        return None
+    result = list(items)
+    item = result.pop(from_index)
+    result.insert(insert_at, item)
+    return result
+
+
 @dataclass
 class ChannelDragPreview:
     source_index: int
