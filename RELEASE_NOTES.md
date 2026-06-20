@@ -1,3 +1,23 @@
+# Hello Streamer v1.1.0
+
+## 頻道拖曳排序
+
+- **Trello 式拖曳**：頻道列 ▲▼ 之間新增把手，長按後可上下拖曳調整順序。
+- **推擠預覽**：拖曳時鄰近列即時讓位，一格一位移；放開後寫入 `config.json` 並同步監控順序。
+- **流暢重排**：相鄰一格用增量 `pack`、跨格用局部或全量重排，並以 `after_idle` 合批，減少閃爍。
+
+## 下載檔案
+
+- Windows 請下載 `HelloStreamer-v1.1.0-windows-x64.exe`
+- Linux x64 請下載 `HelloStreamer-v1.1.0-linux-x64.tar.gz`
+- Raspberry Pi 64-bit 請下載 `HelloStreamer-v1.1.0-linux-arm64.tar.gz`
+
+## 升級提醒
+
+- 從 v1.0.x 升級可直接覆蓋執行檔；`config.json` 無需變更。
+
+---
+
 # Hello Streamer v1.0.1
 
 ## 監控操作修正
