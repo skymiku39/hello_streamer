@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 from stream_monitor.channel_reorder import (
     ROW_SLOT_HEIGHT,
     apply_list_move,
+    nudge_insert_index,
     pack_anchor_for_moved_row,
     preview_order_delta,
     preview_row_indices,
@@ -35,6 +36,18 @@ if TYPE_CHECKING:
 SchedulePreviewRepack = Callable[[list[int]], None]
 
 ROW_PACK_KWARGS: dict[str, Any] = {"fill": "x", "pady": 3}
+
+
+def canvas_content_y(canvas: object, y_root: int) -> float:
+    """Map a screen Y coordinate to scroll-canvas content Y."""
+    viewport_y = y_root - canvas.winfo_rooty()  # type: ignore[attr-defined]
+    return canvas.canvasy(viewport_y)  # type: ignore[attr-defined]
+
+
+def canvas_content_y_for_widget(canvas: object, widget: object) -> int:
+    """Content Y of a widget embedded in a scroll canvas."""
+    viewport_y = widget.winfo_rooty() - canvas.winfo_rooty()  # type: ignore[attr-defined]
+    return int(canvas.canvasy(viewport_y))  # type: ignore[attr-defined]
 
 
 class PackableRow(Protocol):
@@ -177,8 +190,7 @@ class ChannelReorderMode:
         return self._source_row
 
     def pointer_content_y(self, y_root: int) -> float:
-        canvas_y = y_root - self._canvas.winfo_rooty()  # type: ignore[attr-defined]
-        return self._canvas.canvasy(canvas_y)  # type: ignore[attr-defined]
+        return canvas_content_y(self._canvas, y_root)
 
     def target_for_pointer(self, y_root: int, *, num_rows: int) -> int:
         relative_y = self.pointer_content_y(y_root) - self._list_origin_y
@@ -219,6 +231,23 @@ class ChannelReorderMode:
     def update_list_origin(self, list_origin_y: int) -> None:
         if self._active:
             self._list_origin_y = list_origin_y
+
+    def nudge_target(self, delta: int, *, num_rows: int) -> bool:
+        if not self._active or delta == 0:
+            return False
+        target = nudge_insert_index(self._target_index, delta, length=num_rows)
+        if target == self._target_index:
+            return False
+        self._target_index = target
+        self._on_debug(
+            "wheel",
+            delta=delta,
+            target=target,
+            source=self._source_index,
+            preview=preview_row_indices(self._source_index, target, num_rows),
+        )
+        self._apply_preview(num_rows)
+        return True
 
     def track_pointer(
         self,

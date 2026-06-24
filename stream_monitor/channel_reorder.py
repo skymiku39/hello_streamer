@@ -107,12 +107,13 @@ def target_index_for_content_y(
     if num_rows <= 0:
         return 0
     slot_tops = [index * slot_height for index in range(num_rows)]
-    return target_index_for_drag_preview(
+    target = target_index_for_drag_preview(
         int(content_y),
         source_index=source_index,
         slot_tops=slot_tops,
         slot_height=slot_height,
     )
+    return max(0, min(target, num_rows))
 
 
 def target_index_for_drag_source(

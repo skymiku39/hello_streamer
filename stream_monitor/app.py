@@ -49,7 +49,7 @@ from stream_monitor.app_ui import (
 from stream_monitor.browser_settings_model import BrowserSettings
 from stream_monitor.channel_row import ChannelRow
 from stream_monitor.channel_reorder import apply_list_move
-from stream_monitor.channel_reorder_ui import ChannelReorderMode
+from stream_monitor.channel_reorder_ui import ChannelReorderMode, canvas_content_y_for_widget
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
@@ -369,6 +369,8 @@ class App(ctk.CTk):
         self.bind_all(
             "<ButtonRelease-1>", self._on_channel_reorder_release_global, add="+"
         )
+        for wheel_seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.bind_all(wheel_seq, self._on_channel_reorder_wheel_global, add="+")
 
         self.empty_label = ctk.CTkLabel(
             self.scroll_frame,
@@ -777,9 +779,11 @@ class App(ctk.CTk):
         self._controller.update_channels(channels)
 
     def _channel_list_origin_y(self) -> int:
+        """Content Y of the first list row (same space as ``pointer_content_y``)."""
         if not self._channel_rows:
             return 0
-        return int(self._channel_rows[0].winfo_y())
+        canvas = self.scroll_frame._parent_canvas
+        return canvas_content_y_for_widget(canvas, self._channel_rows[0])
 
     def _schedule_preview_repack(self, order: list[int]) -> None:
         self._pending_preview_order = list(order)
@@ -875,6 +879,30 @@ class App(ctk.CTk):
     def _on_channel_reorder_motion_global(self, event: Any) -> None:
         if self._reorder_mode.active:
             self._update_channel_reorder(event.y_root)
+
+    @staticmethod
+    def _wheel_nudge_steps(event: Any) -> int:
+        num = getattr(event, "num", None)
+        if num == 4:
+            return -1
+        if num == 5:
+            return 1
+        delta = getattr(event, "delta", 0)
+        if delta > 0:
+            return -1
+        if delta < 0:
+            return 1
+        return 0
+
+    def _on_channel_reorder_wheel_global(self, event: Any) -> str | None:
+        if not self._reorder_mode.active:
+            return None
+        steps = self._wheel_nudge_steps(event)
+        if steps != 0:
+            self._reorder_mode.nudge_target(
+                steps, num_rows=len(self._channel_rows)
+            )
+        return "break"
 
     def _on_channel_reorder_release_global(self, _event: Any) -> None:
         if self._reorder_mode.active:

@@ -64,6 +64,12 @@ def test_target_index_for_content_y_snaps_per_slot() -> None:
     assert target_index_for_content_y(144, source_index=1, num_rows=4) == 3
 
 
+def test_target_index_for_content_y_clamps_to_list_bounds() -> None:
+    # Pointer below the last slot must not produce target > num_rows.
+    assert target_index_for_content_y(2000, source_index=1, num_rows=4) == 4
+    assert target_index_for_content_y(-100, source_index=1, num_rows=4) == 0
+
+
 def test_target_index_for_drag_preview() -> None:
     tops = [100, 164, 228]
     assert target_index_for_drag_preview(196, source_index=1, slot_tops=tops) == 3
