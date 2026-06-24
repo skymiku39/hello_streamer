@@ -68,7 +68,7 @@ def main() -> int:
         on_move_up=lambda: None,
         on_move_down=lambda: None,
         on_toggle_enabled=lambda: None,
-        on_reorder_begin=lambda: ui_log.append("begin"),
+        on_reorder_begin=lambda y: ui_log.append(f"begin:{y}"),
         on_reorder_motion=lambda y: ui_log.append(f"motion:{y}"),
         on_reorder_release=lambda: ui_log.append("release"),
     )
@@ -83,7 +83,7 @@ def main() -> int:
     row._on_drag_handle_motion(type("Ev", (), {"y_root": 200})())
     row._on_drag_handle_release(type("Ev", (), {})())
 
-    ui_ok = ui_log == ["begin", "motion:100", "motion:200", "release"]
+    ui_ok = ui_log == ["begin:100", "motion:200", "release"]
     geometry_ok = (
         row.up_btn.cget("height") == 20
         and row.down_btn.cget("height") == 20

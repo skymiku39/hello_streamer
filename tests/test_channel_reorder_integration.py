@@ -175,7 +175,7 @@ def test_channel_row_long_press_state_machine() -> None:
         on_move_up=lambda: None,
         on_move_down=lambda: None,
         on_toggle_enabled=lambda: None,
-        on_reorder_begin=lambda: log.append("begin"),
+        on_reorder_begin=lambda y: log.append(f"begin:{y}"),
         on_reorder_motion=lambda y: log.append(f"motion:{y}"),
         on_reorder_release=lambda: log.append("release"),
     )
@@ -188,7 +188,7 @@ def test_channel_row_long_press_state_machine() -> None:
     assert log == []
 
     pending[0]()
-    assert log == ["begin", "motion:100"]
+    assert log == ["begin:100"]
 
     move = type("Ev", (), {"y_root": 180})()
     row._on_drag_handle_motion(move)
@@ -215,7 +215,7 @@ def test_channel_row_motion_before_arm_cancels_long_press() -> None:
         on_move_up=lambda: None,
         on_move_down=lambda: None,
         on_toggle_enabled=lambda: None,
-        on_reorder_begin=lambda: log.append("begin"),
+        on_reorder_begin=lambda y: log.append(f"begin:{y}"),
     )
     row.after = lambda _ms, cb: pending.append(cb) or "id"  # type: ignore[method-assign]
     row.after_cancel = lambda _id: pending.clear()  # type: ignore[method-assign]

@@ -3,37 +3,26 @@
 from __future__ import annotations
 
 from stream_monitor.channel_reorder import (
+    DRAG_ENGAGE_PX,
     ROW_SLOT_HEIGHT,
     pack_anchor_for_moved_row,
     preview_order_delta,
     preview_row_indices,
     preview_visual_step,
 )
-from stream_monitor.channel_reorder_ui import (
-    ChannelReorderMode,
-    canvas_content_y,
-    canvas_content_y_for_widget,
-)
+from stream_monitor.channel_reorder_ui import ChannelReorderMode
 
 
-class _FakeCanvas:
-    def __init__(self, *, root_y: int = 100, scroll_offset: int = 0) -> None:
-        self._root_y = root_y
-        self._scroll_offset = scroll_offset
+class _FakeGeomRow:
+    def __init__(self, top: int, height: int = ROW_SLOT_HEIGHT) -> None:
+        self._top = top
+        self._height = height
 
     def winfo_rooty(self) -> int:
-        return self._root_y
+        return self._top
 
-    def canvasy(self, viewport_y: float) -> float:
-        return viewport_y + self._scroll_offset
-
-
-class _FakeRow:
-    def __init__(self, root_y: int) -> None:
-        self._root_y = root_y
-
-    def winfo_rooty(self) -> int:
-        return self._root_y
+    def winfo_height(self) -> int:
+        return self._height
 
 
 class _FakeSourceRow:
@@ -43,33 +32,52 @@ class _FakeSourceRow:
         pass
 
 
-def test_canvas_content_y_accounts_for_scroll_offset() -> None:
-    canvas = _FakeCanvas(root_y=100, scroll_offset=900)
-    row = _FakeRow(root_y=103)
-    assert canvas_content_y_for_widget(canvas, row) == 903
-    assert canvas_content_y(canvas, 103 + 12 * ROW_SLOT_HEIGHT) == 903 + 12 * ROW_SLOT_HEIGHT
+def _four_rows() -> list[_FakeGeomRow]:
+    return [_FakeGeomRow(100 + index * ROW_SLOT_HEIGHT) for index in range(4)]
 
 
-def test_reorder_mode_pointer_uses_same_coordinate_space_when_scrolled() -> None:
-    canvas = _FakeCanvas(root_y=100, scroll_offset=900)
-    row = _FakeRow(103)
-    list_origin = canvas_content_y_for_widget(canvas, row)
-    mode = ChannelReorderMode(canvas, schedule_preview_repack=lambda _o: None)
+def test_reorder_mode_uses_on_screen_row_geometry() -> None:
+    rows = _four_rows()
+    mode = ChannelReorderMode(object(), schedule_preview_repack=lambda _o: None)
     mode.begin(
         source_row=_FakeSourceRow(),  # type: ignore[arg-type]
         source_index=1,
-        list_origin_y=list_origin,
         num_rows=4,
+        y_root=164,
     )
-    pointer_y = 103 + 2 * ROW_SLOT_HEIGHT + (ROW_SLOT_HEIGHT // 2 - 1)
-    assert mode.target_for_pointer(pointer_y, num_rows=4) == 3
+    mode._engaged = True
+    assert mode.target_for_pointer(260, rows) == 3
 
-    # ``winfo_y()``-style origin would ignore scroll offset and map too low.
-    wrong_origin_mode = ChannelReorderMode(canvas, schedule_preview_repack=lambda _o: None)
-    wrong_origin_mode._active = True
-    wrong_origin_mode._source_index = 1
-    wrong_origin_mode._list_origin_y = 3
-    assert wrong_origin_mode.target_for_pointer(pointer_y, num_rows=4) != 3
+
+def test_reorder_mode_click_without_move_stays_noop() -> None:
+    rows = _four_rows()
+    mode = ChannelReorderMode(object(), schedule_preview_repack=lambda _o: None)
+    mode.begin(
+        source_row=_FakeSourceRow(),  # type: ignore[arg-type]
+        source_index=1,
+        num_rows=4,
+        y_root=164,
+    )
+    assert mode.track_pointer(164, rows=rows, num_rows=4) is False
+    assert mode.engaged is False
+    assert mode.target_index == 1
+    assert mode.finish(commit=True, num_rows=4) is None
+
+
+def test_reorder_mode_requires_engage_threshold_before_target_changes() -> None:
+    rows = _four_rows()
+    mode = ChannelReorderMode(
+        object(), schedule_preview_repack=lambda _o: None, engage_px=12
+    )
+    mode.begin(
+        source_row=_FakeSourceRow(),  # type: ignore[arg-type]
+        source_index=1,
+        num_rows=4,
+        y_root=164,
+    )
+    assert mode.track_pointer(164 + DRAG_ENGAGE_PX - 1, rows=rows, num_rows=4) is False
+    assert mode.track_pointer(164 + DRAG_ENGAGE_PX, rows=rows, num_rows=4) is True
+    assert mode.engaged is True
 
 
 def test_reorder_mode_nudge_target_moves_insert_gap() -> None:
@@ -78,19 +86,19 @@ def test_reorder_mode_nudge_target_moves_insert_gap() -> None:
     def schedule(order: list[int]) -> None:
         repacked.append(list(order))
 
-    mode = ChannelReorderMode(_FakeCanvas(), schedule_preview_repack=schedule)
+    mode = ChannelReorderMode(object(), schedule_preview_repack=schedule)
     mode.begin(
         source_row=_FakeSourceRow(),  # type: ignore[arg-type]
         source_index=1,
-        list_origin_y=0,
         num_rows=4,
+        y_root=164,
     )
     assert mode.nudge_target(2, num_rows=4) is True
     assert mode.target_index == 3
+    assert mode.engaged is True
     assert repacked[-1] == preview_row_indices(1, 3, 4)
     assert mode.nudge_target(-2, num_rows=4) is True
     assert mode.target_index == 1
-    assert mode.nudge_target(0, num_rows=4) is False
 
 
 def test_preview_row_indices_pushes_cards_aside() -> None:

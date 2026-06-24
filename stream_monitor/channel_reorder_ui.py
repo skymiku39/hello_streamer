@@ -2,14 +2,16 @@
 
 Confirmed rendering model (CTk / Tk ``pack`` constraints):
 
-1. **Discrete slots** — pointer maps to a target index on a 64px grid; no
-   continuous floating card.
-2. **Push-aside preview** — when the target slot changes, widgets are shown in
+1. **Row geometry** — pointer maps to gaps using each row's on-screen
+   ``winfo_rooty`` / ``winfo_height`` (not a synthetic fixed grid).
+2. **Engage threshold** — long-press only highlights until the pointer moves
+   ``DRAG_ENGAGE_PX`` vertically or the wheel nudges the target.
+3. **Push-aside preview** — when the target slot changes, widgets are shown in
    ``preview_row_indices`` order so neighbours make room like Trello.
-3. **Repack policy** — adjacent one-slot moves use a single ``pack`` insert;
+4. **Repack policy** — adjacent one-slot moves use a single ``pack`` insert;
    larger jumps use a full preview repack. **Never** call ``update_idletasks``
    during the drag session (flush only on commit/cancel).
-4. **Coalescing** — the UI schedules at most one repack per idle frame via
+5. **Coalescing** — the UI schedules at most one repack per idle frame via
    ``after_idle`` to avoid motion-event storms.
 
 Row repaints from the monitor stay deferred for the session.
@@ -20,14 +22,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from stream_monitor.channel_reorder import (
+    DRAG_ENGAGE_PX,
     ROW_SLOT_HEIGHT,
+    RowGeometry,
     apply_list_move,
     nudge_insert_index,
     pack_anchor_for_moved_row,
     preview_order_delta,
     preview_row_indices,
     preview_visual_step,
-    target_index_for_content_y,
+    target_index_for_drag_source,
 )
 
 if TYPE_CHECKING:
@@ -161,21 +165,28 @@ class ChannelReorderMode:
         *,
         schedule_preview_repack: SchedulePreviewRepack,
         row_slot_height: int = ROW_SLOT_HEIGHT,
+        engage_px: int = DRAG_ENGAGE_PX,
         on_debug: Callable[..., None] | None = None,
     ) -> None:
         self._canvas = canvas
         self._schedule_preview_repack = schedule_preview_repack
         self._slot_height = row_slot_height
+        self._engage_px = engage_px
         self._on_debug = on_debug or (lambda *_a, **_k: None)
         self._active = False
+        self._engaged = False
+        self._press_y_root = 0
         self._source_index = 0
         self._target_index = 0
         self._source_row: ChannelRow | None = None
-        self._list_origin_y = 0
 
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def engaged(self) -> bool:
+        return self._engaged
 
     @property
     def source_index(self) -> int:
@@ -189,16 +200,11 @@ class ChannelReorderMode:
     def source_row(self) -> ChannelRow | None:
         return self._source_row
 
-    def pointer_content_y(self, y_root: int) -> float:
-        return canvas_content_y(self._canvas, y_root)
-
-    def target_for_pointer(self, y_root: int, *, num_rows: int) -> int:
-        relative_y = self.pointer_content_y(y_root) - self._list_origin_y
-        return target_index_for_content_y(
-            relative_y,
+    def target_for_pointer(self, y_root: int, rows: list[RowGeometry]) -> int:
+        return target_index_for_drag_source(
+            y_root,
             source_index=self._source_index,
-            num_rows=num_rows,
-            slot_height=self._slot_height,
+            rows=rows,
         )
 
     def begin(
@@ -206,35 +212,28 @@ class ChannelReorderMode:
         source_row: ChannelRow,
         *,
         source_index: int,
-        list_origin_y: int,
         num_rows: int,
-        y_root: int | None = None,
+        y_root: int,
     ) -> None:
         self._active = True
+        self._engaged = False
+        self._press_y_root = y_root
         self._source_row = source_row
         self._source_index = source_index
         self._target_index = source_index
-        self._list_origin_y = list_origin_y
         source_row.set_reorder_highlight(True)
-        if y_root is not None:
-            self.track_pointer(
-                y_root, num_rows=num_rows, allow_target_change=True
-            )
         self._on_debug(
             "begin",
             source=source_index,
             rows=num_rows,
-            list_origin_y=list_origin_y,
+            y_root=y_root,
             channel=source_row.channel.get("name"),
         )
-
-    def update_list_origin(self, list_origin_y: int) -> None:
-        if self._active:
-            self._list_origin_y = list_origin_y
 
     def nudge_target(self, delta: int, *, num_rows: int) -> bool:
         if not self._active or delta == 0:
             return False
+        self._engaged = True
         target = nudge_insert_index(self._target_index, delta, length=num_rows)
         if target == self._target_index:
             return False
@@ -253,23 +252,26 @@ class ChannelReorderMode:
         self,
         y_root: int,
         *,
+        rows: list[RowGeometry],
         num_rows: int,
         allow_target_change: bool = True,
     ) -> bool:
-        if not self._active:
+        if not self._active or not allow_target_change:
             return False
-        if not allow_target_change:
-            return False
-        target = self.target_for_pointer(y_root, num_rows=num_rows)
+        if not self._engaged:
+            if abs(y_root - self._press_y_root) < self._engage_px:
+                return False
+            self._engaged = True
+        target = self.target_for_pointer(y_root, rows)
         if target == self._target_index:
             return False
         self._target_index = target
         self._on_debug(
             "motion",
             y_root=y_root,
-            content_y=self.pointer_content_y(y_root),
             target=target,
             source=self._source_index,
+            engaged=True,
             preview=preview_row_indices(self._source_index, target, num_rows),
         )
         self._apply_preview(num_rows)
@@ -279,10 +281,13 @@ class ChannelReorderMode:
         return apply_list_move(self._source_index, self._target_index, num_rows)
 
     def finish(self, *, commit: bool, num_rows: int) -> int | None:
+        if commit and not self._engaged:
+            commit = False
         insert_at = self.insert_at(num_rows=num_rows) if commit else None
         self._on_debug(
             "end",
             commit=commit,
+            engaged=self._engaged,
             source=self._source_index,
             target=self._target_index,
             insert_at=insert_at,
@@ -294,6 +299,8 @@ class ChannelReorderMode:
         return insert_at
 
     def _apply_preview(self, num_rows: int) -> None:
+        if not self._engaged:
+            return
         if apply_list_move(self._source_index, self._target_index, num_rows) is None:
             return
         order = preview_row_indices(self._source_index, self._target_index, num_rows)
@@ -306,4 +313,5 @@ class ChannelReorderMode:
         if self._source_row is not None:
             self._source_row.set_reorder_highlight(False)
         self._active = False
+        self._engaged = False
         self._source_row = None

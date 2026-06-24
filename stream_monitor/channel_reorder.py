@@ -9,6 +9,8 @@ from typing import Any, Protocol
 ROW_BODY_HEIGHT = 58
 ROW_SLOT_HEIGHT = 64
 LONG_PRESS_MS = 400
+# Vertical pointer movement before a drag session may change the insert target.
+DRAG_ENGAGE_PX = 12
 
 
 def apply_list_move(from_index: int, to_index: int, length: int) -> int | None:

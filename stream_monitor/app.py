@@ -49,7 +49,7 @@ from stream_monitor.app_ui import (
 from stream_monitor.browser_settings_model import BrowserSettings
 from stream_monitor.channel_row import ChannelRow
 from stream_monitor.channel_reorder import apply_list_move
-from stream_monitor.channel_reorder_ui import ChannelReorderMode, canvas_content_y_for_widget
+from stream_monitor.channel_reorder_ui import ChannelReorderMode
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
@@ -683,8 +683,8 @@ class App(ctk.CTk):
 
         row_ref: list[ChannelRow] = []
 
-        def on_reorder_begin() -> None:
-            self._begin_channel_reorder(row_ref[0])
+        def on_reorder_begin(y_root: int) -> None:
+            self._begin_channel_reorder(row_ref[0], y_root=y_root)
 
         def on_reorder_motion(y_root: int) -> None:
             self._update_channel_reorder(y_root)
@@ -778,12 +778,6 @@ class App(ctk.CTk):
         self._refresh_move_buttons()
         self._controller.update_channels(channels)
 
-    def _channel_list_origin_y(self) -> int:
-        """Content Y of the first list row (same space as ``pointer_content_y``)."""
-        if not self._channel_rows:
-            return 0
-        canvas = self.scroll_frame._parent_canvas
-        return canvas_content_y_for_widget(canvas, self._channel_rows[0])
 
     def _schedule_preview_repack(self, order: list[int]) -> None:
         self._pending_preview_order = list(order)
@@ -850,7 +844,7 @@ class App(ctk.CTk):
 
         full_repack_rows(rows, order)
 
-    def _begin_channel_reorder(self, row: ChannelRow, *, y_root: int | None = None) -> None:
+    def _begin_channel_reorder(self, row: ChannelRow, *, y_root: int) -> None:
         if self._reorder_mode.active:
             return
         try:
@@ -862,7 +856,6 @@ class App(ctk.CTk):
         self._reorder_mode.begin(
             row,
             source_index=source_index,
-            list_origin_y=self._channel_list_origin_y(),
             num_rows=len(self._channel_rows),
             y_root=y_root,
         )
@@ -872,6 +865,7 @@ class App(ctk.CTk):
             return
         self._reorder_mode.track_pointer(
             y_root,
+            rows=self._channel_rows,
             num_rows=len(self._channel_rows),
             allow_target_change=not self._scroll_guard.repaints_deferred,
         )
@@ -1213,8 +1207,6 @@ class App(ctk.CTk):
 
     def _on_scroll_repaint_idle(self) -> None:
         """Flush queued row updates once scrolling has settled."""
-        if self._reorder_mode.active:
-            self._reorder_mode.update_list_origin(self._channel_list_origin_y())
         self._controller.tick()
 
     def _tick_elapsed_labels(self) -> None:

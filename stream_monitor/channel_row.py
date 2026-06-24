@@ -48,7 +48,7 @@ class ChannelRow(ctk.CTkFrame):
         on_move_up: callable,
         on_move_down: callable,
         on_toggle_enabled: callable,
-        on_reorder_begin: Callable[[], None] | None = None,
+        on_reorder_begin: Callable[[int], None] | None = None,
         on_reorder_motion: Callable[[int], None] | None = None,
         on_reorder_release: Callable[[], None] | None = None,
         get_browser_settings: Callable[[], dict[str, Any] | None] | None = None,
@@ -793,9 +793,7 @@ class ChannelRow(ctk.CTkFrame):
         self._drag_long_press_id = None
         self._drag_active = True
         if self._on_reorder_begin is not None:
-            self._on_reorder_begin()
-        if self._on_reorder_motion is not None:
-            self._on_reorder_motion(y_root)
+            self._on_reorder_begin(y_root)
 
     def _on_drag_handle_motion(self, event: Any) -> None:
         if not self._drag_active:
