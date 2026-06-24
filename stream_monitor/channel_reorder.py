@@ -130,6 +130,26 @@ def target_index_for_drag_source(
     return target_index_from_reduced_gap(reduced_index, source_index=source_index)
 
 
+def target_index_for_drag_source_content(
+    pointer_content_y: float,
+    *,
+    source_index: int,
+    row_content_tops: list[int],
+    row_heights: list[int],
+) -> int:
+    """Like ``target_index_for_drag_source`` but in scroll-canvas content space."""
+    reduced_tops = [
+        top for index, top in enumerate(row_content_tops) if index != source_index
+    ]
+    reduced_heights = [
+        height for index, height in enumerate(row_heights) if index != source_index
+    ]
+    reduced_index = insert_index_for_pointer(
+        int(pointer_content_y), reduced_tops, reduced_heights
+    )
+    return target_index_from_reduced_gap(reduced_index, source_index=source_index)
+
+
 def reorder_list(items: list[Any], from_index: int, to_index: int) -> list[Any] | None:
     """Return a new list with one item moved, or ``None`` when the move is a no-op."""
     insert_at = apply_list_move(from_index, to_index, len(items))

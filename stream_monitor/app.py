@@ -782,8 +782,18 @@ class App(ctk.CTk):
     def _schedule_preview_repack(self, order: list[int]) -> None:
         self._pending_preview_order = list(order)
         if self._preview_repack_after is not None:
-            return
-        self._preview_repack_after = self.after_idle(self._flush_scheduled_preview_repack)
+            if self._reorder_mode.active:
+                self.after_cancel(self._preview_repack_after)
+            else:
+                return
+        if self._reorder_mode.active:
+            self._preview_repack_after = self.after(
+                0, self._flush_scheduled_preview_repack
+            )
+        else:
+            self._preview_repack_after = self.after_idle(
+                self._flush_scheduled_preview_repack
+            )
 
     def _flush_scheduled_preview_repack(self) -> None:
         self._preview_repack_after = None
@@ -791,7 +801,8 @@ class App(ctk.CTk):
         self._pending_preview_order = None
         if order is None:
             return
-        self._repack_channel_rows_preview(order, flush=False)
+        flush = self._reorder_mode.active
+        self._repack_channel_rows_preview(order, flush=flush)
 
     def _cancel_scheduled_preview_repack(self) -> None:
         if self._preview_repack_after is not None:
@@ -863,12 +874,25 @@ class App(ctk.CTk):
     def _update_channel_reorder(self, y_root: int) -> None:
         if not self._reorder_mode.active:
             return
+        self._autoscroll_channel_list_during_reorder(y_root)
         self._reorder_mode.track_pointer(
             y_root,
             rows=self._channel_rows,
             num_rows=len(self._channel_rows),
-            allow_target_change=not self._scroll_guard.repaints_deferred,
         )
+
+    def _autoscroll_channel_list_during_reorder(self, y_root: int) -> None:
+        canvas = self.scroll_frame._parent_canvas
+        try:
+            top = canvas.winfo_rooty()
+            height = canvas.winfo_height()
+        except Exception:
+            return
+        margin = 48
+        if y_root < top + margin:
+            canvas.yview_scroll(-2, "units")
+        elif y_root > top + height - margin:
+            canvas.yview_scroll(2, "units")
 
     def _on_channel_reorder_motion_global(self, event: Any) -> None:
         if self._reorder_mode.active:

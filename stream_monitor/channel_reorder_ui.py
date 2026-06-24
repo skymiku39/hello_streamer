@@ -31,7 +31,7 @@ from stream_monitor.channel_reorder import (
     preview_order_delta,
     preview_row_indices,
     preview_visual_step,
-    target_index_for_drag_source,
+    target_index_for_drag_source_content,
 )
 
 if TYPE_CHECKING:
@@ -201,10 +201,16 @@ class ChannelReorderMode:
         return self._source_row
 
     def target_for_pointer(self, y_root: int, rows: list[RowGeometry]) -> int:
-        return target_index_for_drag_source(
-            y_root,
+        pointer_content_y = canvas_content_y(self._canvas, y_root)
+        content_tops = [
+            canvas_content_y_for_widget(self._canvas, row) for row in rows
+        ]
+        heights = [row.winfo_height() for row in rows]
+        return target_index_for_drag_source_content(
+            pointer_content_y,
             source_index=self._source_index,
-            rows=rows,
+            row_content_tops=content_tops,
+            row_heights=heights,
         )
 
     def begin(
@@ -254,9 +260,8 @@ class ChannelReorderMode:
         *,
         rows: list[RowGeometry],
         num_rows: int,
-        allow_target_change: bool = True,
     ) -> bool:
-        if not self._active or not allow_target_change:
+        if not self._active:
             return False
         if not self._engaged:
             if abs(y_root - self._press_y_root) < self._engage_px:
@@ -302,6 +307,7 @@ class ChannelReorderMode:
         if not self._engaged:
             return
         if apply_list_move(self._source_index, self._target_index, num_rows) is None:
+            self._schedule_preview_repack(list(range(num_rows)))
             return
         order = preview_row_indices(self._source_index, self._target_index, num_rows)
         self._schedule_preview_repack(order)

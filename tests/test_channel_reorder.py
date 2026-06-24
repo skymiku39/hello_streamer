@@ -5,12 +5,14 @@ from __future__ import annotations
 import pytest
 
 from stream_monitor.channel_reorder import (
+    ROW_SLOT_HEIGHT,
     apply_list_move,
     insert_index_for_pointer,
     nudge_insert_index,
     preview_row_indices,
     target_index_for_content_y,
     target_index_for_drag_preview,
+    target_index_for_drag_source_content,
     visual_gap_for_pointer,
 )
 
@@ -68,6 +70,14 @@ def test_target_index_for_content_y_clamps_to_list_bounds() -> None:
     # Pointer below the last slot must not produce target > num_rows.
     assert target_index_for_content_y(2000, source_index=1, num_rows=4) == 4
     assert target_index_for_content_y(-100, source_index=1, num_rows=4) == 0
+
+
+def test_target_index_for_drag_source_content() -> None:
+    tops = [100, 164, 228, 292]
+    heights = [ROW_SLOT_HEIGHT] * 4
+    assert target_index_for_drag_source_content(
+        260, source_index=1, row_content_tops=tops, row_heights=heights
+    ) == 3
 
 
 def test_target_index_for_drag_preview() -> None:
