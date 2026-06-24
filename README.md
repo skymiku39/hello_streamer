@@ -34,9 +34,9 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 | 平台 | 檔案 |
 | --- | --- |
-| Windows x64 | `HelloStreamer-v1.1.0-windows-x64.exe` |
-| Linux x64 | `HelloStreamer-v1.1.0-linux-x64.tar.gz` |
-| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v1.1.0-linux-arm64.tar.gz` |
+| Windows x64 | `HelloStreamer-v1.2.0-windows-x64.exe` |
+| Linux x64 | `HelloStreamer-v1.2.0-linux-x64.tar.gz` |
+| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v1.2.0-linux-arm64.tar.gz` |
 
 Windows 第一次執行時可能會顯示安全提示，請確認來源是本專案的 GitHub Release。
 
