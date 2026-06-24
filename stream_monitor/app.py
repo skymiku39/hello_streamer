@@ -371,6 +371,7 @@ class App(ctk.CTk):
         )
         for wheel_seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.bind_all(wheel_seq, self._on_channel_reorder_wheel_global, add="+")
+        self.bind_all("<Escape>", self._on_channel_reorder_escape_global, add="+")
 
         self.empty_label = ctk.CTkLabel(
             self.scroll_frame,
@@ -922,6 +923,12 @@ class App(ctk.CTk):
             )
         return "break"
 
+    def _on_channel_reorder_escape_global(self, _event: Any) -> str | None:
+        if self._reorder_mode.active:
+            self._end_channel_reorder(commit=False)
+            return "break"
+        return None
+
     def _on_channel_reorder_release_global(self, _event: Any) -> None:
         if self._reorder_mode.active:
             self._end_channel_reorder(commit=True)
@@ -935,6 +942,8 @@ class App(ctk.CTk):
         insert_at = self._reorder_mode.finish(
             commit=commit, num_rows=len(self._channel_rows)
         )
+        if row is not None:
+            row.cancel_reorder_drag()
         self._cancel_scheduled_preview_repack()
         self._preview_pack_order = None
         if commit and insert_at is not None and channel is not None:

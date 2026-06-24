@@ -781,6 +781,11 @@ class ChannelRow(ctk.CTkFrame):
             self.after_cancel(self._drag_long_press_id)
             self._drag_long_press_id = None
 
+    def cancel_reorder_drag(self) -> None:
+        """Reset local drag-handle state (e.g. when release happens off the handle)."""
+        self._cancel_drag_long_press()
+        self._drag_active = False
+
     def _on_drag_handle_press(self, event: Any) -> None:
         self._drag_press_y = event.y_root
         self._cancel_drag_long_press()
@@ -805,8 +810,7 @@ class ChannelRow(ctk.CTkFrame):
 
     def _on_drag_handle_release(self, _event: Any) -> None:
         was_active = self._drag_active
-        self._cancel_drag_long_press()
-        self._drag_active = False
+        self.cancel_reorder_drag()
         if was_active and self._on_reorder_release is not None:
             self._on_reorder_release()
 

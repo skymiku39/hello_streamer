@@ -147,7 +147,8 @@ def target_index_for_drag_source_content(
     reduced_index = insert_index_for_pointer(
         int(pointer_content_y), reduced_tops, reduced_heights
     )
-    return target_index_from_reduced_gap(reduced_index, source_index=source_index)
+    target = target_index_from_reduced_gap(reduced_index, source_index=source_index)
+    return max(0, min(target, len(row_content_tops)))
 
 
 def reorder_list(items: list[Any], from_index: int, to_index: int) -> list[Any] | None:

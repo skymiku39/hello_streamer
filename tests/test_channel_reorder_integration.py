@@ -201,6 +201,24 @@ def test_channel_row_long_press_state_machine() -> None:
     root.destroy()
 
 
+def test_channel_row_cancel_reorder_drag_clears_active() -> None:
+    from stream_monitor.channel_row import ChannelRow
+
+    root, _ = _make_channel_row()
+    row = ChannelRow(
+        root,
+        {"platform": "twitch", "name": "chan", "enabled": True},
+        on_delete=lambda: None,
+        on_move_up=lambda: None,
+        on_move_down=lambda: None,
+        on_toggle_enabled=lambda: None,
+    )
+    row._drag_active = True
+    row.cancel_reorder_drag()
+    assert row._drag_active is False
+    root.destroy()
+
+
 def test_channel_row_motion_before_arm_cancels_long_press() -> None:
     from stream_monitor.channel_row import ChannelRow
 

@@ -2,17 +2,16 @@
 
 Confirmed rendering model (CTk / Tk ``pack`` constraints):
 
-1. **Row geometry** — pointer maps to gaps using each row's on-screen
-   ``winfo_rooty`` / ``winfo_height`` (not a synthetic fixed grid).
+1. **Row geometry** — pointer maps to gaps using each row's scroll-canvas
+   content Y (stable while the viewport scrolls).
 2. **Engage threshold** — long-press only highlights until the pointer moves
    ``DRAG_ENGAGE_PX`` vertically or the wheel nudges the target.
 3. **Push-aside preview** — when the target slot changes, widgets are shown in
    ``preview_row_indices`` order so neighbours make room like Trello.
 4. **Repack policy** — adjacent one-slot moves use a single ``pack`` insert;
-   larger jumps use a full preview repack. **Never** call ``update_idletasks``
-   during the drag session (flush only on commit/cancel).
-5. **Coalescing** — the UI schedules at most one repack per idle frame via
-   ``after_idle`` to avoid motion-event storms.
+   larger jumps use a full preview repack. During drag, repacks use ``after(0)``
+   with ``update_idletasks`` for responsive preview.
+5. **Coalescing** — rapid target changes reschedule a single pending repack.
 
 Row repaints from the monitor stay deferred for the session.
 """
