@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import logging.handlers
 import sys
-import json
 import time
 from pathlib import Path
 from typing import Any
 
 import customtkinter as ctk
 
-from stream_monitor import __version__, base_dir, config_manager, i18n
+from stream_monitor import __version__, base_dir, config_manager, i18n, status_cache
 from stream_monitor.app_dialogs import (
     AddChannelDialog,
     BrowserSettingsDialog,
@@ -47,15 +47,14 @@ from stream_monitor.app_ui import (
     _truncate_status_name,
 )
 from stream_monitor.browser_settings_model import BrowserSettings
-from stream_monitor.channel_row import ChannelRow
 from stream_monitor.channel_reorder import apply_list_move
 from stream_monitor.channel_reorder_ui import ChannelReorderMode
+from stream_monitor.channel_row import ChannelRow
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelEntry, ChannelStatus
 from stream_monitor.monitor_controller import MonitorController
-from stream_monitor.scroll_guard import ScrollRepaintGuard
 from stream_monitor.notifier import (
     browser_window_tracking_available,
     close_all_tracked_windows,
@@ -63,12 +62,12 @@ from stream_monitor.notifier import (
     configure_viewer_engagement,
     execute_action,
 )
-from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
+from stream_monitor.scroll_guard import ScrollRepaintGuard
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
 from stream_monitor.tray import TrayIcon
 from stream_monitor.util import channel_key
-from stream_monitor import status_cache
+from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
 
 logger = logging.getLogger(__name__)
 
