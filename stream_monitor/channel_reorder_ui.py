@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from stream_monitor.channel_reorder import (
     DRAG_ENGAGE_PX,
+    GEOMETRY_LOCK_PX,
     ROW_SLOT_HEIGHT,
     RowGeometry,
     apply_list_move,
@@ -165,12 +166,14 @@ class ChannelReorderMode:
         schedule_preview_repack: SchedulePreviewRepack,
         row_slot_height: int = ROW_SLOT_HEIGHT,
         engage_px: int = DRAG_ENGAGE_PX,
+        geometry_lock_px: int = GEOMETRY_LOCK_PX,
         on_debug: Callable[..., None] | None = None,
     ) -> None:
         self._canvas = canvas
         self._schedule_preview_repack = schedule_preview_repack
         self._slot_height = row_slot_height
         self._engage_px = engage_px
+        self._geometry_lock_px = geometry_lock_px
         self._on_debug = on_debug or (lambda *_a, **_k: None)
         self._active = False
         self._engaged = False
@@ -178,6 +181,9 @@ class ChannelReorderMode:
         self._source_index = 0
         self._target_index = 0
         self._source_row: ChannelRow | None = None
+        self._geometry_lock_y: float | None = None
+        self._locked_tops: list[int] | None = None
+        self._locked_heights: list[int] | None = None
 
     @property
     def active(self) -> bool:
@@ -199,16 +205,53 @@ class ChannelReorderMode:
     def source_row(self) -> ChannelRow | None:
         return self._source_row
 
+    def _live_geometry(
+        self, rows: list[RowGeometry]
+    ) -> tuple[list[int], list[int]]:
+        tops = [canvas_content_y_for_widget(self._canvas, row) for row in rows]
+        heights = [row.winfo_height() for row in rows]
+        return tops, heights
+
+    def _geometry_for_hit_test(
+        self,
+        pointer_content_y: float,
+        live_tops: list[int],
+        live_heights: list[int],
+    ) -> tuple[list[int], list[int]]:
+        if (
+            self._locked_tops is not None
+            and self._locked_heights is not None
+            and self._geometry_lock_y is not None
+            and abs(pointer_content_y - self._geometry_lock_y) < self._geometry_lock_px
+        ):
+            return self._locked_tops, self._locked_heights
+        return live_tops, live_heights
+
+    def _lock_geometry(
+        self,
+        pointer_content_y: float,
+        tops: list[int],
+        heights: list[int],
+    ) -> None:
+        self._geometry_lock_y = pointer_content_y
+        self._locked_tops = list(tops)
+        self._locked_heights = list(heights)
+
+    def _clear_geometry_lock(self) -> None:
+        self._geometry_lock_y = None
+        self._locked_tops = None
+        self._locked_heights = None
+
     def target_for_pointer(self, y_root: int, rows: list[RowGeometry]) -> int:
         pointer_content_y = canvas_content_y(self._canvas, y_root)
-        content_tops = [
-            canvas_content_y_for_widget(self._canvas, row) for row in rows
-        ]
-        heights = [row.winfo_height() for row in rows]
+        live_tops, live_heights = self._live_geometry(rows)
+        tops, heights = self._geometry_for_hit_test(
+            pointer_content_y, live_tops, live_heights
+        )
         return target_index_for_drag_source_content(
             pointer_content_y,
             source_index=self._source_index,
-            row_content_tops=content_tops,
+            row_content_tops=tops,
             row_heights=heights,
         )
 
@@ -226,6 +269,7 @@ class ChannelReorderMode:
         self._source_row = source_row
         self._source_index = source_index
         self._target_index = source_index
+        self._clear_geometry_lock()
         source_row.set_reorder_highlight(True)
         self._on_debug(
             "begin",
@@ -239,6 +283,7 @@ class ChannelReorderMode:
         if not self._active or delta == 0:
             return False
         self._engaged = True
+        self._clear_geometry_lock()
         target = nudge_insert_index(self._target_index, delta, length=num_rows)
         if target == self._target_index:
             return False
@@ -266,10 +311,21 @@ class ChannelReorderMode:
             if abs(y_root - self._press_y_root) < self._engage_px:
                 return False
             self._engaged = True
-        target = self.target_for_pointer(y_root, rows)
+        pointer_content_y = canvas_content_y(self._canvas, y_root)
+        live_tops, live_heights = self._live_geometry(rows)
+        tops, heights = self._geometry_for_hit_test(
+            pointer_content_y, live_tops, live_heights
+        )
+        target = target_index_for_drag_source_content(
+            pointer_content_y,
+            source_index=self._source_index,
+            row_content_tops=tops,
+            row_heights=heights,
+        )
         if target == self._target_index:
             return False
         self._target_index = target
+        self._lock_geometry(pointer_content_y, live_tops, live_heights)
         self._on_debug(
             "motion",
             y_root=y_root,
@@ -320,3 +376,4 @@ class ChannelReorderMode:
         self._active = False
         self._engaged = False
         self._source_row = None
+        self._clear_geometry_lock()

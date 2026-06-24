@@ -11,6 +11,11 @@ ROW_SLOT_HEIGHT = 64
 LONG_PRESS_MS = 400
 # Vertical pointer movement before a drag session may change the insert target.
 DRAG_ENGAGE_PX = 12
+# Movement while waiting for long-press cancels the pending drag arm.
+LONG_PRESS_CANCEL_PX = 20
+# After a target change, keep row hit-test geometry until the pointer moves
+# this many content pixels (avoids flip-flop when preview repack shifts rows).
+GEOMETRY_LOCK_PX = 16
 
 
 def apply_list_move(from_index: int, to_index: int, length: int) -> int | None:

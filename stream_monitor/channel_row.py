@@ -27,7 +27,7 @@ from stream_monitor.app_ui import (
 from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelStatus
 from stream_monitor.notifier import open_url
-from stream_monitor.channel_reorder import LONG_PRESS_MS
+from stream_monitor.channel_reorder import LONG_PRESS_MS, LONG_PRESS_CANCEL_PX
 from stream_monitor.util import channel_key, channel_page_url
 
 logger = logging.getLogger(__name__)
@@ -802,7 +802,7 @@ class ChannelRow(ctk.CTkFrame):
 
     def _on_drag_handle_motion(self, event: Any) -> None:
         if not self._drag_active:
-            if abs(event.y_root - self._drag_press_y) > 20:
+            if abs(event.y_root - self._drag_press_y) > LONG_PRESS_CANCEL_PX:
                 self._cancel_drag_long_press()
             return
         if self._on_reorder_motion is not None:

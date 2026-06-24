@@ -711,6 +711,8 @@ class App(ctk.CTk):
         self._refresh_move_buttons()
 
     def _remove_channel(self, channel: dict[str, str]) -> None:
+        if self._reorder_mode.active:
+            self._end_channel_reorder(commit=False)
         # Confirm before destructive action — a single misclick on the [×]
         # button in a long channel list used to silently lose the channel
         # plus all its monitor-only / pause state.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from stream_monitor.channel_reorder import (
     DRAG_ENGAGE_PX,
+    GEOMETRY_LOCK_PX,
     ROW_SLOT_HEIGHT,
     pack_anchor_for_moved_row,
     preview_order_delta,
@@ -103,6 +104,27 @@ def test_content_pointer_stable_when_viewport_scrolls() -> None:
     mode_high._source_index = 1
     assert mode_low.target_for_pointer(pointer_low, rows_low) == 3
     assert mode_high.target_for_pointer(pointer_high, rows_high) == 3
+
+
+def test_geometry_lock_ignores_shifted_row_positions_until_pointer_moves() -> None:
+    canvas = _FakeCanvas()
+    mode = ChannelReorderMode(canvas, schedule_preview_repack=lambda _o: None)
+    mode._source_index = 1
+    locked_tops = [0, 64, 128, 192]
+    mode._lock_geometry(100, locked_tops, [ROW_SLOT_HEIGHT] * 4)
+    shifted_rows = [
+        _FakeGeomRow(100),
+        _FakeGeomRow(228),
+        _FakeGeomRow(164),
+        _FakeGeomRow(292),
+    ]
+    pointer_y = 200
+    assert mode.target_for_pointer(pointer_y, shifted_rows) == 2
+    unlocked = ChannelReorderMode(canvas, schedule_preview_repack=lambda _o: None)
+    unlocked._source_index = 1
+    assert unlocked.target_for_pointer(pointer_y, shifted_rows) == 3
+    moved_y = 100 + GEOMETRY_LOCK_PX + 5 + canvas.winfo_rooty()
+    assert mode.target_for_pointer(int(moved_y), shifted_rows) == 3
 
 
 def test_reorder_mode_click_without_move_stays_noop() -> None:
