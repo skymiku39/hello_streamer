@@ -30,8 +30,9 @@ from stream_monitor.app_ui import (
     _tooltip_tr,
 )
 from stream_monitor.config_manager import (
-    DEFAULT_BROWSER_SETTINGS,
     DEFAULT_VIEWER_ENGAGEMENT,
+    _normalize_browser_settings,
+    _normalize_viewer_engagement,
 )
 from stream_monitor.fetcher import get_fetcher
 from stream_monitor.fetcher.base import StreamInfo
@@ -571,8 +572,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         self.result: dict[str, Any] | None = None
         self.viewer_engagement_result: dict[str, Any] | None = None
-        settings = {**DEFAULT_BROWSER_SETTINGS, **(current or {})}
-        ve_settings = {**DEFAULT_VIEWER_ENGAGEMENT, **(viewer_engagement or {})}
+        settings = _normalize_browser_settings(current or {})
+        ve_settings = _normalize_viewer_engagement(viewer_engagement or {})
         self._new_window_before_app_mode = bool(settings.get("new_window", False))
         profile_stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
         self._test_profile_dir = Path(tempfile.gettempdir()) / (

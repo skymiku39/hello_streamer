@@ -12,22 +12,15 @@ def _use_config_path(monkeypatch, path: Path) -> None:
 
 
 def _migrated_defaults() -> dict:
-    """Return ``DEFAULT_CONFIG`` with the same migrations ``load()`` applies.
-
-    Several legacy tests pre-date :func:`_migrate_browser_settings`, which
-    may fill in ``user_data_dir`` when ``per_channel_profile=True`` with an
-    empty path. Use this helper instead of comparing against
-    ``DEFAULT_CONFIG`` literally.
-    """
-    expected = deepcopy(config_manager.DEFAULT_CONFIG)
-    config_manager._migrate_browser_settings(expected["browser_settings"])
-    return expected
+    """Return ``DEFAULT_CONFIG`` with the same finalisation ``load()`` applies."""
+    return config_manager._finalize_config(
+        deepcopy(config_manager.DEFAULT_CONFIG),
+        apply_legacy_migration=True,
+    )
 
 
 def _migrated_default_browser_settings() -> dict:
-    expected = deepcopy(config_manager.DEFAULT_BROWSER_SETTINGS)
-    config_manager._migrate_browser_settings(expected)
-    return expected
+    return _migrated_defaults()["browser_settings"]
 
 
 def test_load_missing_file_uses_defaults(tmp_path, monkeypatch) -> None:
@@ -82,8 +75,8 @@ def test_load_validates_config_values(tmp_path, monkeypatch) -> None:
     assert config["check_interval"] == config_manager.MIN_CHECK_INTERVAL
     assert config["action"] == "open_and_stop"
     assert config["monitor_mode"] == "trigger"
-    assert config["run_on_startup"] is False
-    assert config["minimize_to_tray"] is True
+    assert config["run_on_startup"] is True
+    assert config["minimize_to_tray"] is False
     assert config["window_geometry"] is None
     assert config["browser_settings"] == _migrated_default_browser_settings()
 
@@ -141,7 +134,7 @@ def test_load_preserves_monitor_only_field(tmp_path, monkeypatch) -> None:
     assert config["channels"][0]["monitor_only"] is True
     assert config["channels"][1]["monitor_only"] is False
     assert "monitor_only" not in config["channels"][2]
-    assert "monitor_only" not in config["channels"][3]
+    assert config["channels"][3]["monitor_only"] is True
 
 
 def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
@@ -168,6 +161,7 @@ def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
     assert path.exists()
     assert not path.with_name(".config.json.tmp").exists()
     assert config_manager.load() == {
+        "config_format_version": config_manager.CONFIG_FORMAT_VERSION,
         "channels": [
             {
                 "platform": "youtube",
@@ -424,7 +418,6 @@ def test_migrate_preserves_user_supplied_path() -> None:
 @pytest.mark.parametrize(
     "iso_flag",
     [
-        "app_mode",
         "hide_from_taskbar",
         "minimized",
         "close_on_offline",
@@ -445,6 +438,71 @@ def test_migrate_fills_profile_when_iso_feature_enabled(iso_flag: str) -> None:
 
     assert settings["user_data_dir"].endswith("browser_profile")
     assert settings["per_channel_profile"] is True
+
+
+def test_migrate_skips_app_mode_only_without_profile() -> None:
+    """``app_mode`` alone must not force a dedicated profile — the UI allows
+    local identity + player (app mode) as an explicit choice."""
+    settings = {
+        "enabled": True,
+        "user_data_dir": "",
+        "per_channel_profile": False,
+        "app_mode": True,
+    }
+    config_manager._migrate_iso_features_without_profile(settings)
+
+    assert settings["user_data_dir"] == ""
+    assert settings["per_channel_profile"] is False
+
+
+def test_save_preserves_local_identity_with_app_mode(
+    tmp_path, monkeypatch
+) -> None:
+    """Saving program launch + local identity + app mode must not be upgraded
+    to a dedicated profile (regression for settings that appeared not to stick).
+    """
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+
+    config_manager.save(
+        {
+            "browser_settings": {
+                "enabled": True,
+                "app_mode": True,
+                "new_window": True,
+                "user_data_dir": "",
+                "per_channel_profile": False,
+            }
+        }
+    )
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    settings = on_disk["browser_settings"]
+    assert settings["user_data_dir"] == ""
+    assert settings["per_channel_profile"] is False
+    assert settings["app_mode"] is True
+    assert on_disk["config_format_version"] == config_manager.CONFIG_FORMAT_VERSION
+
+
+def test_save_returns_normalized_config(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+
+    returned = config_manager.save(
+        {
+            "browser_settings": {
+                "enabled": True,
+                "app_mode": True,
+                "new_window": True,
+                "user_data_dir": "",
+                "per_channel_profile": False,
+            }
+        }
+    )
+
+    assert returned["browser_settings"]["user_data_dir"] == ""
+    assert returned["config_format_version"] == config_manager.CONFIG_FORMAT_VERSION
+    assert json.loads(path.read_text(encoding="utf-8")) == returned
 
 
 def test_migrate_iso_features_skipped_when_browser_disabled() -> None:
@@ -707,27 +765,54 @@ def test_normalize_rejects_whitespace_only_browser_path() -> None:
     assert result["browser_path"] == "chrome"
 
 
-def test_normalize_rejects_non_bool_flag_values() -> None:
-    """Boolean flags fed garbage (strings/ints/None) must keep their
-    default value, not silently flip to truthy/falsy interpretations.
-    """
+def test_normalize_coerces_legacy_bool_strings() -> None:
+    """Older hand-edited JSON may store bools as strings — coerce on load."""
+    result = config_manager._normalize_browser_settings(
+        {
+            "enabled": "true",
+            "new_window": "false",
+            "app_mode": "yes",
+            "apply_geometry": "0",
+            "minimized": 1,
+            "per_channel_profile": 0,
+            "close_on_offline": "on",
+            "close_on_stop": "off",
+            "close_off_topic_pages": "no",
+            "hide_from_taskbar": "1",
+        }
+    )
+
+    assert result["enabled"] is True
+    assert result["new_window"] is False
+    assert result["app_mode"] is True
+    assert result["apply_geometry"] is False
+    assert result["minimized"] is True
+    assert result["per_channel_profile"] is False
+    assert result["close_on_offline"] is True
+    assert result["close_on_stop"] is False
+    assert result["close_off_topic_pages"] is False
+    assert result["hide_from_taskbar"] is True
+
+
+def test_normalize_rejects_unrecognised_bool_values() -> None:
+    """Unrecognised bool shapes must keep their default value."""
     raw_garbage = {
-        "enabled": "yes",
-        "new_window": 1,
-        "app_mode": "true",
+        "enabled": "maybe",
+        "new_window": 2,
+        "app_mode": "truthy",
         "apply_geometry": None,
-        "minimized": "",
-        "per_channel_profile": 0,
-        "close_on_offline": "false",
-        "close_on_stop": [],
-        "close_off_topic_pages": {},
-        "hide_from_taskbar": "1",
+        "minimized": [],
+        "per_channel_profile": {},
+        "close_on_offline": "nope",
+        "close_on_stop": "nope",
+        "close_off_topic_pages": "nope",
+        "hide_from_taskbar": "nope",
     }
     result = config_manager._normalize_browser_settings(raw_garbage)
 
     for key in raw_garbage:
         assert result[key] == config_manager.DEFAULT_BROWSER_SETTINGS[key], (
-            f"flag {key!r} must fall back to default when fed non-bool input"
+            f"flag {key!r} must fall back to default when fed unrecognised input"
         )
 
 

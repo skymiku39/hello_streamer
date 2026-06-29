@@ -1334,7 +1334,7 @@ class App(ctk.CTk):
             self.config["window_geometry"] = self.geometry()
         except Exception:
             pass
-        config_manager.save(self.config)
+        self.config = config_manager.save(self.config)
 
     def _on_close(self) -> None:
         self._controller.shutdown()
