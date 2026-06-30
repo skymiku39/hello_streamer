@@ -1,3 +1,23 @@
+# Hello Streamer v1.1.1
+
+## 修正：瀏覽器設定與 profile 儲存
+
+- **設定不再被悄悄改寫**：儲存瀏覽器設定時，不再誤跑舊版 migration，「本機日常帳號 + App 模式」等選項會如實保留。
+- **記憶體與磁碟同步**：儲存後立即更新程式內設定，重新開啟瀏覽器設定對話框時，profile 路徑與帳號模式與上次儲存一致。
+- **跨版本格式檢查**：`config.json` 新增 `config_format_version`，舊設定檔僅在首次啟動時一次性修復，之後不再反覆覆寫。
+- **Legacy 型別相容**：舊版 JSON 中的 `"true"`、`1` 等 bool 寫法會正確還原，避免選項落回預設值。
+
+### 與 cookies／登入的關係
+
+- **程式專用 profile**（`user_data_dir` 有路徑）：「登入此環境」寫入的 cookies 存在該資料夾；設定儲存後路徑不會再被清空或改指向。
+- **本機日常帳號**（無獨立 profile）：沿用你平常 Chrome 的登入狀態，儲存時不會被升級成 dedicated profile。
+
+## 升級提醒
+
+從 v1.1.0 或更早版本升級可直接覆蓋執行檔。首次啟動會自動寫入 `config_format_version: 1`；若你已有 dedicated profile 路徑，帳號設定不會被改動。
+
+---
+
 # Hello Streamer v1.1.0
 
 ## 新功能：頻道拖曳排序

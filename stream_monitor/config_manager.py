@@ -1,14 +1,6 @@
 """config.json 讀寫與預設值管理。"""
 
-from __future__ import annotations
-
-import json
-from copy import deepcopy
-from typing import Any
-
-from stream_monitor import base_dir, default_browser_profile_dir, i18n
-
-# Bump when persisted schema semantics change.  Older files without this key
+from __future__ import annotationsimport jsonfrom copy import deepcopyfrom typing import Anyfrom stream_monitor import base_dir, default_browser_profile_dir, i18n# Bump when persisted schema semantics change.  Older files without this key
 # (or with a lower number) receive :func:`_migrate_iso_features_without_profile`
 # once on load.  Save never runs that migration so explicit UI choices such as
 # "local identity + app mode" are not overwritten.

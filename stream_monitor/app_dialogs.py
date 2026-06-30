@@ -30,7 +30,6 @@ from stream_monitor.app_ui import (
     _tooltip_tr,
 )
 from stream_monitor.config_manager import (
-    DEFAULT_VIEWER_ENGAGEMENT,
     _normalize_browser_settings,
     _normalize_viewer_engagement,
 )
