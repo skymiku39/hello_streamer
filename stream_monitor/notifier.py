@@ -108,32 +108,6 @@ from stream_monitor.viewer_engagement_model import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# #region agent log
-def _agent_debug_log(
-    hypothesis_id: str, location: str, message: str, data: dict[str, Any]
-) -> None:
-    import json
-    import time
-
-    try:
-        payload = {
-            "sessionId": "5d42ac",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-            "runId": "verify-local-app",
-        }
-        log_path = Path(__file__).resolve().parent.parent / "debug-5d42ac.log"
-        with log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-
-
-# #endregion
-
 ActionCallback = Callable[[], None]
 
 # Process-wide viewer-engagement assist config (mirrors the module-global Win32
@@ -563,22 +537,6 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
             args.append(f"--window-position={x},{y}")
             args.append(f"--window-size={width},{height}")
         args.append(f"--app={url}")
-        # #region agent log
-        _agent_debug_log(
-            "H1",
-            "notifier.py:_build_browser_args",
-            "chromium app_mode CLI args",
-            {
-                "user_data_dir": user_data_dir,
-                "apply_geometry": apply_geometry,
-                "x": x,
-                "y": y,
-                "width": width,
-                "height": height,
-                "args": args,
-            },
-        )
-        # #endregion
         return args
 
     if new_window:
@@ -776,31 +734,6 @@ def _open_with_browser_settings(
     if class_name:
         baseline = _enum_browser_hwnds(class_name)
 
-    # #region agent log
-    _agent_debug_log(
-        "H2",
-        "notifier.py:_open_with_browser_settings",
-        "geometry launch decision",
-        {
-            "effective_user_data_dir": effective_user_data_dir,
-            "isolation_available": isolation_available,
-            "want_window_management": want_window_management,
-            "want_geometry_only_fixup": want_geometry_only_fixup,
-            "want_win32_fixup": want_win32_fixup,
-            "class_name": class_name,
-            "app_mode": app_mode,
-            "new_window": bool(settings.get("new_window", True)),
-            "apply_geometry": apply_geometry,
-            "x": effective_settings.get("x"),
-            "y": effective_settings.get("y"),
-            "width": effective_settings.get("width"),
-            "height": effective_settings.get("height"),
-            "baseline_hwnd_count": len(baseline),
-            "args": args,
-        },
-    )
-    # #endregion
-
     # Belt-and-suspenders: STARTUPINFO still helps in the (rare) cold-start
     # case where no browser master process is yet running, e.g. first launch
     # after a reboot. Harmless when the master process already exists.
@@ -836,7 +769,6 @@ def _open_with_browser_settings(
             worker_settings = effective_settings
             track_url = url
             track_keywords = tuple(title_hints)
-            log_msg = "Win32 post-launch worker scheduled (full management)"
         else:
             worker_settings = {
                 **effective_settings,
@@ -846,7 +778,6 @@ def _open_with_browser_settings(
             }
             track_url = ""
             track_keywords = ()
-            log_msg = "Win32 geometry-only fixup scheduled (shared profile)"
             if wants_close_or_hide_mgmt:
                 _block_title_fallback_for_url(url)
         _apply_new_browser_window_settings_async(
@@ -857,28 +788,7 @@ def _open_with_browser_settings(
             track_for_url=track_url,
             track_keywords=track_keywords,
         )
-        # #region agent log
-        _agent_debug_log(
-            "H3",
-            "notifier.py:_open_with_browser_settings",
-            log_msg,
-            {
-                "class_name": class_name,
-                "url": url,
-                "track_for_url": track_url,
-                "geometry_only": want_geometry_only_fixup,
-            },
-        )
-        # #endregion
     elif _is_windows() and not isolation_available:
-        # #region agent log
-        _agent_debug_log(
-            "H3",
-            "notifier.py:_open_with_browser_settings",
-            "Win32 post-launch worker SKIPPED (no isolation)",
-            {"url": url},
-        )
-        # #endregion
         _block_title_fallback_for_url(url)
 
     return True

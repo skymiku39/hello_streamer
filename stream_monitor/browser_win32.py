@@ -404,50 +404,6 @@ def _apply_new_browser_window_settings_async(
                             height,
                             set_window_pos_flags,
                         )
-                        # #region agent log
-                        try:
-                            import json
-                            from pathlib import Path
-
-                            rect = ctypes.wintypes.RECT()
-                            user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                            payload = {
-                                "sessionId": "5d42ac",
-                                "hypothesisId": "H4",
-                                "location": "browser_win32.py:_worker",
-                                "message": "SetWindowPos applied",
-                                "data": {
-                                    "hwnd": int(hwnd),
-                                    "requested": {
-                                        "x": x,
-                                        "y": y,
-                                        "width": width,
-                                        "height": height,
-                                    },
-                                    "actual_rect": {
-                                        "left": rect.left,
-                                        "top": rect.top,
-                                        "right": rect.right,
-                                        "bottom": rect.bottom,
-                                        "width": rect.right - rect.left,
-                                        "height": rect.bottom - rect.top,
-                                    },
-                                    "title": current_title,
-                                },
-                                "timestamp": int(time.time() * 1000),
-                                "runId": "verify-local-app",
-                            }
-                            log_path = (
-                                Path(__file__).resolve().parent.parent
-                                / "debug-5d42ac.log"
-                            )
-                            with log_path.open("a", encoding="utf-8") as f:
-                                f.write(
-                                    json.dumps(payload, ensure_ascii=False) + "\n"
-                                )
-                        except Exception:
-                            pass
-                        # #endregion
                     if hide_from_taskbar:
                         # Must happen BEFORE minimize: minimizing a window
                         # whose WS_EX_TOOLWINDOW we then toggle on can

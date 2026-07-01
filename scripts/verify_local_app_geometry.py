@@ -6,9 +6,7 @@ Run while Chrome is already open (typical case):
 
 from __future__ import annotations
 
-import json
 import time
-from pathlib import Path
 
 from stream_monitor.browser_win32 import (
     _WIN32_WINDOW_CLASS_BY_FAMILY,
@@ -16,7 +14,7 @@ from stream_monitor.browser_win32 import (
     _get_window_title,
     _is_windows,
 )
-from stream_monitor.notifier import _agent_debug_log, open_url
+from stream_monitor.notifier import open_url
 
 TARGET = {"x": 120, "y": 120, "width": 420, "height": 280}
 
@@ -64,32 +62,19 @@ def _snapshot_chrome_windows() -> list[dict]:
 
 def main() -> None:
     before = _snapshot_chrome_windows()
-    _agent_debug_log(
-        "H5",
-        "verify_local_app_geometry.py",
-        "before launch snapshot",
-        {"window_count": len(before), "windows": before[:8]},
-    )
     open_url("https://www.twitch.tv/", SETTINGS)
     time.sleep(5)
     after = _snapshot_chrome_windows()
-    _agent_debug_log(
-        "H5",
-        "verify_local_app_geometry.py",
-        "after launch snapshot",
-        {
-            "target": TARGET,
-            "window_count": len(after),
-            "windows": after[:12],
-            "matching_target": [
-                w
-                for w in after
-                if abs(w["width"] - TARGET["width"]) <= 8
-                and abs(w["height"] - TARGET["height"]) <= 8
-            ],
-        },
-    )
-    print("Wrote debug-5d42ac.log — compare target", TARGET, "with after snapshot.")
+    matching = [
+        w
+        for w in after
+        if abs(w["width"] - TARGET["width"]) <= 8
+        and abs(w["height"] - TARGET["height"]) <= 8
+    ]
+    print("Target:", TARGET)
+    print("Before windows:", len(before))
+    print("After windows:", len(after))
+    print("Matching target:", matching)
 
 
 if __name__ == "__main__":

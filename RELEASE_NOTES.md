@@ -1,3 +1,17 @@
+# Hello Streamer v1.1.2
+
+## 修正：平常帳號 + 獨占視窗的視窗大小與位置
+
+- **幾何補正**：使用本機日常 Chrome 帳號並開啟 App 模式（獨占視窗）時，程式會在啟動後以 Win32 `SetWindowPos` 套用你設定的位置與大小；Chrome 常忽略 `--window-size` / `--window-position` 的問題已補正。
+- **安全邊界不變**：此模式僅調整幾何，**不註冊 HWND**，下播關窗、最小化、隱藏工作列等仍須程式專用 profile 才會啟用。
+- **驗證腳本**：開發者可執行 `uv run python scripts/verify_local_app_geometry.py` 在已開啟 Chrome 的環境下快速檢查。
+
+## 升級提醒
+
+從 v1.1.1 升級可直接覆蓋執行檔，`config.json` 無需變更。
+
+---
+
 # Hello Streamer v1.1.1
 
 ## 修正：瀏覽器設定與 profile 儲存
