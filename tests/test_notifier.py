@@ -2113,17 +2113,13 @@ def test_register_tracked_hwnd_merges_keywords_on_re_register() -> None:
 # ─────────────────────────────────────────────
 # Safety degradation when no profile isolation
 # ─────────────────────────────────────────────
-def test_open_with_browser_settings_skips_win32_management_without_isolation(
+def test_open_with_browser_settings_geometry_only_without_isolation(
     monkeypatch,
 ) -> None:
-    """When the effective user_data_dir resolves to ``""`` (no isolation),
-    the post-launch Win32 worker MUST be skipped entirely.
+    """Shared profile + App Mode: geometry fixup runs, HWND tracking does not.
 
-    Otherwise the HWND-diff approach grabs whatever new top-level window
-    Chrome happens to surface — which, on a shared master process, may
-    be a completely unrelated browser window the user just opened.
-    Tracking that window would let close_on_offline / off-topic prune
-    close the wrong thing.
+    Close/minimize/hide management still requires isolation; geometry-only
+  worker must not register HWNDs or unblock title-keyword close fallback.
     """
     _reset_tracked_hwnds()
     try:
@@ -2145,25 +2141,32 @@ def test_open_with_browser_settings_skips_win32_management_without_isolation(
             lambda *args, **kwargs: manager_calls.append((args, kwargs)),
         )
 
-        # Disable per-channel and leave user_data_dir empty → no isolation.
         settings = {
             "enabled": True,
             "browser_path": "chrome",
             "new_window": True,
-            "app_mode": True,  # would normally trigger window management
-            "minimized": True,  # would normally trigger window management
+            "app_mode": True,
+            "apply_geometry": True,
+            "x": 100,
+            "y": 100,
+            "width": 420,
+            "height": 280,
+            "minimized": True,
             "user_data_dir": "",
             "per_channel_profile": False,
-            "close_on_offline": True,  # would normally trigger tracking
+            "close_on_offline": True,
             "close_off_topic_pages": True,
         }
 
         assert notifier._open_with_browser_settings(
             "https://example.com", settings
         ) is True
-        # No HWND enum, no manager invocation, no tracking.
-        assert enum_calls == []
-        assert manager_calls == []
+        assert enum_calls == ["Chrome_WidgetWin_1"]
+        assert len(manager_calls) == 1
+        _args, kwargs = manager_calls[0]
+        assert kwargs["track_for_url"] == ""
+        assert kwargs["track_keywords"] == ()
+        assert kwargs["apply_geometry"] is True
 
         title_lookup_calls: list[list[str]] = []
         monkeypatch.setattr(
@@ -2178,9 +2181,6 @@ def test_open_with_browser_settings_skips_win32_management_without_isolation(
             lambda hwnd: close_calls.append(hwnd) or True,
         )
 
-        # The safety downgrade must also suppress the title-keyword fallback;
-        # otherwise close_on_offline could still close a user-owned tab that
-        # happens to contain the same channel name in its title.
         assert (
             notifier.close_browser_window_for_url(
                 "https://example.com", title_keywords=["example"]

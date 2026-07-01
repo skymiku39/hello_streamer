@@ -108,6 +108,32 @@ from stream_monitor.viewer_engagement_model import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# #region agent log
+def _agent_debug_log(
+    hypothesis_id: str, location: str, message: str, data: dict[str, Any]
+) -> None:
+    import json
+    import time
+
+    try:
+        payload = {
+            "sessionId": "5d42ac",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+            "runId": "verify-local-app",
+        }
+        log_path = Path(__file__).resolve().parent.parent / "debug-5d42ac.log"
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+# #endregion
+
 ActionCallback = Callable[[], None]
 
 # Process-wide viewer-engagement assist config (mirrors the module-global Win32
@@ -537,6 +563,22 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
             args.append(f"--window-position={x},{y}")
             args.append(f"--window-size={width},{height}")
         args.append(f"--app={url}")
+        # #region agent log
+        _agent_debug_log(
+            "H1",
+            "notifier.py:_build_browser_args",
+            "chromium app_mode CLI args",
+            {
+                "user_data_dir": user_data_dir,
+                "apply_geometry": apply_geometry,
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "args": args,
+            },
+        )
+        # #endregion
         return args
 
     if new_window:
@@ -587,6 +629,21 @@ def _apply_viewer_engagement_to_launch(
                 "allowlist for %s",
                 effective_user_data_dir,
             )
+
+
+def _wants_geometry_only_fixup(
+    *,
+    isolation_available: bool,
+    app_mode: bool,
+    apply_geometry: bool,
+) -> bool:
+    """Shared-profile App Mode: Win32 geometry only, never HWND tracking."""
+    return (
+        _is_windows()
+        and not isolation_available
+        and app_mode
+        and apply_geometry
+    )
 
 
 def _open_with_browser_settings(
@@ -658,42 +715,91 @@ def _open_with_browser_settings(
     # of "settings cargo-culted by an unrelated browser window" is much
     # worse than "geometry didn't apply for one launch".
     isolation_available = bool(effective_user_data_dir)
+    app_mode = bool(settings.get("app_mode"))
+    apply_geometry = bool(effective_settings.get("apply_geometry", True))
+    want_geometry_only_fixup = _wants_geometry_only_fixup(
+        isolation_available=isolation_available,
+        app_mode=app_mode,
+        apply_geometry=apply_geometry,
+    )
     want_window_management = (
         _is_windows() and new_window_expected and isolation_available
+    )
+    want_win32_fixup = want_window_management or want_geometry_only_fixup
+    wants_close_or_hide_mgmt = (
+        bool(settings.get("close_on_offline"))
+        or bool(settings.get("close_off_topic_pages"))
+        or want_minimize
+        or bool(settings.get("hide_from_taskbar"))
     )
     if (
         _is_windows()
         and new_window_expected
         and not isolation_available
-        and (
-            bool(settings.get("close_on_offline"))
-            or bool(settings.get("close_off_topic_pages"))
-            or bool(settings.get("apply_geometry", True))
-            or want_minimize
-            or bool(settings.get("hide_from_taskbar"))
-        )
+        and wants_close_or_hide_mgmt
     ):
         logger.warning(
-            "browser_settings.user_data_dir is empty — Win32 post-launch "
-            "management disabled. Window position/size, App Mode geometry, "
-            "minimize-on-launch, hide-from-taskbar, close-on-offline and "
-            "close-off-topic-pages all become unreliable in this mode. "
-            "Set browser_settings.user_data_dir to a folder path (or enable "
-            "per_channel_profile) to restore full functionality."
+            "browser_settings.user_data_dir is empty — close-on-offline, "
+            "close-off-topic-pages, minimize-on-launch, and hide-from-taskbar "
+            "require a dedicated profile path. Set browser_settings.user_data_dir "
+            "to a folder path (or enable per_channel_profile) to restore them."
+        )
+    elif (
+        _is_windows()
+        and new_window_expected
+        and not isolation_available
+        and apply_geometry
+        and not app_mode
+    ):
+        logger.warning(
+            "browser_settings.user_data_dir is empty — --window-position / "
+            "--window-size are unreliable on a shared Chrome profile unless "
+            "App Mode (solo window) is enabled; Win32 geometry fixup is only "
+            "available for App Mode without a dedicated profile."
+        )
+    elif want_geometry_only_fixup:
+        logger.info(
+            "Applying Win32 geometry fixup for App Mode on shared profile "
+            "(no HWND tracking)."
         )
 
     class_name = (
-        _WIN32_WINDOW_CLASS_BY_FAMILY.get(family) if want_window_management else None
+        _WIN32_WINDOW_CLASS_BY_FAMILY.get(family) if want_win32_fixup else None
     )
 
     # Chromium covers chrome/edge/brave/etc; treat "unknown" as Chromium too
     # because most custom Chromium-derived browsers share the same class.
-    if want_window_management and class_name is None and family == "unknown":
+    if want_win32_fixup and class_name is None and family == "unknown":
         class_name = _WIN32_WINDOW_CLASS_BY_FAMILY["chromium"]
 
     baseline: set[int] = set()
     if class_name:
         baseline = _enum_browser_hwnds(class_name)
+
+    # #region agent log
+    _agent_debug_log(
+        "H2",
+        "notifier.py:_open_with_browser_settings",
+        "geometry launch decision",
+        {
+            "effective_user_data_dir": effective_user_data_dir,
+            "isolation_available": isolation_available,
+            "want_window_management": want_window_management,
+            "want_geometry_only_fixup": want_geometry_only_fixup,
+            "want_win32_fixup": want_win32_fixup,
+            "class_name": class_name,
+            "app_mode": app_mode,
+            "new_window": bool(settings.get("new_window", True)),
+            "apply_geometry": apply_geometry,
+            "x": effective_settings.get("x"),
+            "y": effective_settings.get("y"),
+            "width": effective_settings.get("width"),
+            "height": effective_settings.get("height"),
+            "baseline_hwnd_count": len(baseline),
+            "args": args,
+        },
+    )
+    # #endregion
 
     # Belt-and-suspenders: STARTUPINFO still helps in the (rare) cold-start
     # case where no browser master process is yet running, e.g. first launch
@@ -725,16 +831,54 @@ def _open_with_browser_settings(
         return False
 
     if class_name:
-        _unblock_title_fallback_for_url(url)
+        if want_window_management:
+            _unblock_title_fallback_for_url(url)
+            worker_settings = effective_settings
+            track_url = url
+            track_keywords = tuple(title_hints)
+            log_msg = "Win32 post-launch worker scheduled (full management)"
+        else:
+            worker_settings = {
+                **effective_settings,
+                "minimized": False,
+                "hide_from_taskbar": False,
+                "bring_to_front": False,
+            }
+            track_url = ""
+            track_keywords = ()
+            log_msg = "Win32 geometry-only fixup scheduled (shared profile)"
+            if wants_close_or_hide_mgmt:
+                _block_title_fallback_for_url(url)
         _apply_new_browser_window_settings_async(
             class_name,
             baseline,
-            effective_settings,
-            apply_geometry=bool(effective_settings.get("apply_geometry", True)),
-            track_for_url=url,
-            track_keywords=tuple(title_hints),
+            worker_settings,
+            apply_geometry=apply_geometry,
+            track_for_url=track_url,
+            track_keywords=track_keywords,
         )
+        # #region agent log
+        _agent_debug_log(
+            "H3",
+            "notifier.py:_open_with_browser_settings",
+            log_msg,
+            {
+                "class_name": class_name,
+                "url": url,
+                "track_for_url": track_url,
+                "geometry_only": want_geometry_only_fixup,
+            },
+        )
+        # #endregion
     elif _is_windows() and not isolation_available:
+        # #region agent log
+        _agent_debug_log(
+            "H3",
+            "notifier.py:_open_with_browser_settings",
+            "Win32 post-launch worker SKIPPED (no isolation)",
+            {"url": url},
+        )
+        # #endregion
         _block_title_fallback_for_url(url)
 
     return True

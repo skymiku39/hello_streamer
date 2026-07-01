@@ -424,10 +424,8 @@ def test_wm_2a_isolation_fires_post_launch_worker(monkeypatch, tmp_path) -> None
     assert len(manager_calls) == 1
 
 
-def test_wm_2b_no_isolation_skips_post_launch_worker(monkeypatch) -> None:
-    """The headline safety degradation: no profile isolation, no Win32
-    window management — even with every "I want auto-magic" flag turned on.
-    """
+def test_wm_2b_no_isolation_geometry_only_fixup(monkeypatch) -> None:
+    """Shared profile + App Mode: geometry fixup runs; full management does not."""
     _stub_chrome(monkeypatch)
     manager_calls: list[Any] = []
     _stub_win32(monkeypatch, manager_calls=manager_calls)
@@ -450,7 +448,12 @@ def test_wm_2b_no_isolation_skips_post_launch_worker(monkeypatch) -> None:
             per_channel_profile=False,
         ),
     )
-    assert manager_calls == []
+    assert len(manager_calls) == 1
+    _args, kwargs = manager_calls[0]
+    assert kwargs["track_for_url"] == ""
+    assert kwargs["apply_geometry"] is True
+    assert _args[2]["minimized"] is False
+    assert _args[2]["hide_from_taskbar"] is False
 
 
 def test_wm_2c_non_windows_skips_post_launch_worker(monkeypatch, tmp_path) -> None:
@@ -1079,9 +1082,7 @@ def test_fwd_8a_minimized_forwarded_with_isolation(monkeypatch, tmp_path) -> Non
 
 
 def test_fwd_8b_minimized_dropped_without_isolation(monkeypatch) -> None:
-    """The safety degradation kills the entire worker path, which means
-    ``minimized=True`` is silently dropped in shared mode. That's the
-    explicit design — better dropped than applied to the wrong window."""
+    """Shared profile without App Mode: no worker path, so minimized is dropped."""
     _stub_chrome(monkeypatch)
     monkeypatch.setattr(notifier, "_is_windows", lambda: True)
     monkeypatch.setattr(notifier, "_enum_browser_hwnds", lambda _c: set())
@@ -1093,6 +1094,27 @@ def test_fwd_8b_minimized_dropped_without_isolation(monkeypatch) -> None:
         _settings(minimized=True, user_data_dir="", per_channel_profile=False),
     )
     assert calls == []
+
+
+def test_fwd_8b2_geometry_only_strips_minimized_without_isolation(monkeypatch) -> None:
+    _stub_chrome(monkeypatch)
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(notifier, "_enum_browser_hwnds", lambda _c: set())
+    _capture_popen(monkeypatch)
+    calls = _capture_manager_args(monkeypatch)
+
+    notifier._open_with_browser_settings(
+        "https://example.com",
+        _settings(
+            app_mode=True,
+            minimized=True,
+            user_data_dir="",
+            per_channel_profile=False,
+        ),
+    )
+    assert len(calls) == 1
+    assert calls[0]["settings"]["minimized"] is False
+    assert calls[0]["track_for_url"] == ""
 
 
 def test_fwd_8c_hide_from_taskbar_forwarded_with_isolation(
@@ -1620,8 +1642,10 @@ def test_smoke_11b_all_flags_on_without_isolation_degrades_safely(
     assert (
         notifier._open_with_browser_settings("https://example.com", cfg) is True
     )
-    # Worker NEVER fires; title-keyword fallback is blocked for this URL.
-    assert calls == []
+    assert len(calls) == 1
+    assert calls[0]["track_for_url"] == ""
+    assert calls[0]["settings"]["minimized"] is False
+    assert calls[0]["settings"]["hide_from_taskbar"] is False
     assert "https://example.com" in notifier._TITLE_FALLBACK_BLOCKED_URLS
 
 
@@ -2001,6 +2025,12 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
         "app",
         "new_window",
     }
+    expects_geometry_only = (
+        custom_enabled
+        and not isolated
+        and window_mode == "app"
+        and apply_geometry
+    )
 
     open_index = 0
 
@@ -2101,6 +2131,21 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
             assert worker_calls[0]["apply_geometry"] is apply_geometry
             assert notifier.tracked_hwnds_for_url(url) == {hwnd}
             assert url not in notifier._TITLE_FALLBACK_BLOCKED_URLS
+        elif expects_geometry_only:
+            assert len(worker_calls) == 1
+            assert worker_calls[0]["track_for_url"] == ""
+            assert worker_calls[0]["apply_geometry"] is apply_geometry
+            assert notifier.tracked_hwnds_for_url(url) == set()
+            wants_close_or_hide_mgmt = (
+                close_flags["close_on_offline"]
+                or close_flags["close_off_topic_pages"]
+                or settings.get("minimized")
+                or settings.get("hide_from_taskbar")
+            )
+            if wants_close_or_hide_mgmt:
+                assert url in notifier._TITLE_FALLBACK_BLOCKED_URLS
+            else:
+                assert url not in notifier._TITLE_FALLBACK_BLOCKED_URLS
         else:
             assert worker_calls == []
             assert notifier.tracked_hwnds_for_url(url) == set()
