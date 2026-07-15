@@ -6,8 +6,14 @@ from stream_monitor.scroll_guard import ScrollRepaintGuard
 
 
 class _FakeScrollbar:
+    def __init__(self) -> None:
+        self.set_calls: list[tuple[str, str]] = []
+
     def bind(self, *_args, **_kwargs) -> None:
         pass
+
+    def set(self, first: str, last: str) -> None:
+        self.set_calls.append((first, last))
 
 
 class _FakeCanvas:
@@ -84,3 +90,16 @@ def test_yscroll_wrapper_marks_scroll_active() -> None:
 
     wrapped("0.0", "0.5")
     assert guard.repaints_deferred is True
+
+
+def test_yscroll_wrapper_forwards_to_scrollbar_set() -> None:
+    root = _FakeRoot()
+    frame = _FakeScrollFrame()
+    ScrollRepaintGuard(frame, root)
+    wrapped = frame._parent_canvas._yscrollcommand
+
+    wrapped("0.1", "0.6")
+    assert frame._scrollbar.set_calls == [("0.1", "0.6")]
+
+    wrapped("0.3", "0.8")
+    assert frame._scrollbar.set_calls == [("0.1", "0.6"), ("0.3", "0.8")]

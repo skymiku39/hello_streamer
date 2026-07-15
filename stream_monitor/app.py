@@ -371,6 +371,7 @@ class App(ctk.CTk):
         for wheel_seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.bind_all(wheel_seq, self._on_channel_reorder_wheel_global, add="+")
         self.bind_all("<Escape>", self._on_channel_reorder_escape_global, add="+")
+        self.bind("<FocusOut>", self._on_focus_out_cancel_reorder)
 
         self.empty_label = ctk.CTkLabel(
             self.scroll_frame,
@@ -898,6 +899,9 @@ class App(ctk.CTk):
 
     def _on_channel_reorder_motion_global(self, event: Any) -> None:
         if self._reorder_mode.active:
+            if not (getattr(event, "state", 0) & 0x100):
+                self._end_channel_reorder(commit=False)
+                return
             self._update_channel_reorder(event.y_root)
 
     @staticmethod
@@ -917,6 +921,9 @@ class App(ctk.CTk):
     def _on_channel_reorder_wheel_global(self, event: Any) -> str | None:
         if not self._reorder_mode.active:
             return None
+        if not (getattr(event, "state", 0) & 0x100):
+            self._end_channel_reorder(commit=False)
+            return None
         steps = self._wheel_nudge_steps(event)
         if steps != 0:
             self._reorder_mode.nudge_target(
@@ -929,6 +936,10 @@ class App(ctk.CTk):
             self._end_channel_reorder(commit=False)
             return "break"
         return None
+
+    def _on_focus_out_cancel_reorder(self, _event: Any) -> None:
+        if self._reorder_mode.active:
+            self._end_channel_reorder(commit=False)
 
     def _on_channel_reorder_release_global(self, _event: Any) -> None:
         if self._reorder_mode.active:

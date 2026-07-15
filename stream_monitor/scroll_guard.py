@@ -40,11 +40,10 @@ class ScrollRepaintGuard:
         for sequence in ("<ButtonPress-1>", "<B1-Motion>"):
             self._scrollbar.bind(sequence, self._on_scroll_activity, add="+")
 
-        original_yscroll = self._canvas.cget("yscrollcommand")
+        scrollbar_set = self._scrollbar.set
 
         def yscroll_wrapper(first: str, last: str) -> None:
-            if callable(original_yscroll):
-                original_yscroll(first, last)
+            scrollbar_set(first, last)
             self._on_scroll_activity()
 
         self._canvas.configure(yscrollcommand=yscroll_wrapper)
