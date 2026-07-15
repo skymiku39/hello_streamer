@@ -286,6 +286,36 @@ def _is_browser_popup_or_tool_window(user32: Any, hwnd: int) -> bool:
     return False
 
 
+_FOREGROUND_HOLD_POLL_S = 2.0
+
+
+def _hold_foreground(user32: Any, hwnds: set[int], hold_seconds: int) -> None:
+    """Periodically re-assert foreground on *hwnds* for *hold_seconds*.
+
+    Twitch credits a view only when the Page Visibility API reports "visible"
+    during the player's first heartbeat (~10-15s after page load). By keeping
+    the window in the foreground for the hold period we ensure the initial
+    heartbeat sees an active, watched state.
+    """
+    end = time.monotonic() + hold_seconds
+    while time.monotonic() < end:
+        for hwnd in list(hwnds):
+            try:
+                if not user32.IsWindow(hwnd):
+                    hwnds.discard(hwnd)
+                    continue
+                user32.ShowWindow(hwnd, _SW_SHOW)
+                user32.SetForegroundWindow(hwnd)
+            except OSError:
+                hwnds.discard(hwnd)
+        if not hwnds:
+            return
+        time.sleep(_FOREGROUND_HOLD_POLL_S)
+    logger.debug(
+        "Foreground hold complete (%ds) for %d window(s)", hold_seconds, len(hwnds)
+    )
+
+
 def _apply_new_browser_window_settings_async(
     class_name: str,
     baseline: set[int],
@@ -295,6 +325,7 @@ def _apply_new_browser_window_settings_async(
     deadline_s: float = _MINIMIZE_DEADLINE_S,
     track_for_url: str = "",
     track_keywords: tuple[str, ...] = (),
+    foreground_hold_seconds: int = 0,
 ) -> threading.Thread | None:
     """Spawn a daemon thread that configures any *new* HWND of *class_name*.
 
@@ -454,6 +485,10 @@ def _apply_new_browser_window_settings_async(
                 class_name,
                 deadline_s,
             )
+            return
+
+        if bring_to_front and foreground_hold_seconds > 0:
+            _hold_foreground(user32, managed, foreground_hold_seconds)
 
     thread = threading.Thread(target=_worker, daemon=True, name="browser-window-manager")
     thread.start()

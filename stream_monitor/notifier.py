@@ -575,6 +575,10 @@ def _apply_viewer_engagement_to_launch(
         effective_settings["minimized"] = False
         effective_settings["hide_from_taskbar"] = False
     effective_settings["bring_to_front"] = bool(engagement.bring_to_front)
+    if engagement.bring_to_front and engagement.foreground_hold_seconds > 0:
+        effective_settings["foreground_hold_seconds"] = (
+            engagement.foreground_hold_seconds
+        )
     if engagement.keep_system_awake:
         _ENGAGEMENT_AWAKE_URLS.add(url)
         set_system_keep_awake(True)
@@ -787,6 +791,9 @@ def _open_with_browser_settings(
             apply_geometry=apply_geometry,
             track_for_url=track_url,
             track_keywords=track_keywords,
+            foreground_hold_seconds=int(
+                worker_settings.get("foreground_hold_seconds", 0)
+            ),
         )
     elif _is_windows() and not isolation_available:
         _block_title_fallback_for_url(url)

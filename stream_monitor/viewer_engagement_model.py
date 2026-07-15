@@ -33,8 +33,14 @@ class ViewerEngagementSettings:
     # Merge twitch.tv into the dedicated Chrome profile's "always keep active"
     # performance exception list before launch (dedicated profile only).
     whitelist_performance: bool = True
-    # Briefly bring the freshly-opened Twitch window to the foreground.
-    bring_to_front: bool = False
+    # Bring the freshly-opened Twitch window to the foreground so the Page
+    # Visibility API reports "visible" during player initialisation.
+    bring_to_front: bool = True
+    # How many seconds to keep reasserting foreground after the browser window
+    # is first detected. Twitch's player typically needs 10-15s to load and
+    # send its first heartbeat; holding foreground ensures that heartbeat
+    # reports the page as actively watched.
+    foreground_hold_seconds: int = 15
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> ViewerEngagementSettings:

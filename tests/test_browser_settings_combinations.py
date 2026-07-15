@@ -2057,6 +2057,7 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
             deadline_s=0,
             track_for_url="",
             track_keywords=(),
+            foreground_hold_seconds=0,
         ):
             worker_calls.append(
                 {
@@ -2067,6 +2068,7 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
                     "deadline_s": deadline_s,
                     "track_for_url": track_for_url,
                     "track_keywords": tuple(track_keywords),
+                    "foreground_hold_seconds": foreground_hold_seconds,
                 }
             )
             if track_for_url:

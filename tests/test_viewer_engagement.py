@@ -247,3 +247,134 @@ def test_close_releases_keep_awake(monkeypatch) -> None:
         notifier._ENGAGEMENT_AWAKE_URLS.clear()
         with notifier._TRACKED_HWNDS_LOCK:
             notifier._TRACKED_WINDOWS_BY_URL.clear()
+
+
+# ---------------------------------------------------------------------------
+# Foreground hold settings
+# ---------------------------------------------------------------------------
+def test_foreground_hold_seconds_default() -> None:
+    settings = ViewerEngagementSettings()
+    assert settings.bring_to_front is True
+    assert settings.foreground_hold_seconds == 15
+
+
+def test_foreground_hold_seconds_from_dict() -> None:
+    settings = ViewerEngagementSettings.from_dict(
+        {"enabled": True, "foreground_hold_seconds": 30}
+    )
+    assert settings.foreground_hold_seconds == 30
+
+
+def test_engagement_passes_foreground_hold_to_effective(monkeypatch) -> None:
+    monkeypatch.setattr(
+        notifier,
+        "merge_tab_discarding_exceptions",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(
+        notifier, "set_system_keep_awake", lambda active: None
+    )
+    notifier.configure_viewer_engagement(
+        ViewerEngagementSettings(
+            enabled=True, bring_to_front=True, foreground_hold_seconds=20
+        )
+    )
+    try:
+        effective: dict = {"minimized": False, "hide_from_taskbar": False}
+        notifier._apply_viewer_engagement_to_launch(
+            "https://www.twitch.tv/foo", effective, "/tmp/profile"
+        )
+        assert effective["bring_to_front"] is True
+        assert effective["foreground_hold_seconds"] == 20
+    finally:
+        notifier.configure_viewer_engagement(None)
+        notifier._ENGAGEMENT_AWAKE_URLS.clear()
+
+
+def test_foreground_hold_not_set_when_bring_to_front_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(
+        notifier, "set_system_keep_awake", lambda active: None
+    )
+    notifier.configure_viewer_engagement(
+        ViewerEngagementSettings(
+            enabled=True, bring_to_front=False, foreground_hold_seconds=20
+        )
+    )
+    try:
+        effective: dict = {"minimized": False, "hide_from_taskbar": False}
+        notifier._apply_viewer_engagement_to_launch(
+            "https://www.twitch.tv/foo", effective, "/tmp/profile"
+        )
+        assert effective["bring_to_front"] is False
+        assert "foreground_hold_seconds" not in effective
+    finally:
+        notifier.configure_viewer_engagement(None)
+        notifier._ENGAGEMENT_AWAKE_URLS.clear()
+
+
+def test_config_normalizes_foreground_hold_seconds() -> None:
+    normalized = config_manager._normalize_viewer_engagement(
+        {"enabled": True, "foreground_hold_seconds": "25"}
+    )
+    assert normalized["foreground_hold_seconds"] == 25
+
+    normalized_bad = config_manager._normalize_viewer_engagement(
+        {"enabled": True, "foreground_hold_seconds": "not_a_number"}
+    )
+    assert normalized_bad["foreground_hold_seconds"] == 15
+
+
+# ---------------------------------------------------------------------------
+# _hold_foreground unit test
+# ---------------------------------------------------------------------------
+def test_hold_foreground_calls_set_foreground_window(monkeypatch) -> None:
+    """Verify _hold_foreground repeatedly asserts foreground on managed HWNDs."""
+    import time
+
+    from stream_monitor import browser_win32
+
+    foreground_calls: list[int] = []
+    show_calls: list[tuple[int, int]] = []
+
+    class FakeUser32:
+        def IsWindow(self, hwnd):
+            return 1
+
+        def ShowWindow(self, hwnd, cmd):
+            show_calls.append((hwnd, cmd))
+
+        def SetForegroundWindow(self, hwnd):
+            foreground_calls.append(hwnd)
+
+    monkeypatch.setattr(browser_win32, "_FOREGROUND_HOLD_POLL_S", 0.01)
+
+    hwnds = {1001, 1002}
+    browser_win32._hold_foreground(FakeUser32(), hwnds, hold_seconds=1)
+
+    assert len(foreground_calls) >= 2
+    assert 1001 in foreground_calls
+    assert 1002 in foreground_calls
+
+
+def test_hold_foreground_removes_dead_windows(monkeypatch) -> None:
+    """If IsWindow returns 0, the hwnd is discarded from the hold set."""
+    from stream_monitor import browser_win32
+
+    alive_hwnds = {2001}
+
+    class FakeUser32:
+        def IsWindow(self, hwnd):
+            return 1 if hwnd in alive_hwnds else 0
+
+        def ShowWindow(self, hwnd, cmd):
+            pass
+
+        def SetForegroundWindow(self, hwnd):
+            pass
+
+    monkeypatch.setattr(browser_win32, "_FOREGROUND_HOLD_POLL_S", 0.01)
+
+    hwnds = {2001, 2002}
+    browser_win32._hold_foreground(FakeUser32(), hwnds, hold_seconds=1)
+    assert 2002 not in hwnds
+    assert 2001 in hwnds
