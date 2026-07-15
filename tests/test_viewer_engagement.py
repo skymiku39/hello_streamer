@@ -378,3 +378,49 @@ def test_hold_foreground_removes_dead_windows(monkeypatch) -> None:
     browser_win32._hold_foreground(FakeUser32(), hwnds, hold_seconds=1)
     assert 2002 not in hwnds
     assert 2001 in hwnds
+
+
+def test_hold_foreground_stops_when_tracked_url_cleared(monkeypatch) -> None:
+    """If tracked HWNDs for the URL are cleared, hold should stop early."""
+    from stream_monitor import browser_win32
+    from stream_monitor.browser_win32 import (
+        _clear_tracked_hwnds,
+        _register_tracked_hwnd,
+    )
+
+    foreground_calls: list[int] = []
+
+    class FakeUser32:
+        def IsWindow(self, hwnd):
+            return 1
+
+        def ShowWindow(self, hwnd, cmd):
+            pass
+
+        def SetForegroundWindow(self, hwnd):
+            foreground_calls.append(hwnd)
+
+    monkeypatch.setattr(browser_win32, "_FOREGROUND_HOLD_POLL_S", 0.05)
+
+    url = "https://www.twitch.tv/test_cancel"
+    _register_tracked_hwnd(url, 3001)
+    try:
+        import threading
+
+        def clear_after_delay():
+            import time
+            time.sleep(0.15)
+            _clear_tracked_hwnds(url)
+
+        t = threading.Thread(target=clear_after_delay, daemon=True)
+        t.start()
+
+        hwnds = {3001}
+        browser_win32._hold_foreground(
+            FakeUser32(), hwnds, hold_seconds=5, tracked_url=url
+        )
+        t.join(timeout=2)
+
+        assert len(foreground_calls) < 20
+    finally:
+        _clear_tracked_hwnds(url)

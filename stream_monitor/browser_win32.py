@@ -289,16 +289,30 @@ def _is_browser_popup_or_tool_window(user32: Any, hwnd: int) -> bool:
 _FOREGROUND_HOLD_POLL_S = 2.0
 
 
-def _hold_foreground(user32: Any, hwnds: set[int], hold_seconds: int) -> None:
+def _hold_foreground(
+    user32: Any,
+    hwnds: set[int],
+    hold_seconds: int,
+    tracked_url: str = "",
+) -> None:
     """Periodically re-assert foreground on *hwnds* for *hold_seconds*.
 
     Twitch credits a view only when the Page Visibility API reports "visible"
     during the player's first heartbeat (~10-15s after page load). By keeping
     the window in the foreground for the hold period we ensure the initial
     heartbeat sees an active, watched state.
+
+    Stops early if the tracked URL's HWND registry is cleared (indicating a
+    close request from close_on_offline or close_on_stop).
     """
     end = time.monotonic() + hold_seconds
     while time.monotonic() < end:
+        if tracked_url and not tracked_hwnds_for_url(tracked_url):
+            logger.debug(
+                "Foreground hold cancelled: tracked HWNDs for %s cleared",
+                tracked_url,
+            )
+            return
         for hwnd in list(hwnds):
             try:
                 if not user32.IsWindow(hwnd):
@@ -488,7 +502,9 @@ def _apply_new_browser_window_settings_async(
             return
 
         if bring_to_front and foreground_hold_seconds > 0:
-            _hold_foreground(user32, managed, foreground_hold_seconds)
+            _hold_foreground(
+                user32, managed, foreground_hold_seconds, tracked_url=track_for_url
+            )
 
     thread = threading.Thread(target=_worker, daemon=True, name="browser-window-manager")
     thread.start()
@@ -877,13 +893,13 @@ def close_browser_window_for_url(
     hwnds = tracked_hwnds_for_url(url)
     closed = 0
 
+    # Clear tracking FIRST so any active foreground hold thread for this URL
+    # detects the cancellation and stops calling ShowWindow/SetForegroundWindow.
+    _clear_tracked_hwnds(url)
+
     for hwnd in hwnds:
         if _post_close_window(hwnd):
             closed += 1
-
-    # Always clear the registry afterwards so a re-trigger for the same URL
-    # starts fresh (otherwise a future close call could try a stale HWND).
-    _clear_tracked_hwnds(url)
 
     title_fallback_blocked = _pop_title_fallback_block(url)
     if closed == 0 and title_keywords and not title_fallback_blocked:
