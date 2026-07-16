@@ -1,4 +1,8 @@
-# Hello Streamer v1.1.3
+# Hello Streamer v1.1.4
+
+## 發布與 CI
+
+- **Release workflow**：修正 `ruff` 因未使用匯入導致 v1.1.3 Release workflow 失敗，確保後續版本可順利建立 Release。
 
 ## 觀看認定與瀏覽器自動整理
 
