@@ -320,6 +320,8 @@ class AddChannelDialog(ctk.CTkToplevel):
         self.after(0, self._on_validate_done, info)
 
     def _on_validate_done(self, info: StreamInfo | None) -> None:
+        if not self.winfo_exists():
+            return
         plat = self._pending_platform
         name = self._pending_name
 

@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
 import webbrowser
 from pathlib import Path
 from typing import Any, Callable
@@ -120,6 +121,7 @@ _VIEWER_ENGAGEMENT: ViewerEngagementSettings | None = None
 # Twitch URLs currently holding a keep-awake request, so we release it once the
 # last engagement window we opened is closed.
 _ENGAGEMENT_AWAKE_URLS: set[str] = set()
+_ENGAGEMENT_AWAKE_LOCK = threading.Lock()
 
 
 def configure_viewer_engagement(
@@ -140,10 +142,11 @@ def _active_viewer_engagement() -> ViewerEngagementSettings | None:
 
 def _release_engagement_keep_awake(url: str) -> None:
     """Drop *url* from the keep-awake set; clear the request when none remain."""
-    if url in _ENGAGEMENT_AWAKE_URLS:
-        _ENGAGEMENT_AWAKE_URLS.discard(url)
-        if not _ENGAGEMENT_AWAKE_URLS:
-            set_system_keep_awake(False)
+    with _ENGAGEMENT_AWAKE_LOCK:
+        if url in _ENGAGEMENT_AWAKE_URLS:
+            _ENGAGEMENT_AWAKE_URLS.discard(url)
+            if not _ENGAGEMENT_AWAKE_URLS:
+                set_system_keep_awake(False)
 
 
 # Wrap the Win32 close helpers so closing a window we opened for a Twitch URL
@@ -163,7 +166,8 @@ def close_browser_window_for_url(
 
 def close_all_tracked_windows() -> int:
     closed = _close_all_tracked_windows_impl()
-    _ENGAGEMENT_AWAKE_URLS.clear()
+    with _ENGAGEMENT_AWAKE_LOCK:
+        _ENGAGEMENT_AWAKE_URLS.clear()
     set_system_keep_awake(False)
     return closed
 
@@ -582,7 +586,8 @@ def _apply_viewer_engagement_to_launch(
             engagement.foreground_hold_seconds
         )
     if engagement.keep_system_awake:
-        _ENGAGEMENT_AWAKE_URLS.add(url)
+        with _ENGAGEMENT_AWAKE_LOCK:
+            _ENGAGEMENT_AWAKE_URLS.add(url)
         set_system_keep_awake(True)
     if engagement.whitelist_performance and effective_user_data_dir:
         try:

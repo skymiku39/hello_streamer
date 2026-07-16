@@ -48,6 +48,9 @@ class _FakeRoot:
         self._callbacks: list[tuple[int, object]] = []
         self._cancelled: set[str] = set()
 
+    def winfo_exists(self) -> bool:
+        return True
+
     def after(self, ms: int, callback) -> str:
         token = str(len(self._callbacks))
         self._callbacks.append((ms, callback))

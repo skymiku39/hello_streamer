@@ -181,6 +181,7 @@ class App(ctk.CTk):
     def quit_app(self) -> None:
         """Full exit — called from tray menu or explicit quit."""
         self._truly_quitting = True
+        self._scroll_guard.destroy()
         self._save_status_cache()
         self._controller.shutdown()
         self._tray.stop()
@@ -1234,6 +1235,14 @@ class App(ctk.CTk):
         browser_settings: BrowserSettings | dict[str, Any] | None,
     ) -> None:
         """Run notify/open side-effects off the UI thread."""
+        if self.monitor_mode == "idle":
+            logger.debug(
+                "execute_live_action aborted: monitor stopped before "
+                "action=%s url=%s could run",
+                action,
+                info.url,
+            )
+            return
         noop = lambda: None  # noqa: E731
         try:
             execute_action(
@@ -1255,6 +1264,8 @@ class App(ctk.CTk):
         self._controller.tick()
 
     def _tick_elapsed_labels(self) -> None:
+        if self._truly_quitting:
+            return
         if not self.defer_channel_row_repaints:
             for row in self._channel_rows:
                 row.refresh_elapsed_display()
@@ -1262,6 +1273,8 @@ class App(ctk.CTk):
 
     def _monitor_health_check(self) -> None:
         """Restart the background monitor if its thread died unexpectedly."""
+        if self._truly_quitting:
+            return
         self.maybe_restart_dead_monitor()
         self.after(10_000, self._monitor_health_check)
 
@@ -1279,6 +1292,8 @@ class App(ctk.CTk):
             self._tray.update_tooltip_key("tray.tooltip.watch")
 
     def _poll_events(self) -> None:
+        if self._truly_quitting:
+            return
         self.after(80, self._poll_events)
         self._controller.tick()
 

@@ -52,7 +52,19 @@ class ScrollRepaintGuard:
     def repaints_deferred(self) -> bool:
         return self._defer
 
+    def destroy(self) -> None:
+        """Cancel pending idle timer to prevent callbacks after teardown."""
+        if self._idle_after is not None:
+            try:
+                self._root.after_cancel(self._idle_after)
+            except Exception:
+                pass
+            self._idle_after = None
+        self._defer = False
+
     def _on_scroll_activity(self, _event: Any = None) -> None:
+        if not self._root.winfo_exists():
+            return
         self._defer = True
         if self._idle_after is not None:
             self._root.after_cancel(self._idle_after)
@@ -61,6 +73,8 @@ class ScrollRepaintGuard:
     def _on_scroll_idle(self) -> None:
         self._idle_after = None
         self._defer = False
+        if not self._root.winfo_exists():
+            return
         try:
             self._canvas.update_idletasks()
         except Exception:
