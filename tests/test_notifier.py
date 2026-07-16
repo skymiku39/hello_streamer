@@ -1386,6 +1386,7 @@ def _reset_tracked_hwnds() -> None:
     with notifier._TRACKED_HWNDS_LOCK:
         notifier._TRACKED_WINDOWS_BY_URL.clear()
         notifier._TITLE_FALLBACK_BLOCKED_URLS.clear()
+        notifier._CLOSING_URLS.clear()
 
 
 def test_register_and_snapshot_tracked_hwnds_roundtrip() -> None:

@@ -110,6 +110,9 @@ class _TrackedWindow:
 # process-global.
 _TRACKED_WINDOWS_BY_URL: dict[str, list[_TrackedWindow]] = {}
 _TITLE_FALLBACK_BLOCKED_URLS: set[str] = set()
+# URLs for which a close has been requested but the worker may still be
+# running. The worker checks this before registering a new HWND.
+_CLOSING_URLS: set[str] = set()
 _TRACKED_HWNDS_LOCK = threading.Lock()
 
 
@@ -384,6 +387,12 @@ def _apply_new_browser_window_settings_async(
         managed: set[int] = set()
         ignored: set[int] = set()
         while time.monotonic() < deadline:
+            if track_for_url and _is_url_closing(track_for_url):
+                logger.debug(
+                    "Post-launch worker aborting: close requested for %s",
+                    track_for_url,
+                )
+                return
             current = _enum_browser_hwnds(class_name)
             new_hwnds = current - baseline - managed - ignored
             for hwnd in new_hwnds:
@@ -468,7 +477,7 @@ def _apply_new_browser_window_settings_async(
                                 "SetForegroundWindow failed for HWND=%s", hwnd
                             )
                     managed.add(hwnd)
-                    if track_for_url:
+                    if track_for_url and not _is_url_closing(track_for_url):
                         _register_tracked_hwnd(
                             track_for_url, hwnd, keywords=track_keywords
                         )
@@ -633,6 +642,34 @@ def _clear_tracked_hwnds(url: str) -> None:
         _TRACKED_WINDOWS_BY_URL.pop(url, None)
 
 
+def _mark_url_closing(url: str) -> None:
+    """Signal that a close has been requested for this URL.
+
+    The post-launch worker checks this flag before registering new HWNDs,
+    preventing orphan windows when close fires before registration completes.
+    """
+    if not url:
+        return
+    with _TRACKED_HWNDS_LOCK:
+        _CLOSING_URLS.add(url)
+
+
+def _unmark_url_closing(url: str) -> None:
+    """Clear the closing flag when a fresh launch begins for this URL."""
+    if not url:
+        return
+    with _TRACKED_HWNDS_LOCK:
+        _CLOSING_URLS.discard(url)
+
+
+def _is_url_closing(url: str) -> bool:
+    """True if a close was requested for this URL (worker should abort)."""
+    if not url:
+        return False
+    with _TRACKED_HWNDS_LOCK:
+        return url in _CLOSING_URLS
+
+
 def _block_title_fallback_for_url(url: str) -> None:
     if not url:
         return
@@ -778,12 +815,17 @@ def close_all_tracked_windows() -> int:
     """
     if not _is_windows():
         return 0
+    urls = _all_tracked_urls()
+    all_hwnds: dict[str, set[int]] = {}
+    for url in urls:
+        _mark_url_closing(url)
+        all_hwnds[url] = tracked_hwnds_for_url(url)
+        _clear_tracked_hwnds(url)
     closed = 0
-    for url in _all_tracked_urls():
-        for hwnd in tracked_hwnds_for_url(url):
+    for hwnds in all_hwnds.values():
+        for hwnd in hwnds:
             if _post_close_window(hwnd):
                 closed += 1
-        _clear_tracked_hwnds(url)
     return closed
 
 
@@ -856,6 +898,9 @@ def prune_off_topic_tracked_windows(
             if has_any_keyword and not looks_like_browser_chrome:
                 continue
             # Window has drifted away from the stream we opened it for.
+            # Remove tracking BEFORE close so any active foreground hold
+            # sees the cancellation and stops ShowWindow/SetForegroundWindow.
+            _remove_tracked_hwnd(url, hwnd)
             if _post_close_window(hwnd):
                 closed += 1
                 logger.info(
@@ -864,7 +909,6 @@ def prune_off_topic_tracked_windows(
                     title,
                     url,
                 )
-            _remove_tracked_hwnd(url, hwnd)
     return closed
 
 
@@ -890,6 +934,7 @@ def close_browser_window_for_url(
     if not _is_windows() or not url:
         return 0
 
+    _mark_url_closing(url)
     hwnds = tracked_hwnds_for_url(url)
     closed = 0
 

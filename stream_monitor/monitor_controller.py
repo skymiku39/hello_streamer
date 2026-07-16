@@ -25,12 +25,15 @@ _ACTIVE_MODES = ("trigger", "watch")
 class MonitorController:
     """Coordinates the polling engine and event drain on behalf of the UI."""
 
+    _STOP_JOIN_TIMEOUT_S = 5.0
+
     def __init__(self, sink: AppEventSink, db: SeenVideoDB) -> None:
         self._db = db
         self._bus = MonitorEventBus()
         self._bridge = MonitorEventBridge(sink, self._bus)
         self._monitor: Monitor | None = None
         self._mode = "idle"
+        self._stopping_thread: threading.Thread | None = None
 
     @property
     def mode(self) -> str:
@@ -88,7 +91,9 @@ class MonitorController:
         self._mode = "idle"
         if monitor is not None:
             monitor.request_stop()
-            threading.Thread(target=monitor.stop, daemon=True).start()
+            t = threading.Thread(target=monitor.stop, daemon=True)
+            t.start()
+            self._stopping_thread = t
 
     def restart_if_dead(
         self, channels: list[dict[str, str]], interval: int
@@ -118,6 +123,7 @@ class MonitorController:
         initial_statuses: dict[str, Any] | None = None,
         last_activity_epoch: float = 0.0,
     ) -> None:
+        self._join_stopping_thread()
         if self._monitor is not None and self._monitor.is_running:
             self._monitor.update_interval(interval)
             self._monitor.update_channels(channels)
@@ -135,3 +141,16 @@ class MonitorController:
                 last_activity_epoch=last_activity_epoch,
             )
             self._monitor.start()
+
+    def _join_stopping_thread(self) -> None:
+        """Block until any previous monitor-stop thread has finished."""
+        t = self._stopping_thread
+        if t is not None and t.is_alive():
+            logger.debug("Waiting for prior monitor shutdown to complete…")
+            t.join(timeout=self._STOP_JOIN_TIMEOUT_S)
+            if t.is_alive():
+                logger.warning(
+                    "Prior monitor stop thread did not finish within %.1fs",
+                    self._STOP_JOIN_TIMEOUT_S,
+                )
+        self._stopping_thread = None

@@ -90,10 +90,12 @@ from stream_monitor.browser_win32 import (  # noqa: E402, F401
     _is_windows,
     _post_close_window,
     _register_tracked_hwnd,
+    _CLOSING_URLS,
     _remove_tracked_hwnd,
     _snapshot_tracked_windows,
     _TrackedWindow,
     _unblock_title_fallback_for_url,
+    _unmark_url_closing,
     close_all_tracked_windows,
     close_browser_window_for_url,
     prune_off_topic_tracked_windows,
@@ -769,6 +771,7 @@ def _open_with_browser_settings(
 
     if class_name:
         if want_window_management:
+            _unmark_url_closing(url)
             _unblock_title_fallback_for_url(url)
             worker_settings = effective_settings
             track_url = url
