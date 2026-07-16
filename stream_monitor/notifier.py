@@ -63,6 +63,7 @@ def _install_browser_win32_routes() -> None:
 _install_browser_win32_routes()
 
 from stream_monitor.browser_win32 import (  # noqa: E402, F401
+    _CLOSING_URLS,
     _GWL_EXSTYLE,
     _SW_HIDE,
     _SW_RESTORE,
@@ -91,7 +92,6 @@ from stream_monitor.browser_win32 import (  # noqa: E402, F401
     _is_windows,
     _post_close_window,
     _register_tracked_hwnd,
-    _CLOSING_URLS,
     _remove_tracked_hwnd,
     _snapshot_tracked_windows,
     _TrackedWindow,

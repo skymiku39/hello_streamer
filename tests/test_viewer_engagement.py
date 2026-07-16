@@ -329,8 +329,6 @@ def test_config_normalizes_foreground_hold_seconds() -> None:
 # ---------------------------------------------------------------------------
 def test_hold_foreground_calls_set_foreground_window(monkeypatch) -> None:
     """Verify _hold_foreground repeatedly asserts foreground on managed HWNDs."""
-    import time
-
     from stream_monitor import browser_win32
 
     foreground_calls: list[int] = []
