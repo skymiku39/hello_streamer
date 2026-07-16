@@ -266,6 +266,7 @@ class ChannelRow(ctk.CTkFrame):
     def _on_destroy(self, event: Any = None) -> None:
         if event is not None and event.widget is not self:
             return
+        self._cancel_drag_long_press()
         if getattr(self, "_unsub_i18n", None):
             self._unsub_i18n()
             self._unsub_i18n = None
