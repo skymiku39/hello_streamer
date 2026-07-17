@@ -1035,7 +1035,7 @@ def test_edge_7e_empty_url_returns_false(monkeypatch) -> None:
 #   fwd_8f   apply_geometry=False + iso     → worker apply_geometry=False
 #   fwd_8g   x / y / width / height → forwarded verbatim
 #   fwd_8h   close_on_offline=True → kw arg track_for_url set
-#   fwd_8i   close_off_topic + title_hints → kw arg track_keywords set
+#   fwd_8i   title_hints → kw arg track_keywords set (HWND discovery)
 
 
 def _capture_manager_args(monkeypatch) -> list[dict[str, Any]]:
@@ -1234,11 +1234,11 @@ def test_fwd_8h_close_on_offline_implies_url_tracking(monkeypatch, tmp_path) -> 
     assert calls[0]["track_for_url"] == "https://www.twitch.tv/foo"
 
 
-def test_fwd_8i_title_hints_reach_worker_for_off_topic_pruning(
+def test_fwd_8i_title_hints_reach_worker_for_hwnd_discovery(
     monkeypatch, tmp_path
 ) -> None:
-    """The off-topic prune feature needs *keywords* attached to each tracked
-    HWND. They're threaded through via ``title_hints``."""
+    """``title_hints`` must reach the post-launch worker as ``track_keywords``
+    so it can distinguish our new HWND from unrelated browser windows."""
     _stub_chrome(monkeypatch)
     monkeypatch.setattr(notifier, "_is_windows", lambda: True)
     monkeypatch.setattr(notifier, "_enum_browser_hwnds", lambda _c: set())

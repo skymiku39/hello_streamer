@@ -375,8 +375,8 @@ def test_execute_open_and_keep_passes_browser_settings(monkeypatch) -> None:
 
     assert captured["url"] == "https://www.twitch.tv/hello"
     assert captured["settings"] is settings
-    # title_hints should be threaded through so the off-topic prune feature
-    # can identify our window later. Channel slug "hello" plus stream title
+    # title_hints should be threaded through so the post-launch worker can
+    # match the new HWND by title. Channel slug "hello" plus stream title
     # "Live now" are both present.
     hints = captured["kwargs"].get("title_hints", ())
     assert "hello" in hints
@@ -1775,8 +1775,8 @@ def test_apply_new_browser_window_settings_async_registers_tracked_url(
     assert thread is not None
     thread.join(timeout=2.0)
     assert notifier.tracked_hwnds_for_url("https://x") == {1234}
-    # The TrackedWindow entry must also have stored the keywords so the
-    # off-topic prune pass can identify the window later.
+    # Keywords are stored for deduplication / diagnostics; prune no longer
+    # uses them to decide whether to close.
     tracked = notifier._snapshot_tracked_windows("https://x")
     assert tracked and tracked[0].keywords == ("hello", "live stream")
     _reset_tracked_hwnds()
@@ -2035,8 +2035,8 @@ def test_prune_off_topic_keeps_twitch_channel_shell_without_stream_title(
 ) -> None:
     """Twitch often simplifies titles to '(N) DisplayName - Twitch'.
 
-    That must not be treated as off-topic just because the ephemeral stream
-    title keyword disappeared — otherwise close_on_offline loses the HWND.
+    That must not be treated as off-topic / blank chrome — otherwise
+    close_on_offline loses the HWND before the stream actually ends.
     """
     _reset_tracked_hwnds()
     _install_fake_user32(monkeypatch, {444: "(10) 飛魚_ - Twitch"})
@@ -2047,8 +2047,7 @@ def test_prune_off_topic_keeps_twitch_channel_shell_without_stream_title(
         lambda hwnd: (closed.append(hwnd), True)[1],
     )
 
-    # Identity keywords only (login) — display name not registered, matching
-    # the real failure mode from user logs.
+    # Keywords are irrelevant to prune now; register any to mirror launch.
     notifier._register_tracked_hwnd(
         "https://www.twitch.tv/hayabi_zr", 444, keywords=["hayabi_zr"]
     )
