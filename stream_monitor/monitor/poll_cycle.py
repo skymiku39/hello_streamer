@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 from typing import Callable, TypeVar
 
 from stream_monitor.fetcher.base import StreamInfo
@@ -24,33 +22,6 @@ from stream_monitor.monitor.types import (
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
-
-# #region agent log
-_DEBUG_LOG = Path(__file__).resolve().parents[2] / "debug-f9fde6.log"
-
-
-def _agent_debug_log(
-    hypothesis_id: str,
-    location: str,
-    message: str,
-    data: dict,
-) -> None:
-    try:
-        payload = {
-            "sessionId": "f9fde6",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with _DEBUG_LOG.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-
-# #endregion
 
 
 class PollCycleMixin:
@@ -108,25 +79,9 @@ class PollCycleMixin:
         """
         if not entries:
             return []
-        config_order = list(entries)
         youtube_pending, twitch_pending = split_platform_entries(entries)
         youtube_pending = list(youtube_pending)
         twitch_pending = list(twitch_pending)
-        # #region agent log
-        _agent_debug_log(
-            "H1",
-            "poll_cycle.py:_run_priority_pool",
-            "pool_start",
-            {
-                "pool_tag": pool_tag,
-                "config_order": [e.key for e in config_order],
-                "youtube_queue": [e.key for e in youtube_pending],
-                "twitch_queue": [e.key for e in twitch_pending],
-                "max_concurrent": self._max_concurrent,
-                "workers": min(self._max_concurrent, len(entries)),
-            },
-        )
-        # #endregion
         if len(entries) == 1:
             try:
                 return [work_fn(entries[0])]
@@ -141,10 +96,6 @@ class PollCycleMixin:
         state_lock = threading.Lock()
         youtube_active = 0
         cond = threading.Condition(state_lock)
-        claim_log: list[dict] = []
-        claim_log_lock = threading.Lock()
-        pool_t0 = time.monotonic()
-
         def _claim() -> ChannelEntry | None:
             nonlocal youtube_active
             if (
@@ -157,26 +108,6 @@ class PollCycleMixin:
                 entry = twitch_pending.pop(0)
             else:
                 return None
-            # #region agent log
-            event = {
-                "pool_tag": pool_tag,
-                "key": entry.key,
-                "platform": entry.platform,
-                "youtube_active": youtube_active,
-                "youtube_left": len(youtube_pending),
-                "twitch_left": len(twitch_pending),
-                "t_rel_ms": int((time.monotonic() - pool_t0) * 1000),
-                "thread": threading.current_thread().name,
-            }
-            with claim_log_lock:
-                claim_log.append(event)
-            _agent_debug_log(
-                "H2",
-                "poll_cycle.py:_claim",
-                "claimed",
-                event,
-            )
-            # #endregion
             return entry
 
         def _release(entry: ChannelEntry) -> None:
@@ -215,19 +146,6 @@ class PollCycleMixin:
             thread.start()
         for thread in threads:
             thread.join()
-        # #region agent log
-        _agent_debug_log(
-            "H4",
-            "poll_cycle.py:_run_priority_pool",
-            "pool_done",
-            {
-                "pool_tag": pool_tag,
-                "claim_sequence": [e["key"] for e in claim_log],
-                "claim_platforms": [e["platform"] for e in claim_log],
-                "elapsed_ms": int((time.monotonic() - pool_t0) * 1000),
-            },
-        )
-        # #endregion
         return results
 
     def _should_run_wake_verification(self, wall_now: float) -> bool:
@@ -263,20 +181,6 @@ class PollCycleMixin:
 
         enabled_entries = [e for e in entries if e.enabled]
 
-        # #region agent log
-        _agent_debug_log(
-            "H1",
-            "poll_cycle.py:_execute_poll_cycle",
-            "cycle_enabled_entries",
-            {
-                "poll_cycle": self._poll_cycle,
-                "keys": [e.key for e in enabled_entries],
-                "platforms": [e.platform for e in enabled_entries],
-                "max_concurrent": self._max_concurrent,
-            },
-        )
-        # #endregion
-
         if run_wake_verify and enabled_entries:
             return self._run_wake_verification(enabled_entries, poll_started)
 
@@ -301,15 +205,6 @@ class PollCycleMixin:
             _YOUTUBE_MAX_CONCURRENT,
         )
         went_live_count = self._tier1_probe_entries(enabled_entries)
-
-        # #region agent log
-        _agent_debug_log(
-            "H4",
-            "poll_cycle.py:_execute_poll_cycle",
-            "tier1_complete",
-            {"tier1_elapsed_ms": int((time.monotonic() - tier1_started) * 1000)},
-        )
-        # #endregion
 
         if self._stop_event.is_set():
             return time.monotonic() - poll_started

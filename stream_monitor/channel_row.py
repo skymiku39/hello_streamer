@@ -304,8 +304,19 @@ class ChannelRow(ctk.CTkFrame):
     def _channel_url(self) -> str:
         return channel_page_url(self.channel["platform"], self.channel["name"])
 
+    def _title_hints(self) -> tuple[str, ...]:
+        """Build title hints from channel metadata for HWND discovery."""
+        parts: list[str] = [self.channel["name"]]
+        if self._status_title:
+            parts.append(self._status_title)
+        return tuple(parts)
+
     def _open_channel_page(self) -> None:
-        open_url(self._channel_url(), self._get_browser_settings())
+        open_url(
+            self._channel_url(),
+            self._get_browser_settings(),
+            title_hints=self._title_hints(),
+        )
 
     def _offline_link_url(self) -> str:
         """Offline link priority — platform-specific."""
@@ -317,9 +328,17 @@ class ChannelRow(ctk.CTkFrame):
 
     def _open_current_page(self) -> None:
         if self._status_state == "offline":
-            open_url(self._offline_link_url(), self._get_browser_settings())
+            open_url(
+                self._offline_link_url(),
+                self._get_browser_settings(),
+                title_hints=self._title_hints(),
+            )
             return
-        open_url(self._active_url or self._channel_url(), self._get_browser_settings())
+        open_url(
+            self._active_url or self._channel_url(),
+            self._get_browser_settings(),
+            title_hints=self._title_hints(),
+        )
 
     def _open_active_page(self) -> None:
         if (
@@ -327,10 +346,18 @@ class ChannelRow(ctk.CTkFrame):
             and self.channel["platform"] == "youtube"
             and self._upcoming_url
         ):
-            open_url(self._upcoming_url, self._get_browser_settings())
+            open_url(
+                self._upcoming_url,
+                self._get_browser_settings(),
+                title_hints=self._title_hints(),
+            )
             return
         if self._active_url:
-            open_url(self._active_url, self._get_browser_settings())
+            open_url(
+                self._active_url,
+                self._get_browser_settings(),
+                title_hints=self._title_hints(),
+            )
 
     def _set_link_tip_key(self, key: str) -> None:
         if hasattr(self, "_link_tip"):

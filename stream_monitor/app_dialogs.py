@@ -1210,9 +1210,6 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         self.app_mode_cb = ctk.CTkCheckBox(self.advanced_frame, text="")
         self.app_mode_cb.pack_forget()
-        self._no_isolation_label = ctk.CTkLabel(self.advanced_frame, text="")
-        self._user_tab_iso_banner = ctk.CTkLabel(self.content_frame, text="")
-        self._user_tab_iso_banner.pack_forget()
 
         self.message_label = ctk.CTkLabel(
             self, text="", font=_font(12), height=24, anchor="w", wraplength=480
