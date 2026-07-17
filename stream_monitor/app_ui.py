@@ -284,6 +284,47 @@ _DEFAULT_WINDOW_GEOMETRY = f"{_MIN_WINDOW_WIDTH}x580"
 # ---------------------------------------------------------------------------
 # Tooltip
 # ---------------------------------------------------------------------------
+def _clamp_tooltip_position(
+    x: int,
+    y: int,
+    *,
+    tip_w: int,
+    tip_h: int,
+    vroot_x: int,
+    vroot_y: int,
+    vroot_w: int,
+    vroot_h: int,
+    margin: int = 8,
+) -> tuple[int, int]:
+    """Keep tooltip within the virtual desktop (multi-monitor safe).
+
+    ``winfo_screenwidth()`` only covers the primary monitor and starts at 0.
+    On setups with monitors to the left or above the primary, widget root
+    coordinates can be negative; clamping against ``0..screenwidth`` would
+    pull the tooltip onto the primary monitor.
+    """
+    min_x = vroot_x + margin
+    min_y = vroot_y + margin
+    max_x = vroot_x + vroot_w - tip_w - margin
+    max_y = vroot_y + vroot_h - tip_h - margin
+
+    if max_x < min_x:
+        x = min_x
+    elif x > max_x:
+        x = max_x
+    elif x < min_x:
+        x = min_x
+
+    if max_y < min_y:
+        y = min_y
+    elif y > max_y:
+        y = max_y
+    elif y < min_y:
+        y = min_y
+
+    return x, y
+
+
 class _Tooltip:
     """Lightweight hover tooltip for any tkinter/CTk widget.
 
@@ -406,11 +447,17 @@ class _Tooltip:
 
         tw.update_idletasks()
         tip_w = tw.winfo_width()
-        screen_w = tw.winfo_screenwidth()
-        if x + tip_w > screen_w - 8:
-            x = screen_w - tip_w - 8
-        if x < 8:
-            x = 8
+        tip_h = tw.winfo_height()
+        x, y = _clamp_tooltip_position(
+            x,
+            y,
+            tip_w=tip_w,
+            tip_h=tip_h,
+            vroot_x=tw.winfo_vrootx(),
+            vroot_y=tw.winfo_vrooty(),
+            vroot_w=tw.winfo_vrootwidth(),
+            vroot_h=tw.winfo_vrootheight(),
+        )
         tw.wm_geometry(f"+{x}+{y}")
 
         self._tip_window = tw
