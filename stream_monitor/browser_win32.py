@@ -92,10 +92,10 @@ class _TrackedWindow:
         opened_at: ``time.monotonic()`` snapshot of when we registered the
             HWND. Used by the off-topic prune pass to skip windows that
             haven't finished loading yet (title might still be "Loading…").
-        keywords: Strings the legit stream window's title is expected to
-            contain (channel display_name, channel slug, stream title…).
-            If a tracked HWND's title later loses every keyword, the prune
-            pass considers it redirected/navigated-away and closes it.
+        keywords: Title keywords used during post-launch HWND discovery
+            (channel slug, display name, stream title). Stored for
+            deduplication on re-registration; the prune pass no longer
+            reads them — it only checks for noise titles.
     """
 
     hwnd: int
@@ -343,7 +343,6 @@ def _apply_new_browser_window_settings_async(
     deadline_s: float = _MINIMIZE_DEADLINE_S,
     track_for_url: str = "",
     track_keywords: tuple[str, ...] = (),
-    track_identity_keywords: tuple[str, ...] | None = None,
     foreground_hold_seconds: int = 0,
 ) -> threading.Thread | None:
     """Spawn a daemon thread that configures any *new* HWND of *class_name*.
@@ -352,21 +351,15 @@ def _apply_new_browser_window_settings_async(
       - it has managed at least one new window, or
       - ``deadline_s`` seconds elapsed (browser may take a moment to launch).
 
-    ``track_keywords`` are used while discovering the HWND (may include the
-    ephemeral stream title). ``track_identity_keywords`` are what we store for
-    off-topic pruning (channel slug / display name only). When omitted,
-    identity keywords default to ``track_keywords``.
+    ``track_keywords`` are used both for HWND discovery (title must contain
+    at least one keyword) and stored on the ``_TrackedWindow`` for
+    deduplication purposes.
 
     Returns the started thread (or ``None`` when not applicable) so tests can
     join on it deterministically.
     """
     if not _is_windows() or not class_name:
         return None
-    identity_keywords = (
-        track_keywords
-        if track_identity_keywords is None
-        else tuple(track_identity_keywords)
-    )
 
     try:
         import ctypes
@@ -491,7 +484,7 @@ def _apply_new_browser_window_settings_async(
                     managed.add(hwnd)
                     if track_for_url and not _is_url_closing(track_for_url):
                         _register_tracked_hwnd(
-                            track_for_url, hwnd, keywords=identity_keywords
+                            track_for_url, hwnd, keywords=track_keywords
                         )
                     logger.debug(
                         "Managed new browser window HWND=%s geometry=%s minimized=%s hide_taskbar=%s url=%s",
@@ -602,9 +595,9 @@ def _register_tracked_hwnd(
 ) -> None:
     """Remember that we opened HWND for URL.
 
-    *keywords* should contain identifying strings the legit stream window's
-    title is expected to retain (channel display_name, channel slug, stream
-    title). The off-topic prune pass uses them to detect redirects.
+    *keywords* are stored for deduplication when the same HWND is
+    re-registered. The off-topic prune pass no longer reads them — it
+    relies solely on noise-title detection.
     """
     if not url or not hwnd:
         return

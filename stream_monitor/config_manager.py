@@ -50,10 +50,10 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     # don't lose windows after upgrading.
     "close_on_stop": False,
     # When True, the app periodically inspects each tracked HWND's title and
-    # closes any window whose title no longer matches the channel it was
-    # opened for. Catches the "redirect to a billing page" / "user clicked
-    # back into the homepage" cases where the original stream URL is no
-    # longer being watched. Default off so users opt-in deliberately.
+    # closes windows that have become obvious browser chrome (New Tab, blank
+    # title, bare "Google Chrome" etc.). Does NOT close based on keyword
+    # drift — stream end is handled solely by close_on_offline via the
+    # monitor's went_offline event. Default off so users opt-in deliberately.
     "close_off_topic_pages": False,
     # When True, the post-launch Win32 worker flips WS_EX_TOOLWINDOW on the
     # spawned browser window so it disappears from the taskbar and Alt+Tab.
