@@ -763,7 +763,8 @@ def test_prune_5a_keeps_window_when_title_still_matches(monkeypatch) -> None:
     assert notifier.tracked_hwnds_for_url("https://t.tv/kaicenat") == {42}
 
 
-def test_prune_5b_closes_window_that_lost_all_keywords(monkeypatch) -> None:
+def test_prune_5b_keeps_window_that_lost_all_keywords(monkeypatch) -> None:
+    """Title keyword loss is ignored; only noise chrome titles are pruned."""
     monkeypatch.setattr(notifier, "_is_windows", lambda: True)
     closed: list[int] = []
     monkeypatch.setattr(
@@ -791,10 +792,9 @@ def test_prune_5b_closes_window_that_lost_all_keywords(monkeypatch) -> None:
     )
     notifier._TRACKED_WINDOWS_BY_URL["https://t.tv/kaicenat"][0].opened_at -= 30
 
-    assert notifier.prune_off_topic_tracked_windows() == 1
-    assert closed == [42]
-    # HWND was untracked after the close.
-    assert notifier.tracked_hwnds_for_url("https://t.tv/kaicenat") == set()
+    assert notifier.prune_off_topic_tracked_windows() == 0
+    assert closed == []
+    assert notifier.tracked_hwnds_for_url("https://t.tv/kaicenat") == {42}
 
 
 def test_prune_5c_respects_grace_period(monkeypatch) -> None:
@@ -1985,7 +1985,7 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
         ctypes, "windll", type("W", (), {"user32": user32}), raising=False
     )
     monkeypatch.setattr(
-        notifier, "_get_window_title", lambda _u32, _h: "Unrelated page"
+        notifier, "_get_window_title", lambda _u32, _h: "New Tab"
     )
 
     launched: list[list[str]] = []

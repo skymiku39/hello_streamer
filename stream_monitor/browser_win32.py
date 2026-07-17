@@ -69,18 +69,6 @@ def _is_noise_window_title(title: str) -> bool:
     return False
 
 
-def _looks_like_platform_channel_title(title: str) -> bool:
-    """True when the title still looks like a Twitch/YouTube channel shell.
-
-    After launch, Chromium App Mode often simplifies from the full stream
-    title to ``(N) DisplayName - Twitch``. That is still the player we opened;
-    losing the stream-title keyword must not count as off-topic.
-    """
-    low = title.strip().lower()
-    if not low:
-        return False
-    return low.endswith(" - twitch") or low.endswith(" - youtube")
-
 _SW_HIDE = 0
 _SW_SHOW = 5
 _SW_RESTORE = 9          # un-maximise / un-minimise before repositioning
@@ -857,22 +845,16 @@ def prune_off_topic_tracked_windows(
     *,
     min_age_s: float = 6.0,
 ) -> int:
-    """Close (and untrack) any tracked window whose title no longer matches.
+    """Close tracked windows that have clearly left the player surface.
 
-    Iterates every TrackedWindow in the registry and, for each, reads the
-    *current* HWND title. If:
+    Live / offline is decided by the monitor poll — not by window titles.
+    This pass only cleans up obvious browser chrome (New Tab, bare
+    ``Google Chrome``, empty titles, etc.) so a redirected blank window
+    does not linger. Losing stream-title keywords is **not** enough to
+    close; ``close_on_offline`` owns end-of-stream shutdown.
 
-      1. the window has lived past *min_age_s* (so we don't kill it during
-         the initial "Loading…" / "Untitled" phase), AND
-      2. the title now matches a stock browser/blank pattern OR no longer
-         contains any of the keywords we registered with it,
-
-    we send WM_CLOSE and drop it from tracking. Returns the number of
-    windows actually closed. Safe on non-Windows (returns 0).
-
-    Designed to catch the "user got redirected to a billing/login page" or
-    "user clicked Back to the homepage" cases where the window we opened
-    is no longer watching the stream we wanted to track.
+    Returns the number of windows that received WM_CLOSE. Safe on
+    non-Windows (returns 0).
     """
     if not _is_windows():
         return 0
@@ -906,41 +888,12 @@ def prune_off_topic_tracked_windows(
             # Phase 2: respect the grace period.
             if (now - tracked.opened_at) < min_age_s:
                 continue
-            # Phase 3: read current title and decide.
+            # Phase 3: only close clear browser-chrome / blank titles.
+            # Keyword drift is ignored — the monitor's went_offline path
+            # closes the player when the stream actually ends.
             title = _get_window_title(user32, hwnd)
-            title_low = title.lower()
-            looks_like_browser_chrome = _is_noise_window_title(title)
-            # Off-topic iff (no keyword) OR (registered keywords all gone).
-            if tracked.keywords:
-                has_any_keyword = any(kw in title_low for kw in tracked.keywords)
-            else:
-                # No keywords registered → only browser-chrome titles count
-                # as off-topic. This keeps the feature safe for callers that
-                # never registered keywords (we won't aggressively close
-                # arbitrary tabs we opened).
-                has_any_keyword = not looks_like_browser_chrome
-            if has_any_keyword and not looks_like_browser_chrome:
+            if not _is_noise_window_title(title):
                 continue
-            # Twitch/YouTube often drop the stream title from the window text
-            # while the channel page is still open (e.g. "(10) 飛魚_ - Twitch").
-            # Keep tracking so close_on_offline can still find the HWND.
-            if (
-                not has_any_keyword
-                and not looks_like_browser_chrome
-                and _looks_like_platform_channel_title(title)
-            ):
-                logger.debug(
-                    "Keeping tracked HWND=%s title=%r url=%s "
-                    "(platform channel shell; keywords=%r)",
-                    hwnd,
-                    title,
-                    url,
-                    tracked.keywords,
-                )
-                continue
-            # Window has drifted away from the stream we opened it for.
-            # Remove tracking BEFORE close so any active foreground hold
-            # sees the cancellation and stops ShowWindow/SetForegroundWindow.
             _remove_tracked_hwnd(url, hwnd)
             if _post_close_window(hwnd):
                 closed += 1

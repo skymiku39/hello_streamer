@@ -1986,9 +1986,9 @@ def test_prune_off_topic_closes_window_with_blacklisted_title(monkeypatch) -> No
     _reset_tracked_hwnds()
 
 
-def test_prune_off_topic_closes_window_that_lost_all_keywords(monkeypatch) -> None:
+def test_prune_off_topic_keeps_window_that_lost_keywords(monkeypatch) -> None:
+    """Keyword drift alone must not close — monitor owns end-of-stream."""
     _reset_tracked_hwnds()
-    # Window title no longer contains "channelA" — user navigated away.
     _install_fake_user32(monkeypatch, {222: "Some Unrelated Page"})
     closed: list[int] = []
     monkeypatch.setattr(
@@ -2002,8 +2002,9 @@ def test_prune_off_topic_closes_window_that_lost_all_keywords(monkeypatch) -> No
         for t in notifier._TRACKED_WINDOWS_BY_URL["https://stream"]:
             t.opened_at = 0.0
 
-    assert notifier.prune_off_topic_tracked_windows(min_age_s=1.0) == 1
-    assert closed == [222]
+    assert notifier.prune_off_topic_tracked_windows(min_age_s=1.0) == 0
+    assert closed == []
+    assert notifier.tracked_hwnds_for_url("https://stream") == {222}
     _reset_tracked_hwnds()
 
 
