@@ -68,6 +68,19 @@ def _is_noise_window_title(title: str) -> bool:
             return True
     return False
 
+
+def _looks_like_platform_channel_title(title: str) -> bool:
+    """True when the title still looks like a Twitch/YouTube channel shell.
+
+    After launch, Chromium App Mode often simplifies from the full stream
+    title to ``(N) DisplayName - Twitch``. That is still the player we opened;
+    losing the stream-title keyword must not count as off-topic.
+    """
+    low = title.strip().lower()
+    if not low:
+        return False
+    return low.endswith(" - twitch") or low.endswith(" - youtube")
+
 _SW_HIDE = 0
 _SW_SHOW = 5
 _SW_RESTORE = 9          # un-maximise / un-minimise before repositioning
@@ -342,6 +355,7 @@ def _apply_new_browser_window_settings_async(
     deadline_s: float = _MINIMIZE_DEADLINE_S,
     track_for_url: str = "",
     track_keywords: tuple[str, ...] = (),
+    track_identity_keywords: tuple[str, ...] | None = None,
     foreground_hold_seconds: int = 0,
 ) -> threading.Thread | None:
     """Spawn a daemon thread that configures any *new* HWND of *class_name*.
@@ -350,11 +364,21 @@ def _apply_new_browser_window_settings_async(
       - it has managed at least one new window, or
       - ``deadline_s`` seconds elapsed (browser may take a moment to launch).
 
+    ``track_keywords`` are used while discovering the HWND (may include the
+    ephemeral stream title). ``track_identity_keywords`` are what we store for
+    off-topic pruning (channel slug / display name only). When omitted,
+    identity keywords default to ``track_keywords``.
+
     Returns the started thread (or ``None`` when not applicable) so tests can
     join on it deterministically.
     """
     if not _is_windows() or not class_name:
         return None
+    identity_keywords = (
+        track_keywords
+        if track_identity_keywords is None
+        else tuple(track_identity_keywords)
+    )
 
     try:
         import ctypes
@@ -479,7 +503,7 @@ def _apply_new_browser_window_settings_async(
                     managed.add(hwnd)
                     if track_for_url and not _is_url_closing(track_for_url):
                         _register_tracked_hwnd(
-                            track_for_url, hwnd, keywords=track_keywords
+                            track_for_url, hwnd, keywords=identity_keywords
                         )
                     logger.debug(
                         "Managed new browser window HWND=%s geometry=%s minimized=%s hide_taskbar=%s url=%s",
@@ -896,6 +920,23 @@ def prune_off_topic_tracked_windows(
                 # arbitrary tabs we opened).
                 has_any_keyword = not looks_like_browser_chrome
             if has_any_keyword and not looks_like_browser_chrome:
+                continue
+            # Twitch/YouTube often drop the stream title from the window text
+            # while the channel page is still open (e.g. "(10) 飛魚_ - Twitch").
+            # Keep tracking so close_on_offline can still find the HWND.
+            if (
+                not has_any_keyword
+                and not looks_like_browser_chrome
+                and _looks_like_platform_channel_title(title)
+            ):
+                logger.debug(
+                    "Keeping tracked HWND=%s title=%r url=%s "
+                    "(platform channel shell; keywords=%r)",
+                    hwnd,
+                    title,
+                    url,
+                    tracked.keywords,
+                )
                 continue
             # Window has drifted away from the stream we opened it for.
             # Remove tracking BEFORE close so any active foreground hold

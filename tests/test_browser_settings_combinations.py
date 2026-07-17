@@ -1314,7 +1314,7 @@ def test_act_9a_open_and_stop_opens_then_stops(monkeypatch) -> None:
     opened: list[tuple[str, dict, tuple]] = []
     stop_called: list[bool] = []
 
-    def fake_open(url, settings=None, *, title_hints=None):
+    def fake_open(url, settings=None, *, title_hints=None, identity_hints=None):
         opened.append((url, settings, tuple(title_hints or ())))
         return True
 
@@ -1417,9 +1417,10 @@ def test_act_9h_action_helpers_thread_title_hints(monkeypatch) -> None:
     _stub_toast(monkeypatch)
     captured: dict[str, Any] = {}
 
-    def fake_open(url, settings=None, *, title_hints=None):
+    def fake_open(url, settings=None, *, title_hints=None, identity_hints=None):
         captured["url"] = url
         captured["title_hints"] = tuple(title_hints or ())
+        captured["identity_hints"] = tuple(identity_hints or ())
         return True
 
     monkeypatch.setattr(notifier, "open_url", fake_open)
@@ -1435,6 +1436,9 @@ def test_act_9h_action_helpers_thread_title_hints(monkeypatch) -> None:
     assert "kaicenat" in captured["title_hints"]
     assert "Kai Cenat" in captured["title_hints"]
     assert "!!! LIVE NOW !!!" in captured["title_hints"]
+    assert "kaicenat" in captured["identity_hints"]
+    assert "Kai Cenat" in captured["identity_hints"]
+    assert "!!! LIVE NOW !!!" not in captured["identity_hints"]
 
 
 def test_act_9i_action_helpers_pass_browser_settings_verbatim(
@@ -2057,8 +2061,14 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
             deadline_s=0,
             track_for_url="",
             track_keywords=(),
+            track_identity_keywords=None,
             foreground_hold_seconds=0,
         ):
+            identity = (
+                tuple(track_keywords)
+                if track_identity_keywords is None
+                else tuple(track_identity_keywords)
+            )
             worker_calls.append(
                 {
                     "class_name": class_name,
@@ -2068,12 +2078,13 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
                     "deadline_s": deadline_s,
                     "track_for_url": track_for_url,
                     "track_keywords": tuple(track_keywords),
+                    "track_identity_keywords": identity,
                     "foreground_hold_seconds": foreground_hold_seconds,
                 }
             )
             if track_for_url:
                 notifier._register_tracked_hwnd(
-                    track_for_url, hwnd, keywords=tuple(track_keywords)
+                    track_for_url, hwnd, keywords=identity
                 )
             return None
 

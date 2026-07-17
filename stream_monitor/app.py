@@ -1243,6 +1243,18 @@ class App(ctk.CTk):
                 info.url,
             )
             return
+        if not info.display_name:
+            cached = self._controller.snapshot_display_names().get(
+                f"{info.platform}:{info.channel}", ""
+            )
+            if not cached:
+                # ChannelEntry.key uses normalized name; StreamInfo.channel
+                # is usually already normalized the same way.
+                cached = self._controller.snapshot_display_names().get(
+                    f"{info.platform}:{info.channel.lower()}", ""
+                )
+            if cached:
+                info.display_name = cached
         noop = lambda: None  # noqa: E731
         try:
             execute_action(
@@ -1303,6 +1315,10 @@ class App(ctk.CTk):
         """Close any browser window we opened for this channel."""
         url = getattr(offline_info, "url", "") or ""
         if not url:
+            logger.warning(
+                "close_on_offline skipped for %s: offline payload has empty url",
+                entry.key,
+            )
             return
         # Title-keyword fallback is only safe when we launched with a dedicated
         # profile (HWND tracking). Shared-profile / webbrowser opens register
@@ -1315,6 +1331,10 @@ class App(ctk.CTk):
             if entry.name:
                 keywords.append(entry.name)
             display_name = getattr(offline_info, "display_name", "") or ""
+            if not display_name:
+                display_name = self._controller.snapshot_display_names().get(
+                    entry.key, ""
+                )
             if display_name and display_name not in keywords:
                 keywords.append(display_name)
         try:
@@ -1325,6 +1345,13 @@ class App(ctk.CTk):
         if closed:
             logger.info(
                 "Closed %d browser window(s) for %s (%s)", closed, entry.key, url
+            )
+        else:
+            logger.warning(
+                "close_on_offline found no window for %s (%s) keywords=%r",
+                entry.key,
+                url,
+                keywords,
             )
 
     # ------------------------------------------------------------------

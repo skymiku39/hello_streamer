@@ -2029,6 +2029,38 @@ def test_prune_off_topic_keeps_window_with_matching_keyword(monkeypatch) -> None
     _reset_tracked_hwnds()
 
 
+def test_prune_off_topic_keeps_twitch_channel_shell_without_stream_title(
+    monkeypatch,
+) -> None:
+    """Twitch often simplifies titles to '(N) DisplayName - Twitch'.
+
+    That must not be treated as off-topic just because the ephemeral stream
+    title keyword disappeared — otherwise close_on_offline loses the HWND.
+    """
+    _reset_tracked_hwnds()
+    _install_fake_user32(monkeypatch, {444: "(10) 飛魚_ - Twitch"})
+    closed: list[int] = []
+    monkeypatch.setattr(
+        notifier,
+        "_post_close_window",
+        lambda hwnd: (closed.append(hwnd), True)[1],
+    )
+
+    # Identity keywords only (login) — display name not registered, matching
+    # the real failure mode from user logs.
+    notifier._register_tracked_hwnd(
+        "https://www.twitch.tv/hayabi_zr", 444, keywords=["hayabi_zr"]
+    )
+    with notifier._TRACKED_HWNDS_LOCK:
+        for t in notifier._TRACKED_WINDOWS_BY_URL["https://www.twitch.tv/hayabi_zr"]:
+            t.opened_at = 0.0
+
+    assert notifier.prune_off_topic_tracked_windows(min_age_s=1.0) == 0
+    assert closed == []
+    assert notifier.tracked_hwnds_for_url("https://www.twitch.tv/hayabi_zr") == {444}
+    _reset_tracked_hwnds()
+
+
 def test_prune_off_topic_respects_grace_period(monkeypatch) -> None:
     """Window with a noise title is still skipped if it's brand new."""
     _reset_tracked_hwnds()

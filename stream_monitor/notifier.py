@@ -620,6 +620,7 @@ def _open_with_browser_settings(
     settings: BrowserSettings | dict[str, Any],
     *,
     title_hints: tuple[str, ...] = (),
+    identity_hints: tuple[str, ...] | None = None,
 ) -> bool:
     """Spawn the configured browser with CLI args.
 
@@ -781,6 +782,11 @@ def _open_with_browser_settings(
             worker_settings = effective_settings
             track_url = url
             track_keywords = tuple(title_hints)
+            track_identity = (
+                tuple(identity_hints)
+                if identity_hints is not None
+                else track_keywords
+            )
         else:
             worker_settings = {
                 **effective_settings,
@@ -790,6 +796,7 @@ def _open_with_browser_settings(
             }
             track_url = ""
             track_keywords = ()
+            track_identity = ()
             if wants_close_or_hide_mgmt:
                 _block_title_fallback_for_url(url)
         _apply_new_browser_window_settings_async(
@@ -799,6 +806,7 @@ def _open_with_browser_settings(
             apply_geometry=apply_geometry,
             track_for_url=track_url,
             track_keywords=track_keywords,
+            track_identity_keywords=track_identity,
             foreground_hold_seconds=int(
                 worker_settings.get("foreground_hold_seconds", 0)
             ),
@@ -814,6 +822,7 @@ def open_url(
     browser_settings: BrowserSettings | dict[str, Any] | None = None,
     *,
     title_hints: tuple[str, ...] | list[str] | None = None,
+    identity_hints: tuple[str, ...] | list[str] | None = None,
 ) -> bool:
     """Open *url* in the user's browser.
 
@@ -827,12 +836,20 @@ def open_url(
         return False
 
     hints_tuple = tuple(title_hints or ())
+    identity_tuple = (
+        tuple(identity_hints)
+        if identity_hints is not None
+        else hints_tuple
+    )
     coerced = coerce_browser_settings(browser_settings)
 
     custom_launch_failed = False
     if coerced is not None and coerced.enabled:
         if _open_with_browser_settings(
-            url, coerced, title_hints=hints_tuple
+            url,
+            coerced,
+            title_hints=hints_tuple,
+            identity_hints=identity_tuple,
         ):
             return True
         custom_launch_failed = True
@@ -1075,16 +1092,24 @@ def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
         _toast_linux(info, with_open_button)
 
 
-def _title_hints_from_stream_info(info: StreamInfo) -> tuple[str, ...]:
-    """Derive the keywords the prune pass will look for in window titles.
-
-    We include the channel display_name and the channel slug (so the prune
-    pass survives a re-rendered title that drops one but not the other),
-    plus the stream title itself (most reliable identifier for App Mode
-    windows, which usually show "<stream title>" as the window text).
-    """
-    raw = (info.display_name or "", info.channel or "", info.title or "")
+def _identity_title_hints_from_stream_info(info: StreamInfo) -> tuple[str, ...]:
+    """Stable identifiers that survive Twitch/YouTube title simplification."""
+    raw = (info.display_name or "", info.channel or "")
     return tuple(h for h in raw if h)
+
+
+def _title_hints_from_stream_info(info: StreamInfo) -> tuple[str, ...]:
+    """Derive keywords for HWND discovery and off-topic prune.
+
+    Identity hints (display_name, channel slug) are listed first so the prune
+    pass still matches after the window title drops the ephemeral stream
+    title. The stream title itself is appended for launch-time HWND matching.
+    """
+    identity = _identity_title_hints_from_stream_info(info)
+    title = (info.title or "").strip()
+    if title and title not in identity:
+        return identity + (title,)
+    return identity
 
 
 def open_and_stop(
@@ -1094,7 +1119,12 @@ def open_and_stop(
 ) -> None:
     """Open stream URL in browser and stop monitoring."""
     _toast(info, with_open_button=False)
-    open_url(info.url, browser_settings, title_hints=_title_hints_from_stream_info(info))
+    open_url(
+        info.url,
+        browser_settings,
+        title_hints=_title_hints_from_stream_info(info),
+        identity_hints=_identity_title_hints_from_stream_info(info),
+    )
     stop_fn()
 
 
@@ -1104,7 +1134,12 @@ def open_and_keep(
 ) -> None:
     """Open stream URL in browser, keep monitoring other channels."""
     _toast(info, with_open_button=False)
-    open_url(info.url, browser_settings, title_hints=_title_hints_from_stream_info(info))
+    open_url(
+        info.url,
+        browser_settings,
+        title_hints=_title_hints_from_stream_info(info),
+        identity_hints=_identity_title_hints_from_stream_info(info),
+    )
 
 
 def notify_only(info: StreamInfo) -> None:
@@ -1119,7 +1154,12 @@ def open_and_exit(
 ) -> None:
     """Open stream URL in browser, then exit the application."""
     _toast(info, with_open_button=False)
-    open_url(info.url, browser_settings, title_hints=_title_hints_from_stream_info(info))
+    open_url(
+        info.url,
+        browser_settings,
+        title_hints=_title_hints_from_stream_info(info),
+        identity_hints=_identity_title_hints_from_stream_info(info),
+    )
     exit_fn()
 
 
