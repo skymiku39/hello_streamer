@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-__version__ = "1.1.4"
+__version__ = "1.1.5"
 
 
 def base_dir() -> Path:
