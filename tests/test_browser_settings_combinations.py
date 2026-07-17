@@ -759,7 +759,7 @@ def test_prune_5a_keeps_window_when_title_still_matches(monkeypatch) -> None:
     notifier._TRACKED_WINDOWS_BY_URL["https://t.tv/kaicenat"][0].opened_at -= 30
 
     assert notifier.prune_off_topic_tracked_windows() == 0
-    # Tracking stays intact for later off-topic checks.
+    # Tracking stays intact — prune only closes noise chrome titles.
     assert notifier.tracked_hwnds_for_url("https://t.tv/kaicenat") == {42}
 
 

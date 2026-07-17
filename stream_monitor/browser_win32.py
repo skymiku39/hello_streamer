@@ -891,7 +891,7 @@ def prune_off_topic_tracked_windows(
             if _post_close_window(hwnd):
                 closed += 1
                 logger.info(
-                    "Closed off-topic browser window HWND=%s title=%r url=%s",
+                    "Closed blank-tab browser window HWND=%s title=%r url=%s",
                     hwnd,
                     title,
                     url,

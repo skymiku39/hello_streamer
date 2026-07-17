@@ -199,10 +199,10 @@ class MonitorEventBridge:
                     closed = prune_off_topic_tracked_windows()
                     if closed:
                         logger.info(
-                            "off-topic prune closed %d window(s)", closed
+                            "blank-tab prune closed %d window(s)", closed
                         )
                 except Exception:
-                    logger.exception("off-topic prune failed")
+                    logger.exception("blank-tab prune failed")
             elif (
                 trigger_enabled
                 and raw_browser_settings is not None
@@ -210,7 +210,7 @@ class MonitorEventBridge:
                 and not browser_window_tracking_available(raw_browser_settings)
             ):
                 logger.debug(
-                    "Skipped off-topic prune: HWND window tracking unavailable "
+                    "Skipped blank-tab prune: HWND window tracking unavailable "
                     "(need dedicated profile and app mode or separate window)"
                 )
 
