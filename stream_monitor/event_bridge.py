@@ -7,6 +7,11 @@ import threading
 from typing import Any
 
 from stream_monitor.browser_settings_model import coerce_browser_settings
+from stream_monitor.channel_policy import (
+    resolve_live_action,
+    should_close_on_offline,
+    should_prune_blank_tabs,
+)
 from stream_monitor.domain import ChannelEntry, ChannelStatus
 from stream_monitor.event_sink import AppEventSink, ChannelRowView
 from stream_monitor.events import (
@@ -21,7 +26,6 @@ from stream_monitor.events import (
 )
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.notifier import (
-    action_for_stream_status,
     browser_window_tracking_available,
     execute_action,
     prune_off_topic_tracked_windows,
@@ -181,19 +185,26 @@ class MonitorEventBridge:
                     len(self._pending),
                 )
 
-        trigger_enabled = sink.monitor_mode == "trigger"
+        mode = sink.monitor_mode
 
         if poll_complete:
             sink.save_status_cache()
             raw_browser_settings = coerce_browser_settings(
                 sink.config.get("browser_settings")
             )
-            if (
-                trigger_enabled
-                and raw_browser_settings is not None
+            close_off_topic = bool(
+                raw_browser_settings is not None
                 and raw_browser_settings.enabled
                 and raw_browser_settings.close_off_topic_pages
+            )
+            tracking_available = bool(
+                raw_browser_settings is not None
                 and browser_window_tracking_available(raw_browser_settings)
+            )
+            if should_prune_blank_tabs(
+                mode=mode,
+                close_off_topic=close_off_topic,
+                tracking_available=tracking_available,
             ):
                 try:
                     closed = prune_off_topic_tracked_windows()
@@ -203,12 +214,7 @@ class MonitorEventBridge:
                         )
                 except Exception:
                     logger.exception("blank-tab prune failed")
-            elif (
-                trigger_enabled
-                and raw_browser_settings is not None
-                and raw_browser_settings.close_off_topic_pages
-                and not browser_window_tracking_available(raw_browser_settings)
-            ):
+            elif mode == "trigger" and close_off_topic and not tracking_available:
                 logger.debug(
                     "Skipped blank-tab prune: HWND window tracking unavailable "
                     "(need dedicated profile and app mode or separate window)"
@@ -223,51 +229,54 @@ class MonitorEventBridge:
             if not poll_complete and not sink.defer_channel_row_repaints:
                 sink.apply_live_row_status(entry, info)
 
-            if not trigger_enabled:
+            decision = resolve_live_action(
+                mode=mode,
+                monitor_only=getattr(entry, "monitor_only", False),
+                configured_action=configured_action,
+                stream_status=info.stream_status or "live",
+            )
+            if decision.action is None:
+                if decision.suppressed_reason == "monitor_only":
+                    logger.info(
+                        "Skipped action for %s (monitor_only)", entry.key
+                    )
                 continue
 
-            if getattr(entry, "monitor_only", False):
-                logger.info(
-                    "Skipped action for %s (monitor_only)", entry.key
-                )
-                continue
-
-            action = action_for_stream_status(configured_action, info)
-            if action is None:
-                continue
-
-            if action in ("open_and_stop", "open_and_keep", "open_and_exit"):
+            if decision.opens_window:
                 threading.Thread(
                     target=sink.execute_live_action,
-                    args=(action, info, browser_settings),
+                    args=(decision.action, info, browser_settings),
                     daemon=True,
                 ).start()
-                if action == "open_and_stop":
+                if decision.triggers_stop:
                     should_stop = True
-                elif action == "open_and_exit":
+                elif decision.triggers_exit:
                     should_exit = True
             else:
                 noop = lambda: None  # noqa: E731
                 execute_action(
-                    action,
+                    decision.action,
                     info,
                     stop_fn=noop,
                     exit_fn=noop,
                     browser_settings=browser_settings,
                 )
 
-        skip_close_on_offline = sink.wake_verify_active
-        if (
-            trigger_enabled
-            and offline_events
-            and browser_settings is not None
-            and browser_settings.close_on_offline
+        close_on_offline = bool(
+            browser_settings is not None and browser_settings.close_on_offline
+        )
+        offline_tracking_available = bool(
+            browser_settings is not None
             and browser_window_tracking_available(browser_settings)
-            and not skip_close_on_offline
-        ):
-            for entry, offline_info in offline_events:
-                if getattr(entry, "monitor_only", False):
-                    continue
+        )
+        for entry, offline_info in offline_events:
+            if should_close_on_offline(
+                mode=mode,
+                monitor_only=getattr(entry, "monitor_only", False),
+                wake_verify_active=sink.wake_verify_active,
+                close_on_offline=close_on_offline,
+                tracking_available=offline_tracking_available,
+            ):
                 sink.handle_channel_offline(entry, offline_info)
 
         if should_stop:

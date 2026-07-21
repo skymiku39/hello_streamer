@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import stream_monitor.browser_win32 as _browser_win32
+from stream_monitor import channel_policy
 from stream_monitor.browser_settings_model import (
     BrowserSettings,
     coerce_browser_settings,
@@ -1009,13 +1010,15 @@ def _format_scheduled_start(iso_str: str) -> str:
 
 
 def action_for_stream_status(configured_action: str, info: StreamInfo) -> str | None:
-    """Return the action that should run for a stream/video event."""
-    status = info.stream_status or "live"
-    if status == "upcoming":
-        return "notify_only"
-    if status == "video":
-        return None
-    return configured_action
+    """Return the action that should run for a stream/video event.
+
+    Thin adapter over :func:`channel_policy.effective_action` (kept for callers
+    and tests that pass a ``StreamInfo``); the status→action mapping itself lives
+    in the pure policy module.
+    """
+    return channel_policy.effective_action(
+        configured_action, info.stream_status or "live"
+    )
 
 
 def _build_toast_text(info: StreamInfo) -> tuple[str, str]:
