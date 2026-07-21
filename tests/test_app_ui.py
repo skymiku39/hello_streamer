@@ -1,7 +1,11 @@
 """Tests for shared UI formatting helpers."""
 
 from stream_monitor import i18n
-from stream_monitor.app_ui import _clamp_tooltip_position, _format_minutes_delta
+from stream_monitor.app_ui import (
+    _clamp_tooltip_position,
+    _format_minutes_delta,
+    monitor_mode_button_states,
+)
 
 
 def test_format_minutes_delta_under_one_minute() -> None:
@@ -70,3 +74,29 @@ def test_clamp_tooltip_position_primary_only_setup() -> None:
     )
     assert x == 900
     assert y == 40
+
+
+def test_monitor_mode_buttons_idle_disables_only_stop() -> None:
+    assert monitor_mode_button_states("idle") == {
+        "start": "normal",
+        "watch": "normal",
+        "stop": "disabled",
+    }
+
+
+def test_monitor_mode_buttons_trigger_disables_start() -> None:
+    states = monitor_mode_button_states("trigger")
+    assert states["start"] == "disabled"
+    assert states["watch"] == "normal"
+    assert states["stop"] == "normal"
+
+
+def test_monitor_mode_buttons_watch_disables_watch() -> None:
+    states = monitor_mode_button_states("watch")
+    assert states["start"] == "normal"
+    assert states["watch"] == "disabled"
+    assert states["stop"] == "normal"
+
+
+def test_monitor_mode_buttons_unknown_mode_falls_back_to_idle() -> None:
+    assert monitor_mode_button_states("bogus") == monitor_mode_button_states("idle")

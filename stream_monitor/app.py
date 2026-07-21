@@ -45,6 +45,7 @@ from stream_monitor.app_ui import (
     _language_icon,
     _tooltip_tr,
     _truncate_status_name,
+    monitor_mode_button_states,
 )
 from stream_monitor.browser_settings_model import BrowserSettings
 from stream_monitor.channel_reorder import apply_list_move
@@ -1163,19 +1164,10 @@ class App(ctk.CTk):
                     logger.exception("close_on_stop sweep failed")
 
     def _apply_monitor_mode_buttons(self) -> None:
-        mode = self._controller.mode
-        if mode == "trigger":
-            self.start_btn.configure(state="disabled")
-            self.watch_btn.configure(state="normal")
-            self.stop_btn.configure(state="normal")
-        elif mode == "watch":
-            self.start_btn.configure(state="normal")
-            self.watch_btn.configure(state="disabled")
-            self.stop_btn.configure(state="normal")
-        else:
-            self.start_btn.configure(state="normal")
-            self.watch_btn.configure(state="normal")
-            self.stop_btn.configure(state="disabled")
+        states = monitor_mode_button_states(self._controller.mode)
+        self.start_btn.configure(state=states["start"])
+        self.watch_btn.configure(state=states["watch"])
+        self.stop_btn.configure(state=states["stop"])
 
     def _on_browser_settings(self) -> None:
         dialog = BrowserSettingsDialog(

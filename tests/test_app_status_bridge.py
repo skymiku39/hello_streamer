@@ -95,6 +95,88 @@ def test_channel_row_none_resets_placeholder() -> None:
         root.destroy()
 
 
+def _label_colors(row) -> tuple[str, str]:
+    """Return (text_color, fg_color) of the row's status badge."""
+    return (
+        str(row.status_label.cget("text_color")),
+        str(row.status_label.cget("fg_color")),
+    )
+
+
+def test_status_badge_live_uses_green_filled_badge() -> None:
+    root, row = _make_row()
+    try:
+        row.set_status(ChannelStatus(status=True, url="u", title="t"))
+        text_color, fg_color = _label_colors(row)
+        assert text_color == "white"
+        assert fg_color == "#1b5e20"
+        assert str(row.status_label.cget("cursor")) == "hand2"
+    finally:
+        root.destroy()
+
+
+def test_status_badge_upcoming_uses_orange_filled_badge() -> None:
+    root, row = _make_row()
+    try:
+        row.set_status(ChannelStatus(status="upcoming", url="u", title="t"))
+        text_color, fg_color = _label_colors(row)
+        assert text_color == "white"
+        assert fg_color == "#e65100"
+    finally:
+        root.destroy()
+
+
+def test_status_badge_offline_is_muted_transparent() -> None:
+    root, row = _make_row()
+    try:
+        row.set_status(ChannelStatus(status=False))
+        text_color, fg_color = _label_colors(row)
+        assert text_color == "#999999"
+        assert fg_color == "transparent"
+    finally:
+        root.destroy()
+
+
+def test_status_badge_idle_is_placeholder_transparent() -> None:
+    root, row = _make_row()
+    try:
+        row.set_status(None)
+        row._render_status_visuals()
+        text_color, fg_color = _label_colors(row)
+        assert text_color == "#666677"
+        assert fg_color == "transparent"
+    finally:
+        root.destroy()
+
+
+def test_paused_row_shows_disabled_visual() -> None:
+    from stream_monitor.app_ui import _CLR_TEXT_DISABLED
+
+    root, row = _make_row()
+    try:
+        row.channel["enabled"] = False
+        row._apply_enabled_visual()
+        text_color, _ = _label_colors(row)
+        assert text_color == _CLR_TEXT_DISABLED
+    finally:
+        root.destroy()
+
+
+def test_monitor_only_keeps_channel_enabled_and_flags_suppression() -> None:
+    root, row = _make_row()
+    try:
+        row.channel["enabled"] = True
+        row.channel["monitor_only"] = False
+        row._on_monitor_only_click()
+        assert row.channel["enabled"] is True
+        assert row.channel["monitor_only"] is True
+        # toggling again clears monitor-only (back to full triggering)
+        row._on_monitor_only_click()
+        assert row.channel["monitor_only"] is False
+    finally:
+        root.destroy()
+
+
 def test_channel_status_from_stream_info_maps_live_fields() -> None:
     info = StreamInfo(
         channel="hello",

@@ -190,6 +190,24 @@ def _format_minutes_delta(total_seconds: float) -> str:
     return f"{mins}m"
 
 
+def monitor_mode_button_states(mode: str) -> dict[str, str]:
+    """Map a monitor mode to the tri-state of the three control buttons.
+
+    Pure decision separated from the Tk side-effect in
+    :meth:`App._apply_monitor_mode_buttons`, so the "which button is enabled
+    in which run state" contract is unit-testable without a display.
+
+    - ``trigger`` : Start is the *current* mode → disabled; Watch/Stop live.
+    - ``watch``   : Watch is the *current* mode → disabled; Start/Stop live.
+    - anything else (``idle``): nothing is running → Stop disabled.
+    """
+    if mode == "trigger":
+        return {"start": "disabled", "watch": "normal", "stop": "normal"}
+    if mode == "watch":
+        return {"start": "normal", "watch": "disabled", "stop": "normal"}
+    return {"start": "normal", "watch": "normal", "stop": "disabled"}
+
+
 def _format_countdown(target: str) -> str:
     dt = parse_iso_datetime(target)
     if dt is None:
