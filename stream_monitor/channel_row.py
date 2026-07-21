@@ -316,6 +316,7 @@ class ChannelRow(ctk.CTkFrame):
             self._channel_url(),
             self._get_browser_settings(),
             title_hints=self._title_hints(),
+            manage=False,
         )
 
     def _offline_link_url(self) -> str:
@@ -332,12 +333,14 @@ class ChannelRow(ctk.CTkFrame):
                 self._offline_link_url(),
                 self._get_browser_settings(),
                 title_hints=self._title_hints(),
+                manage=False,
             )
             return
         open_url(
             self._active_url or self._channel_url(),
             self._get_browser_settings(),
             title_hints=self._title_hints(),
+            manage=False,
         )
 
     def _open_active_page(self) -> None:
@@ -350,6 +353,7 @@ class ChannelRow(ctk.CTkFrame):
                 self._upcoming_url,
                 self._get_browser_settings(),
                 title_hints=self._title_hints(),
+                manage=False,
             )
             return
         if self._active_url:
@@ -357,6 +361,7 @@ class ChannelRow(ctk.CTkFrame):
                 self._active_url,
                 self._get_browser_settings(),
                 title_hints=self._title_hints(),
+                manage=False,
             )
 
     def _set_link_tip_key(self, key: str) -> None:

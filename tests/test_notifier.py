@@ -2396,6 +2396,75 @@ def test_open_with_browser_settings_keeps_win32_management_with_isolation(
     assert len(manager_calls) == 1
 
 
+def _managed_open_settings(tmp_path) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "browser_path": "chrome",
+        "new_window": True,
+        "app_mode": True,
+        "minimized": False,
+        "apply_geometry": True,
+        "user_data_dir": str(tmp_path / "profile"),
+        "per_channel_profile": False,
+        "close_on_offline": True,
+    }
+
+
+def test_open_url_manage_true_registers_tracking(monkeypatch, tmp_path) -> None:
+    """Monitor-triggered opens (manage=True) register the window for tracking."""
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+    monkeypatch.setattr(notifier, "_enum_browser_hwnds", lambda _c: set())
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        notifier,
+        "_apply_new_browser_window_settings_async",
+        lambda *args, **kwargs: calls.append(kwargs),
+    )
+
+    assert notifier.open_url(
+        "https://www.twitch.tv/hello",
+        _managed_open_settings(tmp_path),
+        manage=True,
+    ) is True
+    assert len(calls) == 1
+    assert calls[0]["track_for_url"] == "https://www.twitch.tv/hello"
+
+
+def test_open_url_manage_false_opens_without_tracking(
+    monkeypatch, tmp_path
+) -> None:
+    """User-initiated opens (manage=False) launch the window but never track it.
+
+    The browser still opens (and can be positioned via Win32), but because the
+    window is not registered for a URL, close_on_offline / close_on_stop / the
+    blank-tab prune pass will never send it WM_CLOSE.
+    """
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+    monkeypatch.setattr(notifier, "_enum_browser_hwnds", lambda _c: set())
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        notifier,
+        "_apply_new_browser_window_settings_async",
+        lambda *args, **kwargs: calls.append(kwargs),
+    )
+
+    assert notifier.open_url(
+        "https://www.twitch.tv/hello",
+        _managed_open_settings(tmp_path),
+        manage=False,
+    ) is True
+    # Window is still launched (and positioned), but registered with an empty
+    # track URL so it is never auto-closed.
+    assert len(calls) == 1
+    assert calls[0]["track_for_url"] == ""
+
+
 # ─────────────────────────────────────────────
 # open_browser_for_signin — Chromium + Firefox CLI surface
 # ─────────────────────────────────────────────

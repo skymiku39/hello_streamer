@@ -620,6 +620,7 @@ def _open_with_browser_settings(
     settings: BrowserSettings | dict[str, Any],
     *,
     title_hints: tuple[str, ...] = (),
+    manage: bool = True,
 ) -> bool:
     """Spawn the configured browser with CLI args.
 
@@ -628,6 +629,13 @@ def _open_with_browser_settings(
     thread that applies position, size, and minimised state to any new windows
     that appear afterwards. This is more reliable than browser CLI flags alone,
     because Chrome/Edge route requests through a long-lived master process.
+
+    ``manage`` controls the auto-close lifecycle. Monitor-triggered opens pass
+    ``manage=True`` so the window is registered for HWND tracking and can be
+    closed by ``close_on_offline`` / ``close_on_stop`` / blank-tab prune.
+    User-initiated opens (clicking a channel row / link) pass ``manage=False``:
+    the window is still launched (and positioned) with the configured browser
+    settings, but it is never tracked, so the app leaves it alone.
     """
     coerced = coerce_browser_settings(settings)
     if coerced is None:
@@ -686,13 +694,22 @@ def _open_with_browser_settings(
     isolation_available = bool(effective_user_data_dir)
     app_mode = bool(settings.get("app_mode"))
     apply_geometry = bool(effective_settings.get("apply_geometry", True))
+    want_window_management = (
+        _is_windows() and new_window_expected and isolation_available and manage
+    )
     want_geometry_only_fixup = _wants_geometry_only_fixup(
         isolation_available=isolation_available,
         app_mode=app_mode,
         apply_geometry=apply_geometry,
-    )
-    want_window_management = (
-        _is_windows() and new_window_expected and isolation_available
+    ) or (
+        # Unmanaged (user-initiated) open with a dedicated profile: still
+        # position the window via Win32, but never register it for tracking so
+        # close-on-offline / close-on-stop / prune leave it untouched.
+        _is_windows()
+        and not manage
+        and isolation_available
+        and new_window_expected
+        and apply_geometry
     )
     want_win32_fixup = want_window_management or want_geometry_only_fixup
     wants_close_or_hide_mgmt = (
@@ -790,7 +807,7 @@ def _open_with_browser_settings(
             }
             track_url = ""
             track_keywords = ()
-            if wants_close_or_hide_mgmt:
+            if wants_close_or_hide_mgmt and manage:
                 _block_title_fallback_for_url(url)
         _apply_new_browser_window_settings_async(
             class_name,
@@ -814,6 +831,7 @@ def open_url(
     browser_settings: BrowserSettings | dict[str, Any] | None = None,
     *,
     title_hints: tuple[str, ...] | list[str] | None = None,
+    manage: bool = True,
 ) -> bool:
     """Open *url* in the user's browser.
 
@@ -821,6 +839,11 @@ def open_url(
     launched via ``subprocess`` so we can control window position, size and
     minimised state (Chrome/Edge CLI flags). Otherwise we fall back to the
     standard ``webbrowser`` module with a Windows shell fallback.
+
+    ``manage`` decides whether the opened window joins the auto-close
+    lifecycle. Monitor-triggered opens use ``manage=True`` (tracked, closable
+    on offline/stop). User-initiated opens use ``manage=False`` so the window
+    is launched but never tracked or auto-closed.
     """
     if not url:
         logger.warning("Cannot open empty URL")
@@ -835,12 +858,14 @@ def open_url(
             url,
             coerced,
             title_hints=hints_tuple,
+            manage=manage,
         ):
             return True
         custom_launch_failed = True
 
     block_fallback = (
-        _is_windows()
+        manage
+        and _is_windows()
         and custom_launch_failed
         and coerced is not None
         and _close_features_enabled(coerced)
