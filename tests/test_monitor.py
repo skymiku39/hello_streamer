@@ -25,6 +25,20 @@ def _check_and_commit(monitor: Monitor, entry: ChannelEntry):
     return events
 
 
+def _snapshot_status_values(monitor: Monitor) -> dict[str, object]:
+    """Reduce a status snapshot to ``{key: status token}``.
+
+    ``ChannelStatus`` no longer overrides ``__eq__`` to compare against its bare
+    ``status`` value (that magic was removed to make instances hashable and to
+    drop the ``is True`` misjudgment trap). These assertions only care about the
+    live/offline/upcoming token per channel, so unwrap ``.status`` explicitly.
+    """
+    return {
+        key: (value.status if isinstance(value, ChannelStatus) else value)
+        for key, value in monitor.snapshot_statuses().items()
+    }
+
+
 def _collect_partial(bus: MonitorEventBus) -> dict[str, ChannelStatus]:
     partial: dict[str, ChannelStatus] = {}
     for event in bus.drain():
@@ -312,7 +326,7 @@ def test_twitch_triggers_only_on_live_transition(monkeypatch, tmp_path) -> None:
         ("twitch:hello", "Live now"),
         ("twitch:hello", "Live now"),
     ]
-    assert monitor.snapshot_statuses() == {"twitch:hello": True}
+    assert _snapshot_status_values(monitor) == {"twitch:hello": True}
     assert monitor.snapshot_display_names() == {"twitch:hello": "Hello Channel"}
     db.close()
 
@@ -365,7 +379,7 @@ def test_youtube_new_video_triggers_event(monkeypatch, tmp_path) -> None:
     _, info = results[0]
     assert info.stream_status == "live"
     assert info.video_id == "vid1"
-    assert monitor.snapshot_statuses() == {"youtube:ytchan": True}
+    assert _snapshot_status_values(monitor) == {"youtube:ytchan": True}
     db.close()
 
 
@@ -753,7 +767,7 @@ def test_youtube_mixed_styles_in_single_poll(monkeypatch, tmp_path) -> None:
     assert len(results) == 1
     statuses = [info.stream_status for _, info in results]
     assert "live" in statuses
-    assert monitor.snapshot_statuses() == {"youtube:ytchan": True}
+    assert _snapshot_status_values(monitor) == {"youtube:ytchan": True}
     assert db.is_seen("v_default", "DEFAULT") is True
     db.close()
 
@@ -875,7 +889,7 @@ def test_youtube_default_items_are_marked_but_never_emit_events(
     assert _check_and_commit(monitor, entry) == []
     assert db.is_seen("old_upload", "DEFAULT") is True
     assert db.is_seen("new_upload", "DEFAULT") is True
-    assert monitor.snapshot_statuses() == {"youtube:ytchan": False}
+    assert _snapshot_status_values(monitor) == {"youtube:ytchan": False}
     db.close()
 
 
@@ -903,7 +917,7 @@ def test_youtube_empty_items_uses_live_fallback(monkeypatch, tmp_path) -> None:
     _, info = results[0]
     assert info.stream_status == "live"
     assert info.title == "Fallback Live"
-    assert monitor.snapshot_statuses() == {"youtube:ytchan": True}
+    assert _snapshot_status_values(monitor) == {"youtube:ytchan": True}
     db.close()
 
 
@@ -946,7 +960,7 @@ def test_youtube_fallback_then_tidus_recovery_no_duplicate(
     results_tidus = _check_and_commit(monitor, entry)
     assert len(results_tidus) == 0
 
-    assert monitor.snapshot_statuses() == {"youtube:ytchan": True}
+    assert _snapshot_status_values(monitor) == {"youtube:ytchan": True}
     db.close()
 
 
@@ -1057,7 +1071,7 @@ def test_twitch_re_enable_clears_last_status(monkeypatch, tmp_path) -> None:
     entry = ChannelEntry(platform="twitch", name="hello")
 
     _check_and_commit(monitor, entry)
-    assert monitor.snapshot_statuses() == {"twitch:hello": True}
+    assert _snapshot_status_values(monitor) == {"twitch:hello": True}
 
     monitor.update_channels(
         [{"platform": "twitch", "name": "hello", "enabled": False}]

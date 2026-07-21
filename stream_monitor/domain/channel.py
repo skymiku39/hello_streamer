@@ -31,8 +31,27 @@ class ChannelEntry:
         return channel_key(self.platform, self.name)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ChannelStatus:
+    """Immutable snapshot of a channel's last-known status.
+
+    ``status`` is the canonical state token: ``True`` (live), ``"upcoming"``
+    (scheduled/waiting room), or ``False``/``None`` (offline). Some legacy
+    paths also use the string ``"live"``; :attr:`is_live` normalises both.
+
+    The class is ``frozen`` on purpose:
+
+    * Equality and hashing are field-based (the normal dataclass behaviour), so
+      instances are safe to place in sets / dict keys and never surprise callers
+      with an asymmetric or status-only ``==``.
+    * Immutability means a snapshot cannot be mutated in place behind a caller's
+      back; produce a new value with :func:`dataclasses.replace` instead.
+
+    Always branch on the explicit :attr:`is_live` / :attr:`is_upcoming` /
+    :attr:`is_offline` helpers (or on ``.status``) rather than ``x is True`` on
+    the object itself — the object is never identical to a bare ``bool``.
+    """
+
     status: bool | str | None
     url: str = ""
     title: str = ""
@@ -43,8 +62,17 @@ class ChannelStatus:
     upcoming_url: str = ""  # waiting-room link when offline but scheduled
     ended_at_source: str = ""  # "vod" | "confirmed" | "pending"
 
-    def __eq__(self, other: object) -> bool:
-        return self.status == other
+    @property
+    def is_live(self) -> bool:
+        return self.status is True or self.status == "live"
+
+    @property
+    def is_upcoming(self) -> bool:
+        return self.status == "upcoming"
+
+    @property
+    def is_offline(self) -> bool:
+        return not self.is_live and not self.is_upcoming
 
 
 @dataclass
