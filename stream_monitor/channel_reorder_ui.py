@@ -157,7 +157,19 @@ def repack_preview_rows(
 
 
 class ChannelReorderMode:
-    """Discrete slot drag with live list reflow (one card height per step)."""
+    """Discrete slot drag with live list reflow (one card height per step).
+
+    This owns the **app-level reorder session** state machine:
+
+        idle → active (a source row began dragging)
+             → engaged (pointer moved ``engage_px`` → push-aside preview shows)
+             → committed / cancelled (finish)
+
+    It is deliberately separate from the **row-local input gesture** in
+    ``ChannelRow`` (long-press → arm → drag-source), which only feeds this via
+    begin/motion/release callbacks. Keeping the two layers apart means the row
+    widget never depends on this session object.
+    """
 
     def __init__(
         self,

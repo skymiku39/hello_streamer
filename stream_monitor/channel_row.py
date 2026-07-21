@@ -59,8 +59,14 @@ class ChannelRow(ctk.CTkFrame):
         self._on_reorder_begin = on_reorder_begin
         self._on_reorder_motion = on_reorder_motion
         self._on_reorder_release = on_reorder_release
+        # Row-local drag-handle gesture FSM (a *separate layer* from the
+        # app-level reorder session in ChannelReorderMode; see the note above
+        # _on_drag_handle_press). Phases:
+        #   "idle"    – nothing happening
+        #   "pending" – handle pressed, long-press timer armed, not yet a drag
+        #   "armed"   – long-press fired; this row is the active drag source
+        self._drag_phase: str = "idle"
         self._drag_long_press_id: str | None = None
-        self._drag_active = False
         self._drag_press_y = 0
         self._get_browser_settings = get_browser_settings or (lambda: None)
         self._active_url = ""
@@ -809,6 +815,15 @@ class ChannelRow(ctk.CTkFrame):
         else:
             self.configure(border_width=0)
 
+    @property
+    def _drag_active(self) -> bool:
+        """Back-compat view of the gesture FSM: True only while ``armed``."""
+        return self._drag_phase == "armed"
+
+    @_drag_active.setter
+    def _drag_active(self, value: bool) -> None:
+        self._drag_phase = "armed" if value else "idle"
+
     def _cancel_drag_long_press(self) -> None:
         if self._drag_long_press_id is not None:
             self.after_cancel(self._drag_long_press_id)
@@ -817,11 +832,21 @@ class ChannelRow(ctk.CTkFrame):
     def cancel_reorder_drag(self) -> None:
         """Reset local drag-handle state (e.g. when release happens off the handle)."""
         self._cancel_drag_long_press()
-        self._drag_active = False
+        self._drag_phase = "idle"
 
+    # NOTE ON DRAG STATE LAYERING (why this is not merged into
+    # ChannelReorderMode): this handler set is a *row-local input gesture
+    # recogniser* — it owns the long-press timer, the initial press Y, and the
+    # "is this row the drag source?" flag. ChannelReorderMode owns the separate
+    # *app-level reorder session* (push-aside preview, target slot, commit).
+    # They live at different layers on purpose: folding the gesture into the
+    # session would make this widget depend on the session object, coupling the
+    # view to app orchestration. The row instead only emits callbacks
+    # (on_reorder_begin/motion/release) and never reads the session state.
     def _on_drag_handle_press(self, event: Any) -> None:
         self._drag_press_y = event.y_root
         self._cancel_drag_long_press()
+        self._drag_phase = "pending"
         self._drag_long_press_id = self.after(
             LONG_PRESS_MS,
             lambda y=event.y_root: self._arm_drag(y),
@@ -829,22 +854,23 @@ class ChannelRow(ctk.CTkFrame):
 
     def _arm_drag(self, y_root: int) -> None:
         self._drag_long_press_id = None
-        self._drag_active = True
+        self._drag_phase = "armed"
         if self._on_reorder_begin is not None:
             self._on_reorder_begin(y_root)
 
     def _on_drag_handle_motion(self, event: Any) -> None:
-        if not self._drag_active:
+        if self._drag_phase != "armed":
             if abs(event.y_root - self._drag_press_y) > LONG_PRESS_CANCEL_PX:
                 self._cancel_drag_long_press()
+                self._drag_phase = "idle"
             return
         if self._on_reorder_motion is not None:
             self._on_reorder_motion(event.y_root)
 
     def _on_drag_handle_release(self, _event: Any) -> None:
-        was_active = self._drag_active
+        was_armed = self._drag_phase == "armed"
         self.cancel_reorder_drag()
-        if was_active and self._on_reorder_release is not None:
+        if was_armed and self._on_reorder_release is not None:
             self._on_reorder_release()
 
 

@@ -200,6 +200,38 @@ def test_channel_row_long_press_state_machine() -> None:
     root.destroy()
 
 
+def test_channel_row_drag_phase_transitions() -> None:
+    """The row-local gesture FSM moves idle → pending → armed → idle."""
+    from stream_monitor.channel_row import ChannelRow
+
+    root, _ = _make_channel_row()
+    pending: list[Any] = []
+    row = ChannelRow(
+        root,
+        {"platform": "twitch", "name": "chan", "enabled": True},
+        on_delete=lambda: None,
+        on_move_up=lambda: None,
+        on_move_down=lambda: None,
+        on_toggle_enabled=lambda: None,
+        on_reorder_begin=lambda _y: None,
+        on_reorder_release=lambda: None,
+    )
+    row.after = lambda _ms, cb: pending.append(cb) or "id"  # type: ignore[method-assign]
+    row.after_cancel = lambda _id: pending.clear()  # type: ignore[method-assign]
+
+    assert row._drag_phase == "idle"
+    row._on_drag_handle_press(type("Ev", (), {"y_root": 100})())
+    assert row._drag_phase == "pending"
+    assert row._drag_active is False  # pending is not yet an active drag
+    pending[0]()  # long-press fires
+    assert row._drag_phase == "armed"
+    assert row._drag_active is True
+    row._on_drag_handle_release(type("Ev", (), {})())
+    assert row._drag_phase == "idle"
+    assert row._drag_active is False
+    root.destroy()
+
+
 def test_channel_row_cancel_reorder_drag_clears_active() -> None:
     from stream_monitor.channel_row import ChannelRow
 
