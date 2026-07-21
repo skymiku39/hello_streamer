@@ -1,4 +1,23 @@
-"""Tier-1 preview: push partial channel status to the UI mid-poll."""
+"""Tier-1 preview: push partial channel status to the UI mid-poll.
+
+Per-channel status is a two-tier state machine written into ``_last_status``:
+
+    tier-1 (this module)         tier-2 (offline/probes refresh_details)
+    ─────────────────────        ────────────────────────────────────────
+    cheap probe → preview   ┐
+    (live / offline / up-   ├─►  authoritative commit of the real edge:
+     coming, "pending"      │      • went_live   (prev not live → live)
+     offline detail)        │      • went_offline(prev LIVE → offline,
+                            ┘        gated by the anti-flap strike count)
+
+Load-bearing invariant (see :meth:`PreviewMixin._tier1_may_overwrite_cached`):
+a **tier-1 preview must never downgrade a cached LIVE status to offline**. The
+live→offline edge is owned solely by tier-2, which recognises it via
+``prev_status is True``. If tier-1 wrote an offline preview over a cached LIVE
+row first, that signal — and therefore ``went_offline`` and the browser
+auto-close — would be silently lost. This was a real production bug; the
+invariant is now enforced in one named place rather than an inline check.
+"""
 
 from __future__ import annotations
 
@@ -40,6 +59,23 @@ class PreviewMixin:
             ended_at_source=cached.ended_at_source,
         )
 
+    @staticmethod
+    def _tier1_may_overwrite_cached(cached: Any, preview: ChannelStatus) -> bool:
+        """Structural invariant guarding the tier-1 → cache write.
+
+        A tier-1 preview may overwrite ``_last_status`` only if it does **not**
+        downgrade a cached LIVE channel to offline. Tier-2 ``refresh_details``
+        owns the live→offline edge (it emits ``went_offline`` and drives
+        ``close_on_offline``) and detects it via ``prev_status is True``; letting
+        a tier-1 offline preview erase the cached LIVE status first would make
+        that edge — and the browser auto-close — silently never fire.
+
+        Regression: ``test_full_poll_cycle_emits_went_offline_with_event_bus``.
+        """
+        if isinstance(cached, ChannelStatus) and cached.is_live:
+            return not preview.is_offline
+        return True
+
     def _publish_channel_preview(
         self, entry: ChannelEntry, *, from_probe: bool = False
     ) -> None:
@@ -68,19 +104,7 @@ class PreviewMixin:
                 preview = self._coalesce_tier1_offline_preview(
                     built_preview, cached_status
                 )
-                # A tier-1 preview must never downgrade a cached LIVE status to
-                # offline. The live->offline edge is committed by tier-2
-                # refresh_details, which relies on ``prev_status is True`` to
-                # emit went_offline (and drive close_on_offline). Writing an
-                # offline preview here would erase that signal, so the offline
-                # event — and the browser auto-close — would silently never fire.
-                downgrades_live_to_offline = (
-                    isinstance(cached_status, ChannelStatus)
-                    and cached_status.status is True
-                    and isinstance(preview, ChannelStatus)
-                    and preview.status is False
-                )
-                if not downgrades_live_to_offline:
+                if self._tier1_may_overwrite_cached(cached_status, preview):
                     self._last_status[entry.key] = preview
             if entry.key not in self._last_status:
                 return

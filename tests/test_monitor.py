@@ -3509,6 +3509,27 @@ def test_start_preserves_seeded_live_status(monkeypatch, tmp_path) -> None:
     db.close()
 
 
+def test_tier1_may_overwrite_cached_blocks_live_to_offline_downgrade() -> None:
+    """The tier-1 invariant: never overwrite a cached LIVE row with offline.
+
+    Tier-2 owns the live→offline edge (via ``prev_status is True``); a tier-1
+    offline preview overwriting cached LIVE would erase went_offline.
+    """
+    guard = Monitor._tier1_may_overwrite_cached
+    live_cached = ChannelStatus(status=True)
+    offline_preview = ChannelStatus(status=False, ended_at_source="pending")
+    live_preview = ChannelStatus(status=True)
+    offline_cached = ChannelStatus(status=False)
+
+    # The one forbidden transition: cached LIVE → offline preview.
+    assert guard(live_cached, offline_preview) is False
+    # Everything else is allowed.
+    assert guard(live_cached, live_preview) is True
+    assert guard(offline_cached, offline_preview) is True
+    assert guard(None, offline_preview) is True
+    assert guard("live", offline_preview) is True  # non-ChannelStatus cache
+
+
 def test_seeded_offline_status_still_fires_went_live(monkeypatch, tmp_path) -> None:
     """An offline seed that is now live is a genuine new edge and must fire."""
     fetcher = FakeTwitchFetcher([True])
