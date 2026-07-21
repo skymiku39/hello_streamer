@@ -103,18 +103,140 @@ class _TrackedWindow:
     keywords: tuple[str, ...] = ()
 
 
-# url -> list of TrackedWindow entries for that URL. Populated by the
-# post-launch window manager and consumed by close_browser_window_for_url
-# (and prune_off_topic_tracked_windows) so we close the right tabs without
-# nuking unrelated browser windows. Module-global on purpose: multiple App
-# instances would step on each other anyway because Windows HWNDs are
-# process-global.
-_TRACKED_WINDOWS_BY_URL: dict[str, list[_TrackedWindow]] = {}
-_TITLE_FALLBACK_BLOCKED_URLS: set[str] = set()
-# URLs for which a close has been requested but the worker may still be
-# running. The worker checks this before registering a new HWND.
-_CLOSING_URLS: set[str] = set()
-_TRACKED_HWNDS_LOCK = threading.Lock()
+class _WindowRegistry:
+    """Single owner of all browser-window tracking state (process-global).
+
+    Each *managed* URL flows through one lifecycle, and this object keeps every
+    per-URL fact behind a single lock so multi-field updates stay consistent:
+
+        register()            → tracked   (HWND(s) recorded for close/prune)
+        mark_closing()        → closing   (post-launch worker stops registering)
+        clear() / remove_hwnd() → cleared (window gone; tracking dropped)
+
+    ``title_fallback_blocked`` is a parallel per-URL flag for shared-profile
+    launches where no HWND is ever tracked: it lets a later *title-based*
+    fallback close fire exactly once.
+
+    Windows HWNDs are process-global, so this is deliberately a module singleton
+    (:data:`_REGISTRY`) — multiple App instances would collide regardless. The
+    module-level ``_TRACKED_WINDOWS_BY_URL`` / ``_TITLE_FALLBACK_BLOCKED_URLS`` /
+    ``_CLOSING_URLS`` / ``_TRACKED_HWNDS_LOCK`` names are back-compat views onto
+    this instance's containers (kept bound to the same objects it mutates in
+    place, never reassigned).
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        # url -> list of TrackedWindow entries for that URL.
+        self.by_url: dict[str, list[_TrackedWindow]] = {}
+        # URLs where a title-based fallback close is armed (no HWND tracked).
+        self.title_fallback_blocked: set[str] = set()
+        # URLs for which a close was requested but the worker may still run.
+        self.closing: set[str] = set()
+
+    # -- tracked HWNDs -------------------------------------------------
+    def register(
+        self,
+        url: str,
+        hwnd: int,
+        keywords: tuple[str, ...] | list[str] | None = None,
+    ) -> None:
+        if not url or not hwnd:
+            return
+        norm_keywords = _normalize_keywords(keywords)
+        with self.lock:
+            bucket = self.by_url.setdefault(url, [])
+            for tracked in bucket:
+                if tracked.hwnd == int(hwnd):
+                    if norm_keywords:
+                        tracked.keywords = _normalize_keywords(
+                            tuple(tracked.keywords) + tuple(norm_keywords)
+                        )
+                    return
+            bucket.append(
+                _TrackedWindow(
+                    hwnd=int(hwnd),
+                    opened_at=time.monotonic(),
+                    keywords=norm_keywords,
+                )
+            )
+
+    def snapshot(self, url: str) -> list[_TrackedWindow]:
+        with self.lock:
+            return [
+                _TrackedWindow(t.hwnd, t.opened_at, tuple(t.keywords))
+                for t in self.by_url.get(url, ())
+            ]
+
+    def all_urls(self) -> list[str]:
+        with self.lock:
+            return list(self.by_url.keys())
+
+    def clear(self, url: str) -> None:
+        with self.lock:
+            self.by_url.pop(url, None)
+
+    def remove_hwnd(self, url: str, hwnd: int) -> None:
+        with self.lock:
+            bucket = self.by_url.get(url)
+            if not bucket:
+                return
+            self.by_url[url] = [t for t in bucket if t.hwnd != int(hwnd)]
+            if not self.by_url[url]:
+                self.by_url.pop(url, None)
+
+    # -- closing flag --------------------------------------------------
+    def mark_closing(self, url: str) -> None:
+        if not url:
+            return
+        with self.lock:
+            self.closing.add(url)
+
+    def unmark_closing(self, url: str) -> None:
+        if not url:
+            return
+        with self.lock:
+            self.closing.discard(url)
+
+    def is_closing(self, url: str) -> bool:
+        if not url:
+            return False
+        with self.lock:
+            return url in self.closing
+
+    # -- title-fallback block -----------------------------------------
+    def block_title_fallback(self, url: str) -> None:
+        if not url:
+            return
+        with self.lock:
+            self.title_fallback_blocked.add(url)
+
+    def unblock_title_fallback(self, url: str) -> None:
+        with self.lock:
+            self.title_fallback_blocked.discard(url)
+
+    def pop_title_fallback_block(self, url: str) -> bool:
+        with self.lock:
+            blocked = url in self.title_fallback_blocked
+            self.title_fallback_blocked.discard(url)
+            return blocked
+
+    def reset(self) -> None:
+        """Drop all tracking state (full teardown / tests)."""
+        with self.lock:
+            self.by_url.clear()
+            self.title_fallback_blocked.clear()
+            self.closing.clear()
+
+
+_REGISTRY = _WindowRegistry()
+# Back-compat module-level views onto the registry's containers. Kept bound to
+# the same objects the registry mutates in place (never reassign), so existing
+# callers/tests that poke them directly keep working.
+_TRACKED_HWNDS_LOCK = _REGISTRY.lock
+_TRACKED_WINDOWS_BY_URL = _REGISTRY.by_url
+_TITLE_FALLBACK_BLOCKED_URLS = _REGISTRY.title_fallback_blocked
+_CLOSING_URLS = _REGISTRY.closing
 
 
 def _is_windows() -> bool:
@@ -599,52 +721,25 @@ def _register_tracked_hwnd(
     re-registered. The off-topic prune pass no longer reads them — it
     relies solely on noise-title detection.
     """
-    if not url or not hwnd:
-        return
-    norm_keywords = _normalize_keywords(keywords)
-    with _TRACKED_HWNDS_LOCK:
-        bucket = _TRACKED_WINDOWS_BY_URL.setdefault(url, [])
-        # Avoid duplicate registration for the same HWND under the same URL;
-        # merge keywords if the second registration brings more identifiers.
-        for tracked in bucket:
-            if tracked.hwnd == int(hwnd):
-                if norm_keywords:
-                    merged = _normalize_keywords(
-                        tuple(tracked.keywords) + tuple(norm_keywords)
-                    )
-                    tracked.keywords = merged
-                return
-        bucket.append(
-            _TrackedWindow(
-                hwnd=int(hwnd),
-                opened_at=time.monotonic(),
-                keywords=norm_keywords,
-            )
-        )
+    _REGISTRY.register(url, hwnd, keywords)
 
 
 def _snapshot_tracked_windows(url: str) -> list[_TrackedWindow]:
     """Return a defensive copy of TrackedWindow entries for *url*."""
-    with _TRACKED_HWNDS_LOCK:
-        return [
-            _TrackedWindow(t.hwnd, t.opened_at, tuple(t.keywords))
-            for t in _TRACKED_WINDOWS_BY_URL.get(url, ())
-        ]
+    return _REGISTRY.snapshot(url)
 
 
 def tracked_hwnds_for_url(url: str) -> set[int]:
     """Return the HWND set currently tracked for *url*."""
-    return {t.hwnd for t in _snapshot_tracked_windows(url)}
+    return {t.hwnd for t in _REGISTRY.snapshot(url)}
 
 
 def _all_tracked_urls() -> list[str]:
-    with _TRACKED_HWNDS_LOCK:
-        return list(_TRACKED_WINDOWS_BY_URL.keys())
+    return _REGISTRY.all_urls()
 
 
 def _clear_tracked_hwnds(url: str) -> None:
-    with _TRACKED_HWNDS_LOCK:
-        _TRACKED_WINDOWS_BY_URL.pop(url, None)
+    _REGISTRY.clear(url)
 
 
 def _mark_url_closing(url: str) -> None:
@@ -653,56 +748,34 @@ def _mark_url_closing(url: str) -> None:
     The post-launch worker checks this flag before registering new HWNDs,
     preventing orphan windows when close fires before registration completes.
     """
-    if not url:
-        return
-    with _TRACKED_HWNDS_LOCK:
-        _CLOSING_URLS.add(url)
+    _REGISTRY.mark_closing(url)
 
 
 def _unmark_url_closing(url: str) -> None:
     """Clear the closing flag when a fresh launch begins for this URL."""
-    if not url:
-        return
-    with _TRACKED_HWNDS_LOCK:
-        _CLOSING_URLS.discard(url)
+    _REGISTRY.unmark_closing(url)
 
 
 def _is_url_closing(url: str) -> bool:
     """True if a close was requested for this URL (worker should abort)."""
-    if not url:
-        return False
-    with _TRACKED_HWNDS_LOCK:
-        return url in _CLOSING_URLS
+    return _REGISTRY.is_closing(url)
 
 
 def _block_title_fallback_for_url(url: str) -> None:
-    if not url:
-        return
-    with _TRACKED_HWNDS_LOCK:
-        _TITLE_FALLBACK_BLOCKED_URLS.add(url)
+    _REGISTRY.block_title_fallback(url)
 
 
 def _unblock_title_fallback_for_url(url: str) -> None:
-    with _TRACKED_HWNDS_LOCK:
-        _TITLE_FALLBACK_BLOCKED_URLS.discard(url)
+    _REGISTRY.unblock_title_fallback(url)
 
 
 def _pop_title_fallback_block(url: str) -> bool:
-    with _TRACKED_HWNDS_LOCK:
-        blocked = url in _TITLE_FALLBACK_BLOCKED_URLS
-        _TITLE_FALLBACK_BLOCKED_URLS.discard(url)
-        return blocked
+    return _REGISTRY.pop_title_fallback_block(url)
 
 
 def _remove_tracked_hwnd(url: str, hwnd: int) -> None:
     """Drop a single HWND from URL's tracking bucket (no-op if absent)."""
-    with _TRACKED_HWNDS_LOCK:
-        bucket = _TRACKED_WINDOWS_BY_URL.get(url)
-        if not bucket:
-            return
-        _TRACKED_WINDOWS_BY_URL[url] = [t for t in bucket if t.hwnd != int(hwnd)]
-        if not _TRACKED_WINDOWS_BY_URL[url]:
-            _TRACKED_WINDOWS_BY_URL.pop(url, None)
+    _REGISTRY.remove_hwnd(url, hwnd)
 
 
 def _enum_visible_hwnds_with_title() -> list[tuple[int, str]]:
