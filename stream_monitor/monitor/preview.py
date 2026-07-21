@@ -68,7 +68,20 @@ class PreviewMixin:
                 preview = self._coalesce_tier1_offline_preview(
                     built_preview, cached_status
                 )
-                self._last_status[entry.key] = preview
+                # A tier-1 preview must never downgrade a cached LIVE status to
+                # offline. The live->offline edge is committed by tier-2
+                # refresh_details, which relies on ``prev_status is True`` to
+                # emit went_offline (and drive close_on_offline). Writing an
+                # offline preview here would erase that signal, so the offline
+                # event — and the browser auto-close — would silently never fire.
+                downgrades_live_to_offline = (
+                    isinstance(cached_status, ChannelStatus)
+                    and cached_status.status is True
+                    and isinstance(preview, ChannelStatus)
+                    and preview.status is False
+                )
+                if not downgrades_live_to_offline:
+                    self._last_status[entry.key] = preview
             if entry.key not in self._last_status:
                 return
             status = self._last_status[entry.key]

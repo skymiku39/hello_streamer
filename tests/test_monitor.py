@@ -1794,6 +1794,97 @@ def test_monitor_publishes_went_offline_to_event_bus(tmp_path) -> None:
     db.close()
 
 
+def test_full_poll_cycle_emits_went_offline_with_event_bus(
+    monkeypatch, tmp_path
+) -> None:
+    """Live->offline over the real poll cycle must fire ChannelWentOffline.
+
+    Regression: on the strike-commit poll the tier-1 preview built an offline
+    ``status=False`` row and wrote it into ``last_status`` *before* tier-2 ran.
+    Tier-2 then saw ``prev_status`` already False and its ``prev_status is True``
+    went_offline guard failed, so the offline edge (and close_on_offline) was
+    silently dropped. This only manifested with an event bus attached (i.e. in
+    production), because the preview publish early-returns when the bus is None.
+    """
+    fetcher = FakeTwitchFetcher([True, True, False, False, False])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    bus = MonitorEventBus()
+    offline_events: list[ChannelWentOffline] = []
+    bus.subscribe(
+        lambda e: offline_events.append(e)
+        if isinstance(e, ChannelWentOffline)
+        else None
+    )
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hi"}],
+        interval=10,
+        event_bus=bus,
+        db=db,
+    )
+
+    for _ in range(4):
+        monitor._execute_poll_cycle(time.monotonic())
+        bus.drain()
+
+    assert len(offline_events) == 1, (
+        f"expected exactly one went_offline, got {len(offline_events)}"
+    )
+    assert offline_events[0].entry.key == "twitch:hi"
+    with monitor._lock:
+        offline = monitor._last_status["twitch:hi"]
+        assert isinstance(offline, ChannelStatus)
+        assert offline.status is False
+    db.close()
+
+
+def test_full_poll_cycle_youtube_emits_went_offline_with_event_bus(
+    monkeypatch, tmp_path
+) -> None:
+    """YouTube fallback live->offline over the real cycle must fire went_offline.
+
+    Same regression class as the Twitch case: the tier-1 preview must not write
+    an offline row over a cached-live status before tier-2 commits the edge.
+    """
+    live_item = VideoItem(
+        video_id="vid1",
+        title="Live Stream",
+        url="https://www.youtube.com/watch?v=vid1",
+        style="LIVE",
+        display_name="YT Channel",
+    )
+    not_live = StreamInfo(
+        channel="yt", platform="youtube", is_live=False, title="", url=""
+    )
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[[live_item], [], [], []],
+        info_batches=[not_live for _ in range(12)],
+    )
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    bus = MonitorEventBus()
+    offline_events: list[ChannelWentOffline] = []
+    bus.subscribe(
+        lambda e: offline_events.append(e)
+        if isinstance(e, ChannelWentOffline)
+        else None
+    )
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "yt"}],
+        interval=10,
+        event_bus=bus,
+        db=db,
+    )
+
+    for _ in range(4):
+        monitor._execute_poll_cycle(time.monotonic())
+        bus.drain()
+
+    assert len(offline_events) >= 1, "expected a went_offline event for YouTube"
+    assert any(e.entry.key == "youtube:yt" for e in offline_events)
+    db.close()
+
+
 # ?????????????????????????????????????????????
 # Anti-flap guard: single-poll API hiccups must NOT trigger duplicate
 # went_live notifications or fake went_offline events.
