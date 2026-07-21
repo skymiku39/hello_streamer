@@ -3463,6 +3463,38 @@ def test_seeded_live_status_suppresses_went_live(monkeypatch, tmp_path) -> None:
     db.close()
 
 
+def test_start_preserves_seeded_live_status(monkeypatch, tmp_path) -> None:
+    """``start()`` must not wipe the seed populated by ``__init__``.
+
+    Regression: the previous session's snapshot is seeded into ``_last_status``
+    at construction so a still-live channel is not re-fired as a fresh
+    went-live edge (which would re-open a player the user is already watching).
+    ``start()`` used to clear ``_last_status`` right after seeding, silently
+    defeating that suppression on every app restart. The seeding unit tests
+    never caught it because they call ``_probe_live`` directly, bypassing the
+    ``start()`` lifecycle this test exercises.
+    """
+    db = SeenVideoDB(tmp_path / "test.db")
+    entry = ChannelEntry(platform="twitch", name="foo")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "foo"}],
+        db=db,
+        initial_statuses={
+            entry.key: ChannelStatus(
+                status=True, started_at="2026-06-18T10:00:00+00:00"
+            )
+        },
+    )
+    # Neutralize the polling loop so start() only exercises its reset block.
+    monkeypatch.setattr(monitor, "_run", lambda: None)
+    monitor.start()
+    monitor.stop()
+    seeded = monitor._last_status.get(entry.key)
+    assert seeded is not None
+    assert seeded.status is True
+    db.close()
+
+
 def test_seeded_offline_status_still_fires_went_live(monkeypatch, tmp_path) -> None:
     """An offline seed that is now live is a genuine new edge and must fire."""
     fetcher = FakeTwitchFetcher([True])

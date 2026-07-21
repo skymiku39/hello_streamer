@@ -375,7 +375,15 @@ class Monitor(
             return
         self._stop_event.clear()
         with self._lock:
-            self._last_status.clear()
+            # NOTE: do NOT clear ``_last_status`` here. ``__init__`` seeds it via
+            # ``_seed_initial_statuses`` with the previous session's snapshot so a
+            # stream that was already live at last shutdown is treated as a
+            # known-live edge (not a fresh went-live that would re-open a player
+            # the user is already watching). ``start()`` only ever runs once,
+            # right after construction, so wiping the seed here would silently
+            # defeat that suppression. All other structures below are already at
+            # their fresh __init__ defaults, so clearing them is a harmless
+            # belt-and-suspenders reset.
             self._display_names.clear()
             self._youtube_baselined.clear()
             self._fallback_triggered_live = {}
