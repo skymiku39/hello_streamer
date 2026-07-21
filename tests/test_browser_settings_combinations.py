@@ -2202,3 +2202,37 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
         assert notifier.tracked_hwnds_for_url(url) == set()
     else:
         assert closed == []
+
+
+def test_dialog_preserves_foreground_hold_seconds_without_ui() -> None:
+    """Saving the dialog must not drop viewer-engagement fields that have no UI.
+
+    ``foreground_hold_seconds`` is a live, consumed setting but has no widget,
+    so the dialog has to carry the incoming value through rather than reset it
+    to the default on every save.
+    """
+    try:
+        import customtkinter as ctk
+
+        from stream_monitor.app_dialogs import BrowserSettingsDialog
+
+        root = ctk.CTk()
+        root.withdraw()
+    except Exception as exc:  # noqa: BLE001 — Tk missing on headless CI
+        import pytest
+
+        pytest.skip(f"Tk unavailable in this environment: {exc}")
+    try:
+        dialog = BrowserSettingsDialog(
+            root,
+            {"enabled": True},
+            {"enabled": True, "foreground_hold_seconds": 30},
+        )
+        try:
+            collected = dialog._collect_viewer_engagement()
+            assert collected["foreground_hold_seconds"] == 30
+            assert collected["enabled"] is True
+        finally:
+            dialog.destroy()
+    finally:
+        root.destroy()

@@ -575,6 +575,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.viewer_engagement_result: dict[str, Any] | None = None
         settings = _normalize_browser_settings(current or {})
         ve_settings = _normalize_viewer_engagement(viewer_engagement or {})
+        # Keep the full normalized snapshot so _collect_viewer_engagement can
+        # carry through fields that have no UI control (e.g.
+        # foreground_hold_seconds) instead of dropping them on save.
+        self._ve_initial = ve_settings
         self._new_window_before_app_mode = bool(settings.get("new_window", False))
         profile_stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
         self._test_profile_dir = Path(tempfile.gettempdir()) / (
@@ -1667,7 +1671,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             switch.configure(state=state)
 
     def _collect_viewer_engagement(self) -> dict[str, Any]:
-        data: dict[str, Any] = {"enabled": self.engagement_enabled_var.get()}
+        # Start from the incoming (normalized) settings so any field without a
+        # UI control — e.g. ``foreground_hold_seconds`` — is preserved rather
+        # than silently reset to its default when the user saves the dialog.
+        data: dict[str, Any] = dict(self._ve_initial)
+        data["enabled"] = self.engagement_enabled_var.get()
         for key, _label, _hint in _VIEWER_ENGAGEMENT_TOGGLES:
             data[key] = self._engagement_toggle_vars[key].get()
         return data
