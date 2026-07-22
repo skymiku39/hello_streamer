@@ -179,3 +179,66 @@ class WakeVerifyMixin:
             elapsed,
         )
         return elapsed
+
+
+class StartupRefreshMixin:
+    """One forced tier-2 refresh after the first poll when a cache was restored."""
+
+    def _maybe_run_startup_refresh(
+        self,
+        enabled_entries: list[ChannelEntry],
+        poll_started: float,
+        elapsed: float,
+    ) -> float:
+        """Run a single archive/title refresh pass after the opening poll."""
+        if not getattr(self, "_startup_refresh_pending", False):
+            return elapsed
+        if not enabled_entries or self._stop_event.is_set():
+            self._startup_refresh_pending = False
+            return elapsed
+        self._startup_refresh_pending = False
+        extra = self._run_startup_refresh(enabled_entries, poll_started)
+        return elapsed + extra
+
+    def _run_startup_refresh(
+        self,
+        enabled_entries: list[ChannelEntry],
+        poll_started: float,
+    ) -> float:
+        """Force-refresh every enabled channel once after the first startup poll.
+
+        Runs after tier-1 (which may have opened browsers for live edges) and
+        the normal tier-2 pass, so restored offline rows pick up the latest
+        archive/VOD instead of stale session cache.
+        """
+        logger.info(
+            "Startup refresh: forcing tier-2 update for %d channel(s)",
+            len(enabled_entries),
+        )
+        self._force_offline_vod_refresh = True
+        refresh_started = time.monotonic()
+        try:
+            with self._lock:
+                self._pending_offline_events.clear()
+
+            def refresh_one(entry: ChannelEntry) -> None:
+                # Re-probe so tier-2 has a fresh snapshot (same as wake verify).
+                self._probe_live(entry)
+                commit = self._refresh_details(entry)
+                commit()
+
+            self._run_priority_pool(
+                enabled_entries, refresh_one, pool_tag="startup_refresh"
+            )
+            if not self._stop_event.is_set():
+                self._emit_poll_complete()
+        finally:
+            self._force_offline_vod_refresh = False
+        extra = time.monotonic() - refresh_started
+        logger.info(
+            "Startup refresh complete: channels=%d extra=%.2fs total=%.2fs",
+            len(enabled_entries),
+            extra,
+            time.monotonic() - poll_started,
+        )
+        return extra

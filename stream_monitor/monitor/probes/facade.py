@@ -127,6 +127,23 @@ class ProbeFacade:
             channel_items=channel_items,
         )
 
+    def try_upgrade_youtube_offline_vod(
+        self,
+        entry: ChannelEntry,
+        prev_cs: ChannelStatus,
+        *,
+        fetcher: Any | None,
+        payload: OfflineInfo | None = None,
+        channel_items: list[VideoItem] | None = None,
+    ) -> ChannelStatus | None:
+        return self._monitor._try_upgrade_youtube_offline_vod(
+            entry,
+            prev_cs,
+            fetcher=fetcher,
+            payload=payload,
+            channel_items=channel_items,
+        )
+
     def enqueue_youtube_fallback_offline(
         self, entry: ChannelEntry, prev: Any, *, label: str
     ) -> None:

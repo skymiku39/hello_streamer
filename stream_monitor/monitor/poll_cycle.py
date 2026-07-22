@@ -182,7 +182,10 @@ class PollCycleMixin:
         enabled_entries = [e for e in entries if e.enabled]
 
         if run_wake_verify and enabled_entries:
-            return self._run_wake_verification(enabled_entries, poll_started)
+            elapsed = self._run_wake_verification(enabled_entries, poll_started)
+            return self._maybe_run_startup_refresh(
+                enabled_entries, poll_started, elapsed
+            )
 
         with self._lock:
             self._pending_offline_events.clear()
@@ -271,7 +274,9 @@ class PollCycleMixin:
                 self._interval,
             )
         self._run_maintenance()
-        return elapsed
+        return self._maybe_run_startup_refresh(
+            enabled_entries, poll_started, elapsed
+        )
 
     def _check_channel(
         self, entry: ChannelEntry

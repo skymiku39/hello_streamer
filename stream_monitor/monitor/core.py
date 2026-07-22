@@ -37,7 +37,7 @@ from stream_monitor.monitor.types import (
     _entry_key_from_live_cache_key,
     _ProbeSnapshot,
 )
-from stream_monitor.monitor.wake_verify import WakeVerifyMixin
+from stream_monitor.monitor.wake_verify import StartupRefreshMixin, WakeVerifyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ class Monitor(
     OfflineEnqueueMixin,
     PreviewMixin,
     WakeVerifyMixin,
+    StartupRefreshMixin,
     PollCycleMixin,
 ):
     """Polls a list of channels in a background thread."""
@@ -92,6 +93,8 @@ class Monitor(
         self._last_poll_planned_rest: float = 0.0
         self._wake_verify_mode = False
         self._wake_verify_active = False
+        self._startup_refresh_pending = False
+        self._force_offline_vod_refresh = False
         self._last_maintenance_wall: float = 0.0
 
         self._seed_initial_statuses(initial_statuses, last_activity_epoch)
@@ -118,6 +121,7 @@ class Monitor(
                 if key in keys
             }
             self._session.last_status.update(seeded)
+            self._startup_refresh_pending = True
         if last_activity_epoch > 0:
             self._last_poll_wall_ended = last_activity_epoch
             self._last_poll_planned_rest = float(self._interval)

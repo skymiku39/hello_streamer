@@ -37,3 +37,43 @@ def test_merge_keeps_confirmed_when_vod_in_future() -> None:
     ended, source = _merge_offline_ended_at(confirmed, vod_end)
     assert ended == confirmed
     assert source == "confirmed"
+
+
+def test_offline_vod_should_refresh_when_archive_url_changes() -> None:
+    from stream_monitor.domain import ChannelStatus
+    from stream_monitor.fetcher.base import FinishedVod
+    from stream_monitor.monitor.types import _offline_vod_should_refresh
+
+    prev = ChannelStatus(
+        status=False,
+        title="Old",
+        vod_url="https://www.twitch.tv/videos/old",
+        ended_at="2026-07-20T18:10:41+00:00",
+        ended_at_source="vod",
+    )
+    vod = FinishedVod(
+        url="https://www.twitch.tv/videos/new",
+        ended_at="2026-07-21T17:44:09+00:00",
+        title="New",
+    )
+    assert _offline_vod_should_refresh(prev, vod) is True
+
+
+def test_offline_vod_should_not_refresh_when_archive_unchanged() -> None:
+    from stream_monitor.domain import ChannelStatus
+    from stream_monitor.fetcher.base import FinishedVod
+    from stream_monitor.monitor.types import _offline_vod_should_refresh
+
+    prev = ChannelStatus(
+        status=False,
+        title="Same",
+        vod_url="https://www.twitch.tv/videos/same",
+        ended_at="2026-07-21T17:44:09+00:00",
+        ended_at_source="vod",
+    )
+    vod = FinishedVod(
+        url="https://www.twitch.tv/videos/same",
+        ended_at="2026-07-21T17:44:09+00:00",
+        title="Same",
+    )
+    assert _offline_vod_should_refresh(prev, vod) is False

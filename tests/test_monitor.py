@@ -1569,6 +1569,98 @@ def test_twitch_cold_offline_stale_vod_uses_archive_elapsed(
     db.close()
 
 
+def test_twitch_offline_refreshes_when_newer_archive_available(
+    monkeypatch, tmp_path
+) -> None:
+    """Stable offline rows must pick up a newer ARCHIVE after a missed session."""
+    from stream_monitor.fetcher.base import FinishedVod
+
+    old = ChannelStatus(
+        status=False,
+        title="Old stream",
+        ended_at="2026-07-20T18:10:41+00:00",
+        vod_url="https://www.twitch.tv/videos/old",
+        ended_at_source="vod",
+        url="https://www.twitch.tv/hello",
+    )
+
+    class FetcherWithNewArchive(FakeTwitchFetcher):
+        def get_latest_finished_vod(
+            self, channel_name: str, *, items=None
+        ) -> FinishedVod | None:
+            return FinishedVod(
+                url="https://www.twitch.tv/videos/new",
+                ended_at="2026-07-21T17:44:09+00:00",
+                title="New stream",
+            )
+
+    fetcher = FetcherWithNewArchive([False])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+    with monitor._lock:
+        monitor._last_status[entry.key] = old
+
+    monitor._force_offline_vod_refresh = True
+    upgraded = monitor._try_upgrade_twitch_offline_vod(
+        entry, old, fetcher=fetcher, payload=None
+    )
+    assert upgraded is not None
+    assert upgraded.vod_url == "https://www.twitch.tv/videos/new"
+    assert upgraded.title == "New stream"
+    assert upgraded.ended_at == "2026-07-21T17:44:09+00:00"
+    db.close()
+
+
+def test_startup_refresh_runs_once_after_seeded_first_poll(
+    monkeypatch, tmp_path,
+) -> None:
+    """Restored cache triggers one forced refresh after the opening poll."""
+    import time
+
+    from stream_monitor.fetcher.base import FinishedVod
+
+    old = ChannelStatus(
+        status=False,
+        title="Old stream",
+        ended_at="2026-07-20T18:10:41+00:00",
+        vod_url="https://www.twitch.tv/videos/old",
+        ended_at_source="vod",
+        url="https://www.twitch.tv/hello",
+    )
+
+    class FetcherWithNewArchive(FakeTwitchFetcher):
+        def get_latest_finished_vod(
+            self, channel_name: str, *, items=None
+        ) -> FinishedVod | None:
+            return FinishedVod(
+                url="https://www.twitch.tv/videos/new",
+                ended_at="2026-07-21T17:44:09+00:00",
+                title="New stream",
+            )
+
+    fetcher = FetcherWithNewArchive([False])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hello", "enabled": True}],
+        db=db,
+        initial_statuses={"twitch:hello": old},
+        interval=60,
+    )
+    assert monitor._startup_refresh_pending is True
+    monitor._execute_poll_cycle(time.monotonic())
+
+    with monitor._lock:
+        row = monitor._last_status.get("twitch:hello")
+        assert isinstance(row, ChannelStatus)
+        assert row.vod_url == "https://www.twitch.tv/videos/new"
+        assert row.title == "New stream"
+    assert monitor._startup_refresh_pending is False
+    db.close()
+
+
 def test_youtube_cold_offline_rejects_merge_confirmed_from_future_vod(
     tmp_path,
 ) -> None:

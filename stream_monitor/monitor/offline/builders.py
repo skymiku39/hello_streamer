@@ -17,6 +17,8 @@ from stream_monitor.monitor.types import (
     _entry_key_from_live_cache_key,
     _live_cache_key,
     _merge_offline_ended_at,
+    _offline_status_from_vod_refresh,
+    _offline_vod_should_refresh,
     _sort_datetime,
     _utc_now_iso,
     _youtube_upcoming_is_usable,
@@ -287,6 +289,36 @@ class OfflineBuildersMixin:
             scheduled_start="",
         )
 
+    @staticmethod
+    def _feed_suggests_newer_vod(
+        prev_cs: ChannelStatus, channel_items: list[VideoItem]
+    ) -> bool:
+        """Cheap YouTube feed check before an expensive finished-VOD rescan."""
+        defaults = [item for item in channel_items if item.style == "DEFAULT"]
+        if not defaults:
+            return False
+        head_url = (defaults[0].url or "").strip()
+        if not head_url:
+            return False
+        return head_url != (prev_cs.vod_url or "").strip()
+
+    def _should_refresh_resolved_offline_vod(
+        self,
+        entry: ChannelEntry,
+        prev_cs: ChannelStatus,
+        *,
+        channel_items: list[VideoItem] | None,
+    ) -> bool:
+        """Gate archive refresh so stable rows are not re-fetched every poll."""
+        if getattr(self, "_force_offline_vod_refresh", False):
+            return True
+        if channel_items and self._feed_suggests_newer_vod(prev_cs, channel_items):
+            return True
+        count = self._stable_status_polls.get(entry.key, 0)
+        if count > 0 and count % _STABLE_STATUS_LOG_EVERY == 0:
+            return True
+        return False
+
     def _try_upgrade_youtube_offline_vod(
         self,
         entry: ChannelEntry,
@@ -297,30 +329,48 @@ class OfflineBuildersMixin:
         channel_items: list[VideoItem] | None = None,
     ) -> ChannelStatus | None:
         """Retry YouTube waiting-room + VOD links on stable offline polls."""
+        home = _channel_home_url(entry)
+        base = prev_cs
+        if (
+            prev_cs.ended_at_source == "vod"
+            and prev_cs.vod_url
+            and fetcher
+            and self._should_refresh_resolved_offline_vod(
+                entry, prev_cs, channel_items=channel_items
+            )
+        ):
+            vod = self._fetch_finished_vod(
+                entry, fetcher, channel_items=channel_items
+            )
+            if vod and _offline_vod_should_refresh(prev_cs, vod):
+                base = _offline_status_from_vod_refresh(
+                    prev_cs, vod, home_url=home
+                )
         if prev_cs.ended_at_source == "vod" and prev_cs.vod_url:
             if channel_items is None:
-                return None
+                return base if base is not prev_cs else None
             fresh = self._find_youtube_upcoming_item(
                 entry, fetcher, channel_items=channel_items
             )
             if fresh is None:
-                return None
+                return base if base is not prev_cs else None
             upcoming_url = fresh.url
             scheduled_start = fresh.scheduled_start
             if (
-                upcoming_url == prev_cs.upcoming_url
-                and scheduled_start == prev_cs.scheduled_start
+                upcoming_url == base.upcoming_url
+                and scheduled_start == base.scheduled_start
+                and base is prev_cs
             ):
                 return None
-            title = fresh.title or prev_cs.title or (payload.title if payload else "")
+            title = fresh.title or base.title or (payload.title if payload else "")
             return ChannelStatus(
                 status=False,
                 title=title,
-                ended_at=prev_cs.ended_at,
-                vod_url=prev_cs.vod_url,
+                ended_at=base.ended_at,
+                vod_url=base.vod_url,
                 upcoming_url=upcoming_url,
-                url=_channel_home_url(entry),
-                ended_at_source=prev_cs.ended_at_source,
+                url=home,
+                ended_at_source=base.ended_at_source,
                 scheduled_start=scheduled_start,
             )
 
@@ -359,6 +409,19 @@ class OfflineBuildersMixin:
     ) -> ChannelStatus | None:
         """Retry Twitch ARCHIVE VOD link on stable offline polls."""
         if prev_cs.ended_at_source == "vod" and prev_cs.vod_url:
+            if fetcher is None:
+                return None
+            if not self._should_refresh_resolved_offline_vod(
+                entry, prev_cs, channel_items=None
+            ):
+                return None
+            vod = self._fetch_finished_vod(entry, fetcher)
+            if vod and _offline_vod_should_refresh(prev_cs, vod):
+                return _offline_status_from_vod_refresh(
+                    prev_cs,
+                    vod,
+                    home_url=_channel_home_url(entry),
+                )
             return None
         if prev_cs.vod_url and not fetcher:
             return None

@@ -349,27 +349,37 @@ class YouTubePlatformProbe:
                 and prev_offline.status is False
                 and facade.youtube_offline_row_is_stable(prev_offline, items)
             ):
-                fresh = facade.find_youtube_upcoming_item(
-                    entry, fetcher, channel_items=items
+                upgraded = facade.try_upgrade_youtube_offline_vod(
+                    entry,
+                    prev_offline,
+                    fetcher=fetcher,
+                    payload=None,
+                    channel_items=items,
                 )
-                upcoming_url = fresh.url if fresh else ""
-                scheduled_start = fresh.scheduled_start if fresh else ""
-                if (
-                    upcoming_url == (prev_offline.upcoming_url or "")
-                    and scheduled_start == (prev_offline.scheduled_start or "")
-                ):
-                    offline_status = prev_offline
+                if upgraded is not None:
+                    offline_status = upgraded
                 else:
-                    offline_status = ChannelStatus(
-                        status=False,
-                        title=prev_offline.title,
-                        ended_at=prev_offline.ended_at,
-                        vod_url=prev_offline.vod_url,
-                        upcoming_url=upcoming_url,
-                        url=_channel_home_url(entry),
-                        ended_at_source=prev_offline.ended_at_source,
-                        scheduled_start=scheduled_start,
+                    fresh = facade.find_youtube_upcoming_item(
+                        entry, fetcher, channel_items=items
                     )
+                    upcoming_url = fresh.url if fresh else ""
+                    scheduled_start = fresh.scheduled_start if fresh else ""
+                    if (
+                        upcoming_url == (prev_offline.upcoming_url or "")
+                        and scheduled_start == (prev_offline.scheduled_start or "")
+                    ):
+                        offline_status = prev_offline
+                    else:
+                        offline_status = ChannelStatus(
+                            status=False,
+                            title=prev_offline.title,
+                            ended_at=prev_offline.ended_at,
+                            vod_url=prev_offline.vod_url,
+                            upcoming_url=upcoming_url,
+                            url=_channel_home_url(entry),
+                            ended_at_source=prev_offline.ended_at_source,
+                            scheduled_start=scheduled_start,
+                        )
             else:
                 offline_status = facade.youtube_offline_status_for(
                     entry,

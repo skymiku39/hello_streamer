@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from stream_monitor.domain import ChannelEntry, ChannelStatus, OfflineInfo
-from stream_monitor.fetcher.base import StreamInfo, VideoItem
+from stream_monitor.fetcher.base import FinishedVod, StreamInfo, VideoItem
 from stream_monitor.util import (
     parse_iso_datetime,
     youtube_upcoming_schedule_is_surfacable,
@@ -121,6 +121,51 @@ def _merge_offline_ended_at(
     if platform_dt > confirmed_dt + _CONFIRMED_FUTURE_SLACK:
         return confirmed_iso, "confirmed"
     return platform_end, "vod"
+
+
+def _offline_vod_should_refresh(prev_cs: ChannelStatus, vod: FinishedVod) -> bool:
+    """True when the platform's latest archive differs from the cached offline row."""
+    if not vod.url:
+        return False
+    if vod.url != (prev_cs.vod_url or ""):
+        return True
+    prev_ended = parse_iso_datetime(prev_cs.ended_at or "")
+    fresh_ended = parse_iso_datetime(vod.ended_at or "")
+    if (
+        fresh_ended is not None
+        and prev_ended is not None
+        and fresh_ended > prev_ended
+    ):
+        return True
+    if vod.title and vod.title.strip() and vod.title != (prev_cs.title or ""):
+        return True
+    return False
+
+
+def _offline_status_from_vod_refresh(
+    prev_cs: ChannelStatus,
+    vod: FinishedVod,
+    *,
+    home_url: str,
+) -> ChannelStatus:
+    """Rebuild an offline row from a fresher platform archive/VOD."""
+    ended_at, source = _merge_offline_ended_at("", vod.ended_at or "")
+    if not ended_at and vod.ended_at:
+        ended_at = vod.ended_at
+        source = "vod"
+    if not ended_at:
+        ended_at = prev_cs.ended_at
+        source = prev_cs.ended_at_source or ""
+    return ChannelStatus(
+        status=False,
+        title=(vod.title or prev_cs.title or "").strip(),
+        ended_at=ended_at,
+        vod_url=vod.url,
+        upcoming_url=prev_cs.upcoming_url,
+        url=home_url,
+        ended_at_source=source or ("vod" if ended_at else ""),
+        scheduled_start=prev_cs.scheduled_start,
+    )
 
 
 def _live_cache_key(entry_key: str, video_id: str = "") -> str:
