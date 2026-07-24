@@ -10,6 +10,10 @@
 
 從 v1.1.7 升級可直接覆蓋執行檔；`config.json` 無需手動調整。若希望重啟後對「已在播」的頻道再次自動開窗，可清空 `channel_status_cache` 與 `seen_videos.db`（或刪除後讓程式重建）。
 
+## 下載政策
+
+請只使用最新版安裝檔。較舊 Release 的可執行檔已自 GitHub 移除，僅保留版本說明與 tag 供查閱；舊版含已知問題，不建議繼續安裝。
+
 ---
 
 # Hello Streamer v1.1.7
