@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -219,3 +220,30 @@ def poll_rest_overshoot_seconds(
     return since_end - last_poll_planned_rest
 
 
+def status_looks_live(status: Any) -> bool:
+    """True when a cached / seeded status represents an active live stream."""
+    if isinstance(status, ChannelStatus):
+        return status.status is True or status.status == "live"
+    return status is True or status == "live"
+
+
+def should_skip_live_seed_for_edges(
+    *,
+    last_activity_epoch: float,
+    interval: float,
+    now: float | None = None,
+) -> bool:
+    """Whether restored live rows must not suppress went-live after a long gap.
+
+    After reboot / overnight sleep the previous process's browser windows are
+    gone. Seeding ``last_status=live`` would permanently suppress auto-open for
+    channels that are still live. Use the same grace as wake verification.
+    """
+    if last_activity_epoch <= 0:
+        return False
+    wall_now = time.time() if now is None else now
+    planned_rest = float(interval)
+    overshoot = poll_rest_overshoot_seconds(
+        wall_now, last_activity_epoch, planned_rest
+    )
+    return overshoot > (planned_rest * _POST_RESUME_GAP_MULTIPLIER)

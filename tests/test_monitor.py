@@ -3569,6 +3569,36 @@ def test_seeded_live_status_suppresses_went_live(monkeypatch, tmp_path) -> None:
     db.close()
 
 
+def test_stale_live_seed_allows_went_live_after_long_gap(
+    monkeypatch, tmp_path,
+) -> None:
+    """After reboot / overnight, live cache must not suppress auto-open."""
+    import time
+
+    fetcher = FakeTwitchFetcher([True])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    entry = ChannelEntry(platform="twitch", name="foo")
+    stale_epoch = time.time() - 3600  # far beyond wake-verify grace
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "foo"}],
+        db=db,
+        interval=10,
+        initial_statuses={
+            entry.key: ChannelStatus(
+                status=True,
+                url="https://www.twitch.tv/foo",
+                started_at="2026-06-18T10:00:00+00:00",
+            )
+        },
+        last_activity_epoch=stale_epoch,
+    )
+    assert entry.key not in monitor._last_status
+    events = monitor._probe_live(entry)
+    assert len(events) == 1
+    db.close()
+
+
 def test_start_preserves_seeded_live_status(monkeypatch, tmp_path) -> None:
     """``start()`` must not wipe the seed populated by ``__init__``.
 

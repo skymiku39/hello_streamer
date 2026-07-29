@@ -34,6 +34,8 @@ class FakeWinreg:
         self.values[name] = value
 
     def QueryValueEx(self, _key, name):
+        if name not in self.values:
+            raise FileNotFoundError(name)
         return self.values[name], self.REG_SZ
 
     def DeleteValue(self, _key, name) -> None:
@@ -75,6 +77,35 @@ def test_enable_startup_returns_false_on_registry_error(monkeypatch) -> None:
     monkeypatch.setattr(startup.sys, "frozen", True, raising=False)
 
     assert startup.enable_startup(exe_path=r"C:\HelloStreamer.exe") is False
+
+
+def test_heal_startup_rewrites_stale_exe_path(monkeypatch) -> None:
+    fake_winreg = FakeWinreg()
+    fake_winreg.values["StreamMonitor"] = (
+        r'"D:\Tools\HelloStreamer-v1.1.7-windows-x64.exe" --silent'
+    )
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    monkeypatch.setattr(startup, "_IS_WINDOWS", True)
+    monkeypatch.setattr(startup.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        startup.sys,
+        "executable",
+        r"D:\Tools\HelloStreamer-v1.1.9-windows-x64.exe",
+    )
+
+    assert startup.heal_startup_command_if_enabled() is True
+    assert fake_winreg.values["StreamMonitor"] == (
+        r"D:\Tools\HelloStreamer-v1.1.9-windows-x64.exe --silent"
+    )
+
+
+def test_heal_startup_noop_when_disabled(monkeypatch) -> None:
+    fake_winreg = FakeWinreg()
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    monkeypatch.setattr(startup, "_IS_WINDOWS", True)
+
+    assert startup.heal_startup_command_if_enabled() is False
+    assert fake_winreg.values == {}
 
 
 # ---------------------------------------------------------------------------

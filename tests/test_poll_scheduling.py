@@ -58,6 +58,35 @@ def test_poll_rest_overshoot_detects_sleep() -> None:
     assert poll_rest_overshoot_seconds(1030.0, 1000.0, 5.0) == 25.0
 
 
+def test_should_skip_live_seed_after_long_gap() -> None:
+    from stream_monitor.monitor.types import should_skip_live_seed_for_edges
+
+    assert (
+        should_skip_live_seed_for_edges(
+            last_activity_epoch=1000.0,
+            interval=10.0,
+            now=1000.0 + 10.0,
+        )
+        is False
+    )
+    assert (
+        should_skip_live_seed_for_edges(
+            last_activity_epoch=1000.0,
+            interval=10.0,
+            now=1000.0 + 100.0,
+        )
+        is True
+    )
+    assert (
+        should_skip_live_seed_for_edges(
+            last_activity_epoch=0.0,
+            interval=10.0,
+            now=9999.0,
+        )
+        is False
+    )
+
+
 def test_should_run_wake_verification_after_sleep() -> None:
     monitor = Monitor(channels=[{"platform": "twitch", "name": "a"}], interval=10)
     monitor._last_poll_wall_ended = 1000.0

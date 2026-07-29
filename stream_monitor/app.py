@@ -65,7 +65,12 @@ from stream_monitor.notifier import (
 )
 from stream_monitor.scroll_guard import ScrollRepaintGuard
 from stream_monitor.single_instance import SingleInstance
-from stream_monitor.startup import disable_startup, enable_startup, is_startup_enabled
+from stream_monitor.startup import (
+    disable_startup,
+    enable_startup,
+    heal_startup_command_if_enabled,
+    is_startup_enabled,
+)
 from stream_monitor.tray import TrayIcon
 from stream_monitor.util import channel_key
 from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
@@ -106,6 +111,9 @@ class App(ctk.CTk):
         # first monitor start (a long gap there means a stale cache that should
         # be wake-verified); later restarts seed from live row state instead.
         self._status_cache_consumed = False
+        # Keep Run key / XDG Exec pointing at this build (versioned .exe names).
+        if self.config.get("run_on_startup"):
+            heal_startup_command_if_enabled()
         self._reorder_mode: ChannelReorderMode | None = None
         self._preview_pack_order: list[int] | None = None
         self._pending_preview_order: list[int] | None = None

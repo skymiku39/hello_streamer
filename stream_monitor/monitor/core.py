@@ -36,6 +36,8 @@ from stream_monitor.monitor.types import (
     OfflineInfo,
     _entry_key_from_live_cache_key,
     _ProbeSnapshot,
+    should_skip_live_seed_for_edges,
+    status_looks_live,
 )
 from stream_monitor.monitor.wake_verify import StartupRefreshMixin, WakeVerifyMixin
 
@@ -112,19 +114,41 @@ class Monitor(
         gap since that snapshot is long enough, treating it like a post-sleep
         wake makes the first poll reconcile cache vs. reality before trusting
         any edge — reusing the existing wake-verification path.
+
+        After a long gap (reboot / overnight), previous browser windows are
+        gone, so live seeds are intentionally *not* written into
+        ``last_status``; UI still restores display from the status cache, but
+        the monitor can emit went-live and open pages again.
         """
-        if initial_statuses:
-            keys = {entry.key for entry in self._entries}
-            seeded = {
-                key: status
-                for key, status in initial_statuses.items()
-                if key in keys
-            }
-            self._session.last_status.update(seeded)
-            self._startup_refresh_pending = True
         if last_activity_epoch > 0:
             self._last_poll_wall_ended = last_activity_epoch
             self._last_poll_planned_rest = float(self._interval)
+
+        if not initial_statuses:
+            return
+
+        skip_live = should_skip_live_seed_for_edges(
+            last_activity_epoch=last_activity_epoch,
+            interval=float(self._interval),
+        )
+        keys = {entry.key for entry in self._entries}
+        seeded: dict[str, Any] = {}
+        skipped_live = 0
+        for key, status in initial_statuses.items():
+            if key not in keys:
+                continue
+            if skip_live and status_looks_live(status):
+                skipped_live += 1
+                continue
+            seeded[key] = status
+        self._session.last_status.update(seeded)
+        self._startup_refresh_pending = True
+        if skipped_live:
+            logger.info(
+                "Cold-start seed: skipped %d live row(s) so auto-open can "
+                "re-fire after gap since cache",
+                skipped_live,
+            )
 
     # ------------------------------------------------------------------
     # ProbeSession proxies (keep mixin code unchanged after state moved out)

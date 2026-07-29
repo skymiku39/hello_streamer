@@ -155,6 +155,17 @@ def enable_startup(exe_path: str | None = None) -> bool:
     return _enable_startup_linux(exe_path)
 
 
+def heal_startup_command_if_enabled(exe_path: str | None = None) -> bool:
+    """Rewrite the autostart entry to the current executable when enabled.
+
+    Versioned install folders rename the .exe on each release; an outdated
+    Run key / .desktop Exec then fails at login (looks like a flash-quit).
+    """
+    if not is_startup_enabled():
+        return False
+    return enable_startup(exe_path=exe_path)
+
+
 def disable_startup() -> bool:
     if _IS_WINDOWS:
         return _disable_startup_windows()
