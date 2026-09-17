@@ -55,6 +55,8 @@ class TrayIcon:
       - ``"idle"``   — not monitoring
       - ``"trigger"`` — monitoring with trigger actions enabled
       - ``"watch"``   — monitoring without triggers (read-only)
+      - ``"trigger_once"`` / ``"watch_once"`` — one-cycle variants, shown
+        in the tray as their corresponding continuous mode
     """
 
     def __init__(
@@ -93,13 +95,13 @@ class TrayIcon:
 
         def _trigger_text(_item: MenuItem) -> str:
             mode = self._get_mode()
-            if mode == "trigger":
+            if mode in ("trigger", "trigger_once"):
                 return tr("tray.trigger_active")
             return tr("tray.start_trigger")
 
         def _watch_text(_item: MenuItem) -> str:
             mode = self._get_mode()
-            if mode == "watch":
+            if mode in ("watch", "watch_once"):
                 return tr("tray.watch_active")
             return tr("tray.start_watch")
 

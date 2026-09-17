@@ -1,6 +1,6 @@
 # 狀態機、設定連動與各狀態 UI 呈現
 
-- 版本：stream-monitor 1.1.9
+- 版本：stream-monitor 1.2.0
 - 範圍：主視窗（頻道清單／控制列）與瀏覽器設定對話框
 - 目的：說明專案有哪些狀態機、設定之間的連動（前置／互斥／解鎖）關係，以及「每一種狀態在 UI 上如何被呈現」，並標註對應的驗證測試。
 
@@ -14,16 +14,65 @@
 
 | 層級 | 狀態機 | 擁有者 | 值域 | 說明 |
 |------|--------|--------|------|------|
-| 控制 | 監看模式 | `MonitorController.mode` | `idle` / `trigger` / `watch` | 全域運行狀態，決定控制列三顆按鈕的可用性。 |
-| 資料 | 頻道即時狀態 | `ChannelStatus`（`frozen`） | live / upcoming / offline | 由輪詢引擎產生，以 `is_live/is_upcoming/is_offline` 判讀，不再用魔術 `__eq__`。 |
+| 控制 | 監看模式 | `MonitorController.mode` | `idle` / `trigger` / `watch` / `trigger_once` / `watch_once` | 全域運行狀態，決定控制列四種啟動按鈕與停止按鈕的可用性。 |
+| 資料 | 頻道即時狀態 | `ChannelStatus`（`frozen`） | live / upcoming / offline / unknown | 由輪詢引擎產生，以 `state` 或 `is_live/is_upcoming/is_offline/is_unknown` 判讀，不再用魔術 `__eq__`。 |
 | 資料 | 直播狀態預覽層級 | `monitor/preview.py`（tier-1 / tier-2） | — | 結構性不變式：tier-1 不得把已快取的 LIVE 降級為 offline（`_tier1_may_overwrite_cached`）。 |
-| 動作 | 每頻道副作用決策 | `channel_policy.py`（純函式） | `LiveActionDecision` | 集中「模式 × 僅監測 × 動作 × 直播狀態」的判斷，供 `event_bridge` 使用。 |
-| UI | 每列啟用／僅監測 | `ChannelRow`（`enabled` / `monitor_only`） | 啟用 / 暫停 / 僅監測 | 卡片外觀與兩顆切換鈕的視覺。 |
+| 動作 | 每頻道副作用決策 | `channel_policy.py`（純函式） | `LiveActionDecision` / `ActionPlan` | 集中「全域模式 × 頻道模式 × 觸發設定 × 直播狀態」的判斷，供 `event_bridge` 使用。 |
+| UI | 每列啟用／頻道模式 | `ChannelRow`（`enabled` / `channel_mode`） | 啟用 / 暫停 / 監聽＋觸發 / 僅監聽 / 僅監聽含通知 | 卡片外觀、眼睛按鈕顏色與懸停提示；眼睛按鈕不負責一次性全域模式。 |
 | UI | 拖曳手勢（列本地） | `ChannelRow._drag_phase` | `idle` / `pending` / `armed` | 長按 → 待命 → 啟動的輸入手勢，餵給 app 層的重排會話。 |
 | UI | 重排會話（app 層） | `ChannelReorderMode` | idle → active → engaged → committed/cancelled | 卡片位移預覽與落點提交，與列本地手勢分離。 |
 | 副作用 | 瀏覽器視窗登錄 | `browser_win32._WindowRegistry` | 每 URL 的視窗清單／關閉中／標題回退封鎖 | 單一擁有者，集中管理受監聽觸發開啟的視窗生命週期。 |
 
 管理與關聯方式：資料流為 `Monitor.publish → MonitorEventBus → event_bridge.tick → App 副作用`。跨層一律以事件與純決策函式銜接；UI 只讀取決策結果並反映到畫面，不反向依賴引擎內部狀態。
+
+### 1.1 開播觸發設定
+
+`TriggerSettings` 將原本的複合 action 拆成獨立維度：
+
+| 維度 | 設定 | 規則 |
+|------|------|------|
+| 通知 | `notify_on_live` | LIVE 開播時是否送出一般通知。 |
+| 開啟 | `open_on_live` | LIVE 開播時是否自動開啟直播頁。 |
+| 開啟後 | `after_open` | `none` / `stop_monitor` / `exit_app`；只有開啟成功時生效。 |
+| 預定直播 | `notify_on_upcoming` / `open_on_upcoming` | 預定直播不繼承 LIVE 的停止或結束效果。 |
+| 錯誤恢復 | `notify_on_open_failure` | 瀏覽器啟動失敗時是否提供可手動開啟的恢復通知。 |
+
+舊版 `action` 欄位只在設定載入時作為相容輸入，主程式的決策來源是
+`trigger_settings`。因此通知關閉不會意外關閉瀏覽器，開啟關閉也不會隱含停止
+監聽；若開啟關閉，`after_open` 會被視為 `none`。
+
+### 1.2 單頻道副作用模式
+
+單頻道的 `channel_mode` 是三態設定，與全域 `MonitorController.mode` 分開。主清單的眼睛按鈕只改變目前頻道的副作用，不會改變全域輪詢次數：
+
+| 值 | UI 名稱 | 通知 | 開啟瀏覽器 | 開啟後停止／結束 | 下播關窗 |
+|------|------|------|------|------|------|
+| `trigger` | 監聽＋觸發 | 依全域設定 | 依全域設定 | 依全域設定 | 依瀏覽器設定 |
+| `monitor` | 僅監聽 | 否 | 否 | 否 | 否 |
+| `notify` | 僅監聽含通知 | 依全域通知開關 | 否 | 否 | 否 |
+
+舊版 `monitor_only=true` 會載入為 `channel_mode=monitor`；舊欄位仍保留作為相容視圖。`channel_mode=notify` 會保留為通知型監聽，避免升級後改變使用者原本的眼睛按鈕選擇。主清單的眼睛按鈕依序循環 `trigger → monitor → notify → trigger`。
+
+### 1.3 全域一次性輪詢模式
+
+最下方控制列提供四種全域操作：
+
+| 值 | UI 名稱 | 行為 |
+|------|------|------|
+| `trigger` | 監聽＋觸發 | 持續輪詢；LIVE 依通知／開啟／開啟後設定執行。 |
+| `watch` | 僅監聽 | 持續輪詢；不通知、不開啟瀏覽器。 |
+| `trigger_once` | 監聽＋觸發一次 | 完成一個完整 `PollStatusUpdate` 輪詢週期後停止；本輪仍依設定執行副作用。 |
+| `watch_once` | 僅監聽一次 | 完成一個完整 `PollStatusUpdate` 輪詢週期後停止；本輪不通知、不開啟瀏覽器。 |
+
+一次性模式的消費點是「按下按鈕後的下一個 `cycle_id` 對應的 `PollStatusUpdate`」，不會把按鈕按下前已在佇列中的輪詢當成這一次；且在本輪 LIVE／離線事件都派送完成後才停止，避免漏掉本輪事件。若程式在本輪完成前關閉，設定會保留一次性模式，下一次以靜默啟動時會繼續執行一次；完成後則保存為對應的持續模式，避免每次啟動重複執行。
+
+### 1.4 狀態與「未知」
+
+`ChannelStatus.status` 仍接受舊版的 `True`、`False` 與字串，以便既有資料和
+測試平滑升級；新程式碼應使用 `ChannelStatus.state`。其中 `unknown` 代表尚未
+驗證或資料不足，不能被當成 `offline`，因此不會觸發離線關窗或寫入狀態快取。
+`pending` 是 UI 的驗證標記，不是另一個直播狀態：它表示畫面使用上一輪快取，
+等待下一次輪詢確認。
 
 ---
 
@@ -111,17 +160,18 @@
 
 **測試佐證**：`tests/test_app_status_bridge.py::test_status_badge_*`、`test_paused_row_shows_disabled_visual`。
 
-### 4.3 啟用／暫停／僅監測
+### 4.3 啟用／暫停／單頻道三態模式
 
-`_apply_enabled_visual` 依 `enabled` × `monitor_only` 切換整張卡片與兩顆鈕的視覺：
+`_apply_enabled_visual` 依 `enabled` × `channel_mode` 切換整張卡片與兩顆鈕的視覺：
 
 | 狀態 | 卡片 | 徽章 | 觸發行為 |
 |------|------|------|----------|
-| 啟用（一般） | 正常色 | 顯示即時狀態 | 依模式完整觸發 |
-| 啟用 + 僅監測 | 正常色 | 保留即時狀態（不清空計時） | 抑制開窗等副作用 |
+| 啟用（監聽＋觸發） | 正常色 | 顯示即時狀態 | 依全域設定完整觸發 |
+| 啟用（僅監聽） | 正常色 | 保留即時狀態（不清空計時） | 抑制通知、開窗與離線關窗 |
+| 啟用（僅監聽含通知） | 紫色提示 | 保留即時狀態 | 只保留通知；不開窗、不執行開啟後生命週期 |
 | 暫停（停用） | 暗色卡片 | 顯示「暫停」灰字 | 不輪詢副作用 |
 
-規則：暫停／恢復一律清除 `monitor_only`；由暫停點「僅監測」等同恢復並進入僅監測；已啟用時只切換 `monitor_only`，不清空目前正在看的直播顯示（`reset_status=False`）。
+規則：暫停／恢復一律回到 `trigger`；由暫停點眼睛按鈕會恢復並進入 `monitor`；已啟用時只切換 `channel_mode`，不清空目前正在看的直播顯示（`reset_status=False`）。一次性模式由最下方全域控制列管理，不會寫入單一頻道。
 
 **測試佐證**：`tests/test_app_status_bridge.py::test_monitor_only_keeps_channel_enabled_and_flags_suppression`。
 

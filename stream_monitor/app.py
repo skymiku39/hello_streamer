@@ -12,7 +12,14 @@ from typing import Any
 
 import customtkinter as ctk
 
-from stream_monitor import __version__, base_dir, config_manager, i18n, status_cache
+from stream_monitor import __version__, config_manager, i18n, status_cache
+from stream_monitor.action_coordinator import ActionCoordinator
+from stream_monitor.action_plan import (
+    ActionPlan,
+    LifecycleEffect,
+    TriggerSettings,
+    action_plan_for,
+)
 from stream_monitor.app_dialogs import (
     AddChannelDialog,
     BrowserSettingsDialog,
@@ -34,13 +41,9 @@ from stream_monitor.app_ui import (
     _CLR_STOP_HOVER,
     _MIN_WINDOW_HEIGHT,
     _MIN_WINDOW_WIDTH,
-    _action_displays,
-    _action_key_for_display,
-    _action_labels,
     _button_width,
     _clamped_window_geometry,
     _fit_button,
-    _fit_option_menu,
     _font,
     _language_icon,
     _tooltip_tr,
@@ -48,6 +51,18 @@ from stream_monitor.app_ui import (
     monitor_mode_button_states,
 )
 from stream_monitor.browser_settings_model import BrowserSettings
+from stream_monitor.canvas_channel_list import (
+    CanvasChannelList,
+    CanvasChannelRowAdapter,
+)
+from stream_monitor.channel_policy import (
+    TRIGGER_MODE,
+    TRIGGER_ONCE_MODE,
+    WATCH_MODE,
+    WATCH_ONCE_MODE,
+    base_monitor_mode,
+    is_one_shot_monitor_mode,
+)
 from stream_monitor.channel_reorder import apply_list_move
 from stream_monitor.channel_reorder_ui import ChannelReorderMode
 from stream_monitor.channel_row import ChannelRow
@@ -57,12 +72,12 @@ from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelEntry, ChannelStatus
 from stream_monitor.monitor_controller import MonitorController
 from stream_monitor.notifier import (
-    browser_window_tracking_available,
-    close_all_tracked_windows,
-    close_browser_window_for_url,
     configure_viewer_engagement,
-    execute_action,
+    execute_action_plan,
+    platform_services,
 )
+from stream_monitor.platform_ports import PlatformServices
+from stream_monitor.portable_storage import portable_paths
 from stream_monitor.scroll_guard import ScrollRepaintGuard
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import (
@@ -77,16 +92,48 @@ from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
 
 logger = logging.getLogger(__name__)
 
-_REORDER_DEBUG_LOG = Path(__file__).resolve().parents[1] / "debug-reorder.log"
+_REORDER_DEBUG_LOG = portable_paths().diagnostics_log
+_REORDER_DEBUG_MAX_BYTES = 2 * 1024 * 1024
+_REORDER_DEBUG_BACKUP = portable_paths().diagnostics_backup
 
 
 def _reorder_debug(event: str, **data: Any) -> None:
     try:
+        if _REORDER_DEBUG_LOG.exists() and (
+            _REORDER_DEBUG_LOG.stat().st_size >= _REORDER_DEBUG_MAX_BYTES
+        ):
+            try:
+                _REORDER_DEBUG_LOG.replace(_REORDER_DEBUG_BACKUP)
+            except OSError:
+                # Diagnostics must never interfere with the UI operation.
+                pass
         payload = {"event": event, "t": time.time(), **data}
         with _REORDER_DEBUG_LOG.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except Exception:  # noqa: BLE001
         pass
+
+
+_AFTER_OPEN_EFFECTS = (
+    LifecycleEffect.NONE,
+    LifecycleEffect.STOP_MONITOR,
+    LifecycleEffect.EXIT_APP,
+)
+
+
+def _after_open_labels() -> dict[LifecycleEffect, str]:
+    return {
+        LifecycleEffect.NONE: tr("trigger.after_open.continue"),
+        LifecycleEffect.STOP_MONITOR: tr("trigger.after_open.stop"),
+        LifecycleEffect.EXIT_APP: tr("trigger.after_open.exit"),
+    }
+
+
+def _after_open_key_for_display(display: str) -> LifecycleEffect:
+    for effect, label in _after_open_labels().items():
+        if label == display:
+            return effect
+    return LifecycleEffect.NONE
 
 
 ctk.set_appearance_mode("dark")
@@ -104,7 +151,7 @@ class App(ctk.CTk):
 
         self.config = config_manager.load()
         self._db = SeenVideoDB()
-        self._channel_rows: list[ChannelRow] = []
+        self._channel_rows: list[CanvasChannelRowAdapter] = []
         self._silent = silent
         self._truly_quitting = False
         # The persisted snapshot's saved_at is only meaningful for the very
@@ -112,14 +159,25 @@ class App(ctk.CTk):
         # be wake-verified); later restarts seed from live row state instead.
         self._status_cache_consumed = False
         # Keep Run key / XDG Exec pointing at this build (versioned .exe names).
-        if self.config.get("run_on_startup"):
+        if self.config.get("run_on_startup") and getattr(sys, "frozen", False):
             heal_startup_command_if_enabled()
         self._reorder_mode: ChannelReorderMode | None = None
         self._preview_pack_order: list[int] | None = None
         self._pending_preview_order: list[int] | None = None
         self._preview_repack_after: str | None = None
+        self._config_save_after: str | None = None
         # Owns the event bus, bridge, monitor thread, and idle/trigger/watch mode.
         self._controller = MonitorController(self, self._db)
+        self._platform = platform_services()
+        self._action_coordinator = ActionCoordinator(
+            runner=execute_action_plan,
+            schedule_ui=lambda callback: self.after(0, callback),
+            generation_is_current=lambda generation: (
+                generation == self._controller.generation
+            ),
+            on_stop=lambda: self.on_stop(is_user_action=False),
+            on_exit=self.quit_app,
+        )
         configure_viewer_engagement(
             ViewerEngagementSettings.from_dict(
                 self.config.get("viewer_engagement")
@@ -160,8 +218,12 @@ class App(ctk.CTk):
             self.withdraw()
             channels = self.config.get("channels", [])
             if channels:
-                saved_mode = self.config.get("monitor_mode", "trigger")
-                starter = self._on_watch if saved_mode == "watch" else self._on_start
+                saved_mode = self.config.get("monitor_mode", TRIGGER_MODE)
+                starter = {
+                    WATCH_MODE: self._on_watch,
+                    TRIGGER_ONCE_MODE: self._on_start_once,
+                    WATCH_ONCE_MODE: self._on_watch_once,
+                }.get(saved_mode, self._on_start)
                 self.after(500, starter)
 
     # ------------------------------------------------------------------
@@ -189,7 +251,10 @@ class App(ctk.CTk):
 
     def quit_app(self) -> None:
         """Full exit — called from tray menu or explicit quit."""
+        if self._truly_quitting:
+            return
         self._truly_quitting = True
+        self._action_coordinator.shutdown()
         self._scroll_guard.destroy()
         self._save_status_cache()
         self._controller.shutdown()
@@ -225,6 +290,14 @@ class App(ctk.CTk):
         return self._controller.mode
 
     @property
+    def platform_services(self) -> PlatformServices:
+        return self._platform
+
+    @property
+    def monitor_generation(self) -> int:
+        return self._controller.generation
+
+    @property
     def wake_verify_active(self) -> bool:
         return self._controller.wake_verify_active
 
@@ -233,7 +306,7 @@ class App(ctk.CTk):
         reorder = self._reorder_mode is not None and self._reorder_mode.active
         return self._scroll_guard.repaints_deferred or reorder
 
-    def iter_channel_rows(self) -> list[ChannelRow]:
+    def iter_channel_rows(self) -> list[CanvasChannelRowAdapter]:
         return self._channel_rows
 
     # ------------------------------------------------------------------
@@ -354,15 +427,19 @@ class App(ctk.CTk):
         list_container.grid_rowconfigure(0, weight=1)
         list_container.grid_columnconfigure(0, weight=1)
 
-        self.scroll_frame = ctk.CTkScrollableFrame(
+        self.scroll_frame = CanvasChannelList(
             list_container,
             corner_radius=0,
             fg_color=_CLR_ACCENT,
             scrollbar_button_color="#333355",
             scrollbar_button_hover_color="#444466",
+            on_delete=self._remove_channel,
+            on_move=self._move_channel,
+            on_reorder_begin=lambda row, y_root: self._begin_channel_reorder(
+                row, y_root=y_root
+            ),
         )
         self.scroll_frame.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-        self.scroll_frame.grid_columnconfigure(0, weight=1)
         self._scroll_guard = ScrollRepaintGuard(
             self.scroll_frame,
             self,
@@ -384,7 +461,7 @@ class App(ctk.CTk):
         self.bind("<FocusOut>", self._on_focus_out_cancel_reorder)
 
         self.empty_label = ctk.CTkLabel(
-            self.scroll_frame,
+            list_container,
             text=tr("status.empty_hint"),
             font=_font(14),
             text_color="#555566",
@@ -401,8 +478,13 @@ class App(ctk.CTk):
         left = ctk.CTkFrame(toolbar, fg_color="transparent")
         left.grid(row=0, column=0, sticky="w")
 
+        continuous_row = ctk.CTkFrame(left, fg_color="transparent")
+        continuous_row.pack(anchor="w")
+        once_row = ctk.CTkFrame(left, fg_color="transparent")
+        once_row.pack(anchor="w", pady=(5, 0))
+
         self.start_btn = ctk.CTkButton(
-            left,
+            continuous_row,
             text=tr("toolbar.start"),
             width=_button_width(
                 tr("toolbar.start"), min_width=108, size=14, weight="bold"
@@ -418,7 +500,7 @@ class App(ctk.CTk):
         _tooltip_tr(self.start_btn, "tooltip.start")
 
         self.watch_btn = ctk.CTkButton(
-            left,
+            continuous_row,
             text=tr("toolbar.watch"),
             width=_button_width(
                 tr("toolbar.watch"), min_width=88, size=14, weight="bold"
@@ -433,8 +515,40 @@ class App(ctk.CTk):
         self.watch_btn.pack(side="left", padx=(0, 6))
         _tooltip_tr(self.watch_btn, "tooltip.watch")
 
+        self.start_once_btn = ctk.CTkButton(
+            once_row,
+            text=tr("toolbar.start_once"),
+            width=_button_width(
+                tr("toolbar.start_once"), min_width=100, size=13, weight="bold"
+            ),
+            height=38,
+            corner_radius=8,
+            fg_color="#388e3c",
+            hover_color="#2e7d32",
+            font=_font(13, "bold"),
+            command=self._on_start_once,
+        )
+        self.start_once_btn.pack(side="left", padx=(0, 6))
+        _tooltip_tr(self.start_once_btn, "tooltip.start_once")
+
+        self.watch_once_btn = ctk.CTkButton(
+            once_row,
+            text=tr("toolbar.watch_once"),
+            width=_button_width(
+                tr("toolbar.watch_once"), min_width=92, size=13, weight="bold"
+            ),
+            height=38,
+            corner_radius=8,
+            fg_color="#1976d2",
+            hover_color="#1565c0",
+            font=_font(13, "bold"),
+            command=self._on_watch_once,
+        )
+        self.watch_once_btn.pack(side="left", padx=(0, 6))
+        _tooltip_tr(self.watch_once_btn, "tooltip.watch_once")
+
         self.stop_btn = ctk.CTkButton(
-            left,
+            once_row,
             text=tr("toolbar.stop"),
             width=_button_width(
                 tr("toolbar.stop"), min_width=72, size=14, weight="bold"
@@ -512,37 +626,123 @@ class App(ctk.CTk):
         )
         self._interval_unit.pack(side="left", padx=(6, 0))
 
-        action_group = ctk.CTkFrame(right_toolbar, fg_color="transparent")
-        action_group.pack(side="left")
-        self._action_caption = ctk.CTkLabel(
-            action_group,
-            text=tr("toolbar.action_label"),
+        trigger_group = ctk.CTkFrame(right_toolbar, fg_color="transparent")
+        trigger_group.pack(side="left")
+        self._trigger_caption = ctk.CTkLabel(
+            trigger_group,
+            text=tr("toolbar.trigger_label"),
             font=_font(11),
             text_color="#9aa0b4",
             anchor="w",
         )
-        self._action_caption.pack(anchor="w")
+        self._trigger_caption.pack(anchor="w")
 
-        current_action = self.config.get("action", "open_and_stop")
-        action_displays = _action_displays()
-        display = _action_labels().get(current_action, action_displays[0])
-        self.action_var = ctk.StringVar(value=display)
-        self.action_menu = ctk.CTkOptionMenu(
-            action_group,
-            variable=self.action_var,
-            values=action_displays,
-            width=_button_width(
-                max(action_displays, key=len),
-                min_width=200,
-                size=12,
-                padding=48,
-            ),
+        trigger_settings = TriggerSettings.from_mapping(
+            self.config.get("trigger_settings")
+        )
+        trigger_line = ctk.CTkFrame(trigger_group, fg_color="transparent")
+        trigger_line.pack(anchor="w", pady=(2, 0))
+        self.notify_on_live_var = ctk.BooleanVar(
+            value=trigger_settings.notify_on_live
+        )
+        self.notify_on_live_switch = ctk.CTkSwitch(
+            trigger_line,
+            text=tr("toolbar.notify_on_live"),
+            variable=self.notify_on_live_var,
+            command=self._persist_trigger_settings,
+            font=_font(12),
+        )
+        self.notify_on_live_switch.pack(side="left", padx=(0, 8))
+        _tooltip_tr(self.notify_on_live_switch, "tooltip.notify_on_live")
+
+        self.open_on_live_var = ctk.BooleanVar(value=trigger_settings.open_on_live)
+        self.open_on_live_switch = ctk.CTkSwitch(
+            trigger_line,
+            text=tr("toolbar.open_on_live"),
+            variable=self.open_on_live_var,
+            command=self._persist_trigger_settings,
+            font=_font(12),
+        )
+        self.open_on_live_switch.pack(side="left", padx=(0, 8))
+        _tooltip_tr(self.open_on_live_switch, "tooltip.open_on_live")
+
+        self._after_open_caption = ctk.CTkLabel(
+            trigger_line,
+            text=tr("toolbar.after_open"),
+            font=_font(11),
+            text_color="#9aa0b4",
+        )
+        self._after_open_caption.pack(side="left", padx=(0, 5))
+        labels = _after_open_labels()
+        self.after_open_var = ctk.StringVar(value=labels[trigger_settings.after_open])
+        self.after_open_menu = ctk.CTkOptionMenu(
+            trigger_line,
+            variable=self.after_open_var,
+            values=[labels[effect] for effect in _AFTER_OPEN_EFFECTS],
+            command=lambda _value: self._persist_trigger_settings(),
+            width=170,
             height=32,
             font=_font(12),
             dropdown_font=_font(12),
         )
-        self.action_menu.pack(anchor="w", pady=(2, 0))
-        _tooltip_tr(self.action_menu, "tooltip.action_menu")
+        self.after_open_menu.pack(side="left")
+        _tooltip_tr(self.after_open_menu, "tooltip.after_open")
+
+        upcoming_line = ctk.CTkFrame(trigger_group, fg_color="transparent")
+        upcoming_line.pack(anchor="w", pady=(5, 0))
+        self.notify_on_upcoming_var = ctk.BooleanVar(
+            value=trigger_settings.notify_on_upcoming
+        )
+        self.notify_on_upcoming_switch = ctk.CTkSwitch(
+            upcoming_line,
+            text=tr("toolbar.notify_on_upcoming"),
+            variable=self.notify_on_upcoming_var,
+            command=self._persist_trigger_settings,
+            font=_font(12),
+        )
+        self.notify_on_upcoming_switch.pack(side="left", padx=(0, 8))
+        _tooltip_tr(
+            self.notify_on_upcoming_switch, "tooltip.notify_on_upcoming"
+        )
+
+        self.open_on_upcoming_var = ctk.BooleanVar(
+            value=trigger_settings.open_on_upcoming
+        )
+        self.open_on_upcoming_switch = ctk.CTkSwitch(
+            upcoming_line,
+            text=tr("toolbar.open_on_upcoming"),
+            variable=self.open_on_upcoming_var,
+            command=self._persist_trigger_settings,
+            font=_font(12),
+        )
+        self.open_on_upcoming_switch.pack(side="left", padx=(0, 8))
+        _tooltip_tr(self.open_on_upcoming_switch, "tooltip.open_on_upcoming")
+
+        self.notify_on_open_failure_var = ctk.BooleanVar(
+            value=trigger_settings.notify_on_open_failure
+        )
+        self.notify_on_open_failure_switch = ctk.CTkSwitch(
+            upcoming_line,
+            text=tr("toolbar.notify_on_open_failure"),
+            variable=self.notify_on_open_failure_var,
+            command=self._persist_trigger_settings,
+            font=_font(12),
+        )
+        self.notify_on_open_failure_switch.pack(side="left")
+        _tooltip_tr(
+            self.notify_on_open_failure_switch, "tooltip.notify_on_open_failure"
+        )
+        self._trigger_hint = ctk.CTkLabel(
+            trigger_group,
+            text=tr("toolbar.trigger_hint"),
+            font=_font(10),
+            text_color="#7f8499",
+            anchor="w",
+            justify="left",
+            wraplength=240,
+        )
+        self._trigger_hint.pack(anchor="w", pady=(3, 0))
+        self._refresh_trigger_controls()
 
     def _fit_main_toolbar_i18n(self) -> None:
         """Resize toolbar widgets so localized labels are not clipped."""
@@ -575,6 +775,20 @@ class App(ctk.CTk):
             weight="bold",
         )
         _fit_button(
+            self.start_once_btn,
+            tr("toolbar.start_once"),
+            min_width=100,
+            size=13,
+            weight="bold",
+        )
+        _fit_button(
+            self.watch_once_btn,
+            tr("toolbar.watch_once"),
+            min_width=92,
+            size=13,
+            weight="bold",
+        )
+        _fit_button(
             self.stop_btn,
             tr("toolbar.stop"),
             min_width=72,
@@ -582,18 +796,17 @@ class App(ctk.CTk):
             weight="bold",
         )
         self._render_status_text()
-        _fit_option_menu(self.action_menu, _action_displays(), min_width=200)
+        self._refresh_trigger_controls()
 
     # ------------------------------------------------------------------
     # Channel list operations
     # ------------------------------------------------------------------
     def _populate_channels(self) -> None:
         channels = self.config.get("channels", [])
-        if not channels:
-            self.empty_label.pack(pady=40)
         for ch in channels:
             self._add_channel_row(ch)
         self._refresh_move_buttons()
+        self._refresh_empty_hint()
 
     # ------------------------------------------------------------------
     # Channel status persistence (restore on launch, save on quit/hide)
@@ -673,12 +886,12 @@ class App(ctk.CTk):
 
     def _refresh_empty_hint(self) -> None:
         if self._channel_rows:
-            self.empty_label.pack_forget()
+            self.empty_label.place_forget()
         else:
-            self.empty_label.pack(pady=40)
+            self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
 
     def _add_channel_row(self, channel: dict[str, str]) -> None:
-        self.empty_label.pack_forget()
+        self.empty_label.place_forget()
 
         def on_delete(ch=channel):
             self._remove_channel(ch)
@@ -704,7 +917,7 @@ class App(ctk.CTk):
             self._end_channel_reorder(commit=True)
 
         row = ChannelRow(
-            self.scroll_frame,
+            self.scroll_frame.state_host,
             channel,
             on_delete=on_delete,
             on_move_up=on_move_up,
@@ -716,8 +929,12 @@ class App(ctk.CTk):
             get_browser_settings=self.current_browser_settings,
         )
         row_ref.append(row)
-        row.pack(fill="x", pady=3)
-        self._channel_rows.append(row)
+        adapter = self.scroll_frame.add_state_row(row)
+        self._channel_rows.append(adapter)
+        # add_state_row renders the current list before the adapter is exposed
+        # to App. Re-render once with the shared identity list used by reorder
+        # and status persistence.
+        self.scroll_frame.set_rows(self._channel_rows)
         self._refresh_move_buttons()
 
     def _remove_channel(self, channel: dict[str, str]) -> None:
@@ -746,6 +963,7 @@ class App(ctk.CTk):
                 row.destroy()
                 self._channel_rows.remove(row)
                 break
+        self.scroll_frame.set_rows(self._channel_rows)
         channels = self.config.get("channels", [])
         if channel in channels:
             channels.remove(channel)
@@ -833,42 +1051,34 @@ class App(ctk.CTk):
     def _repack_channel_rows_preview(
         self, order: list[int], *, flush: bool = False
     ) -> None:
-        from stream_monitor.channel_reorder_ui import repack_preview_rows
-
         if order == self._preview_pack_order:
             return
         canvas = self.scroll_frame._parent_canvas
         yview = canvas.yview()
-        rows = self._channel_rows
-        source_index = (
-            self._reorder_mode.source_index
-            if self._reorder_mode is not None and self._reorder_mode.active
-            else None
-        )
         previous = self._preview_pack_order
-        mode = repack_preview_rows(rows, order, previous, source_index)
+        self.scroll_frame.set_visual_order(order)
         self._preview_pack_order = list(order)
         canvas.yview_moveto(yview[0])
         if flush:
             canvas.update_idletasks()
-        from stream_monitor.channel_reorder_ui import visual_pack_order
 
         _reorder_debug(
             "repack",
-            mode=mode,
+            mode="canvas",
             order=order,
             previous=previous,
-            visual=visual_pack_order(rows),
+            visual=order,
         )
 
     def _full_repack_preview_rows(
-        self, rows: list[ChannelRow], order: list[int]
+        self, rows: list[CanvasChannelRowAdapter], order: list[int]
     ) -> None:
-        from stream_monitor.channel_reorder_ui import full_repack_rows
+        if rows is self._channel_rows:
+            self.scroll_frame.set_visual_order(order)
 
-        full_repack_rows(rows, order)
-
-    def _begin_channel_reorder(self, row: ChannelRow, *, y_root: int) -> None:
+    def _begin_channel_reorder(
+        self, row: CanvasChannelRowAdapter, *, y_root: int
+    ) -> None:
         if self._reorder_mode.active:
             return
         try:
@@ -1026,23 +1236,33 @@ class App(ctk.CTk):
         self.empty_label.configure(text=tr("status.empty_hint"))
         self._interval_caption.configure(text=tr("toolbar.check_interval"))
         self._interval_unit.configure(text=tr("toolbar.seconds"))
-        self._action_caption.configure(text=tr("toolbar.action_label"))
-
-        # Re-build the action OptionMenu with translated labels, keeping the
-        # current logical selection (action key) intact.
-        current_display = self.action_var.get()
-        current_key = _action_key_for_display(current_display)
-        labels = _action_labels()
-        new_values = list(labels.values())
-        self.action_menu.configure(values=new_values)
-        self.action_var.set(labels.get(current_key, new_values[0]))
+        self._trigger_caption.configure(text=tr("toolbar.trigger_label"))
+        self._trigger_hint.configure(text=tr("toolbar.trigger_hint"))
+        self.notify_on_live_switch.configure(text=tr("toolbar.notify_on_live"))
+        self.open_on_live_switch.configure(text=tr("toolbar.open_on_live"))
+        self.notify_on_upcoming_switch.configure(
+            text=tr("toolbar.notify_on_upcoming")
+        )
+        self.open_on_upcoming_switch.configure(
+            text=tr("toolbar.open_on_upcoming")
+        )
+        self.notify_on_open_failure_switch.configure(
+            text=tr("toolbar.notify_on_open_failure")
+        )
+        self._after_open_caption.configure(text=tr("toolbar.after_open"))
+        current_effect = _after_open_key_for_display(self.after_open_var.get())
+        labels = _after_open_labels()
+        self.after_open_menu.configure(
+            values=[labels[effect] for effect in _AFTER_OPEN_EFFECTS]
+        )
+        self.after_open_var.set(labels[current_effect])
         self._fit_main_toolbar_i18n()
 
     # ------------------------------------------------------------------
     # Monitor control
     # ------------------------------------------------------------------
     def _collect_monitor_config(self) -> tuple[list[dict[str, str]], int]:
-        """Read interval/action widgets into config; return (channels, interval)."""
+        """Read interval/trigger widgets into config; return (channels, interval)."""
         channels = self.config.get("channels", [])
         try:
             interval = int(self.interval_var.get())
@@ -1052,9 +1272,44 @@ class App(ctk.CTk):
         self.interval_var.set(str(interval))
         self.config["check_interval"] = interval
 
-        action_key = _action_key_for_display(self.action_var.get())
-        self.config["action"] = action_key
+        self._persist_trigger_settings(save=False)
         return channels, interval
+
+    def _trigger_settings_from_widgets(self) -> TriggerSettings:
+        open_on_live = bool(self.open_on_live_var.get())
+        return TriggerSettings(
+            notify_on_live=bool(self.notify_on_live_var.get()),
+            open_on_live=open_on_live,
+            after_open=(
+                _after_open_key_for_display(self.after_open_var.get())
+                if open_on_live
+                else LifecycleEffect.NONE
+            ),
+            notify_on_upcoming=bool(self.notify_on_upcoming_var.get()),
+            open_on_upcoming=bool(self.open_on_upcoming_var.get()),
+            notify_on_open_failure=bool(self.notify_on_open_failure_var.get()),
+        )
+
+    def _persist_trigger_settings(self, *, save: bool = True) -> None:
+        settings = self._trigger_settings_from_widgets()
+        self.config["trigger_settings"] = settings.as_dict()
+        if save:
+            # Switches can be toggled in quick succession.  Keep the in-memory
+            # state immediate, but move the synchronous portable-config write
+            # (including fsync) out of the click callback and coalesce bursts.
+            self._schedule_config_save()
+        self._refresh_trigger_controls()
+
+    def _refresh_trigger_controls(self) -> None:
+        """Keep the lifecycle selector dependent on browser launch."""
+        if not hasattr(self, "after_open_menu"):
+            return
+        self.after_open_menu.configure(
+            state="normal" if self.open_on_live_var.get() else "disabled"
+        )
+        self.notify_on_open_failure_switch.configure(
+            state="normal" if self.open_on_live_var.get() else "disabled"
+        )
 
     def _render_status_text(self) -> None:
         main = tr(self._status_text_key)
@@ -1086,7 +1341,12 @@ class App(ctk.CTk):
     def update_poll_subline(
         self, entry: ChannelEntry, phase: str, display_name: str = ""
     ) -> None:
-        if self._controller.mode not in ("trigger", "watch"):
+        if self._controller.mode not in (
+            TRIGGER_MODE,
+            WATCH_MODE,
+            TRIGGER_ONCE_MODE,
+            WATCH_ONCE_MODE,
+        ):
             return
         name = _truncate_status_name(display_name or entry.name)
         sub_key = (
@@ -1099,7 +1359,12 @@ class App(ctk.CTk):
         self._render_status_text()
 
     def set_poll_waiting(self) -> None:
-        if self._controller.mode not in ("trigger", "watch"):
+        if self._controller.mode not in (
+            TRIGGER_MODE,
+            WATCH_MODE,
+            TRIGGER_ONCE_MODE,
+            WATCH_ONCE_MODE,
+        ):
             return
         self._status_subline_key = "status.poll_waiting"
         self._status_subline_kwargs = {}
@@ -1111,42 +1376,72 @@ class App(ctk.CTk):
         self._render_status_text()
 
     def _on_start(self) -> None:
-        channels, interval = self._collect_monitor_config()
-        initial_statuses, epoch = self._monitor_seed_args()
-        if not self._controller.start(
-            "trigger",
-            channels,
-            interval,
-            initial_statuses=initial_statuses,
-            last_activity_epoch=epoch,
-        ):
-            return
-        self.config["monitor_mode"] = "trigger"
-        self._save_config()
-        self._apply_monitor_mode_buttons()
-        self._set_status_text("status.trigger_running", _CLR_LIVE)
-        self._tray.update_tooltip_key("tray.tooltip.trigger")
+        self._start_monitor_mode(
+            TRIGGER_MODE, "status.trigger_running", _CLR_LIVE, "tray.tooltip.trigger"
+        )
 
     def _on_watch(self) -> None:
+        self._start_monitor_mode(
+            WATCH_MODE, "status.watching", "#64b5f6", "tray.tooltip.watch"
+        )
+
+    def _on_start_once(self) -> None:
+        self._start_monitor_mode(
+            TRIGGER_ONCE_MODE,
+            "status.trigger_once_running",
+            _CLR_LIVE,
+            "tray.tooltip.trigger",
+        )
+
+    def _on_watch_once(self) -> None:
+        self._start_monitor_mode(
+            WATCH_ONCE_MODE,
+            "status.watching_once",
+            "#64b5f6",
+            "tray.tooltip.watch",
+        )
+
+    def _start_monitor_mode(
+        self, mode: str, status_key: str, color: str, tray_tooltip_key: str
+    ) -> None:
+        """Start or switch the global monitor mode from a bottom-bar action."""
         channels, interval = self._collect_monitor_config()
         initial_statuses, epoch = self._monitor_seed_args()
         if not self._controller.start(
-            "watch",
+            mode,
             channels,
             interval,
             initial_statuses=initial_statuses,
             last_activity_epoch=epoch,
         ):
             return
-        self.config["monitor_mode"] = "watch"
+        self.config["monitor_mode"] = mode
         self._save_config()
         self._apply_monitor_mode_buttons()
-        self._set_status_text("status.watching", "#64b5f6")
-        self._tray.update_tooltip_key("tray.tooltip.watch")
+        self._set_status_text(status_key, color)
+        self._tray.update_tooltip_key(tray_tooltip_key)
+
+    def on_monitor_cycle_complete(self) -> None:
+        """Return to idle after a global one-cycle monitor run."""
+        mode = self._controller.mode
+        if not is_one_shot_monitor_mode(mode):
+            return
+        persistent_mode = base_monitor_mode(mode)
+        self._save_status_cache()
+        self._controller.finish_one_shot()
+        # Do not persist a one-shot mode after it has been consumed; otherwise
+        # silent startup would unexpectedly run another cycle on every launch.
+        self.config["monitor_mode"] = persistent_mode
+        self._save_config()
+        self._apply_monitor_mode_buttons()
+        self._set_status_text("status.stopped", _CLR_OFFLINE)
+        self._set_awaiting_start_subline()
+        self._tray.update_tooltip_key("tray.tooltip.stopped")
 
     def on_stop(self, *, is_user_action: bool = True) -> None:
         self._save_status_cache()
         self._save_config()
+        self._action_coordinator.cancel_generation(self._controller.generation)
         self._controller.stop()
         self._apply_monitor_mode_buttons()
         self._set_status_text("status.stopped", _CLR_OFFLINE)
@@ -1162,7 +1457,7 @@ class App(ctk.CTk):
             )
             if browser_settings.close_on_stop:
                 try:
-                    closed = close_all_tracked_windows()
+                    closed = self._platform.window.close_all()
                     if closed:
                         logger.info(
                             "close_on_stop: WM_CLOSEd %d tracked window(s)",
@@ -1175,6 +1470,8 @@ class App(ctk.CTk):
         states = monitor_mode_button_states(self._controller.mode)
         self.start_btn.configure(state=states["start"])
         self.watch_btn.configure(state=states["watch"])
+        self.start_once_btn.configure(state=states["start_once"])
+        self.watch_once_btn.configure(state=states["watch_once"])
         self.stop_btn.configure(state=states["stop"])
 
     def _on_browser_settings(self) -> None:
@@ -1230,46 +1527,24 @@ class App(ctk.CTk):
 
     def execute_live_action(
         self,
-        action: str,
+        action: ActionPlan | str,
         info: StreamInfo,
         browser_settings: BrowserSettings | dict[str, Any] | None,
+        generation: int | None = None,
     ) -> None:
-        """Run notify/open side-effects off the UI thread."""
-        if self.monitor_mode == "idle":
-            logger.debug(
-                "execute_live_action aborted: monitor stopped before "
-                "action=%s url=%s could run",
-                action,
-                info.url,
-            )
+        """Submit a validated live-event action to the coordinator."""
+        plan = action if isinstance(action, ActionPlan) else action_plan_for(action)
+        if plan is None:
+            logger.warning("Ignoring unknown live action: %s", action)
             return
-        if not info.display_name:
-            cached = self._controller.snapshot_display_names().get(
-                f"{info.platform}:{info.channel}", ""
-            )
-            if not cached:
-                # ChannelEntry.key uses normalized name; StreamInfo.channel
-                # is usually already normalized the same way.
-                cached = self._controller.snapshot_display_names().get(
-                    f"{info.platform}:{info.channel.lower()}", ""
-                )
-            if cached:
-                info.display_name = cached
-        noop = lambda: None  # noqa: E731
-        try:
-            execute_action(
-                action,
-                info,
-                stop_fn=noop,
-                exit_fn=noop,
-                browser_settings=browser_settings,
-            )
-        except Exception:
-            logger.exception(
-                "execute_live_action failed: action=%s url=%s",
-                action,
-                info.url,
-            )
+        if generation is None:
+            generation = self._controller.generation
+        self._action_coordinator.submit(
+            plan,
+            info,
+            browser_settings,
+            generation,
+        )
 
     def _on_scroll_repaint_idle(self) -> None:
         """Flush queued row updates once scrolling has settled."""
@@ -1291,12 +1566,17 @@ class App(ctk.CTk):
         self.after(10_000, self._monitor_health_check)
 
     def maybe_restart_dead_monitor(self) -> None:
-        if self._controller.mode not in ("trigger", "watch"):
+        if self._controller.mode not in (
+            TRIGGER_MODE,
+            WATCH_MODE,
+            TRIGGER_ONCE_MODE,
+            WATCH_ONCE_MODE,
+        ):
             return
         channels, interval = self._collect_monitor_config()
         if not self._controller.restart_if_dead(channels, interval):
             return
-        if self._controller.mode == "trigger":
+        if self._controller.mode in (TRIGGER_MODE, TRIGGER_ONCE_MODE):
             self._set_status_text("status.monitor_restarted", _CLR_LIVE)
             self._tray.update_tooltip_key("tray.tooltip.trigger")
         else:
@@ -1326,7 +1606,7 @@ class App(ctk.CTk):
         # available so a stale block cannot be bypassed by config drift.
         settings = self.current_browser_settings()
         keywords: list[str] | None = None
-        if settings and browser_window_tracking_available(settings, url):
+        if settings and self._platform.window.tracking_available(settings, url):
             keywords = []
             if entry.name:
                 keywords.append(entry.name)
@@ -1338,7 +1618,9 @@ class App(ctk.CTk):
             if display_name and display_name not in keywords:
                 keywords.append(display_name)
         try:
-            closed = close_browser_window_for_url(url, title_keywords=keywords)
+            closed = self._platform.window.close_for_url(
+                url, title_keywords=keywords
+            )
         except Exception:
             logger.exception("close_browser_window_for_url failed for %s", url)
             return
@@ -1382,7 +1664,36 @@ class App(ctk.CTk):
         self.config["run_on_startup"] = self.startup_var.get()
         self._save_config()
 
+    def _schedule_config_save(self, *, delay_ms: int = 250) -> None:
+        """Coalesce settings writes triggered by rapid UI changes."""
+        if self._truly_quitting:
+            return
+        if self._config_save_after is not None:
+            try:
+                self.after_cancel(self._config_save_after)
+            except Exception:
+                pass
+        self._config_save_after = self.after(delay_ms, self._flush_config_save)
+
+    def _flush_config_save(self) -> None:
+        self._config_save_after = None
+        if not self._truly_quitting:
+            self._save_config()
+
+    def _cancel_scheduled_config_save(self) -> None:
+        if self._config_save_after is None:
+            return
+        try:
+            self.after_cancel(self._config_save_after)
+        except Exception:
+            pass
+        self._config_save_after = None
+
     def _save_config(self) -> None:
+        # A synchronous save is still required for explicit lifecycle actions
+        # and shutdown.  Cancel the coalesced callback so it cannot write a
+        # second time after this call.
+        self._cancel_scheduled_config_save()
         try:
             self.config["window_geometry"] = self.geometry()
         except Exception:
@@ -1390,11 +1701,9 @@ class App(ctk.CTk):
         self.config = config_manager.save(self.config)
 
     def _on_close(self) -> None:
-        self._controller.shutdown()
-        self._tray.stop()
-        self._save_config()
-        self._db.close()
-        self.destroy()
+        # Legacy entry point kept for callers outside the WM_DELETE_WINDOW
+        # protocol; route it through the idempotent full-quit path.
+        self.quit_app()
 
 
 def _fix_linux_frozen_env() -> None:
@@ -1452,12 +1761,12 @@ def main() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("Failed to preload language; falling back to default")
 
-    data_dir = base_dir()
+    data_dir = portable_paths().root
     _check_writable(data_dir)
 
-    log_dir = data_dir / "logs"
+    log_dir = portable_paths().logs_dir
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / "stream_monitor.log"
+    log_file = portable_paths().application_log
 
     file_handler = logging.handlers.RotatingFileHandler(
         log_file, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8",

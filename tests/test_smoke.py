@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 from stream_monitor import __version__
 from stream_monitor.event_bridge import MonitorEventBridge
@@ -20,9 +21,16 @@ class _FakeSink:
     """Minimal ``AppEventSink`` stand-in for bridge smoke tests."""
 
     monitor_mode = "watch"
+    monitor_generation = 1
     wake_verify_active = False
     defer_channel_row_repaints = False
     config: dict = {"action": "notify_only"}
+    platform_services = SimpleNamespace(
+        window=SimpleNamespace(
+            tracking_available=lambda _settings, _url="": False,
+            prune_off_topic=lambda: 0,
+        )
+    )
 
     def iter_channel_rows(self) -> list:
         return []
@@ -49,6 +57,7 @@ class _FakeSink:
         action: str,
         info: StreamInfo,
         browser_settings: dict | None,
+        generation: int | None = None,
     ) -> None:
         pass
 
@@ -62,6 +71,12 @@ class _FakeSink:
         pass
 
     def maybe_restart_dead_monitor(self) -> None:
+        pass
+
+    def save_status_cache(self) -> None:
+        pass
+
+    def on_monitor_cycle_complete(self) -> None:
         pass
 
 

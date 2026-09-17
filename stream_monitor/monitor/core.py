@@ -71,6 +71,7 @@ class Monitor(
                 name=ch["name"],
                 enabled=ch.get("enabled", True),
                 monitor_only=bool(ch.get("monitor_only", False)),
+                channel_mode=ch.get("channel_mode"),
             )
             for ch in channels
         ]
@@ -249,6 +250,11 @@ class Monitor(
         with self._lock:
             return dict(self._last_status)
 
+    @property
+    def poll_cycle(self) -> int:
+        """Monotonic poll-cycle number used to define one-shot boundaries."""
+        return self._poll_cycle
+
     def snapshot_display_names(self) -> dict[str, str]:
         with self._lock:
             return dict(self._display_names)
@@ -256,7 +262,11 @@ class Monitor(
     def _emit_went_live(self, entry: ChannelEntry, info: StreamInfo) -> None:
         if self._event_bus is None:
             return
-        self._event_bus.publish(ChannelWentLive(entry=entry, info=info))
+        self._event_bus.publish(
+            ChannelWentLive(
+                entry=entry, info=info, cycle_id=self._poll_cycle
+            )
+        )
 
     def _emit_went_offline(
         self, entry: ChannelEntry, offline_info: OfflineInfo
@@ -264,7 +274,11 @@ class Monitor(
         if self._event_bus is None:
             return
         self._event_bus.publish(
-            ChannelWentOffline(entry=entry, offline_info=offline_info)
+            ChannelWentOffline(
+                entry=entry,
+                offline_info=offline_info,
+                cycle_id=self._poll_cycle,
+            )
         )
 
     def _emit_poll_activity(
@@ -274,7 +288,10 @@ class Monitor(
             return
         self._event_bus.publish(
             PollActivity(
-                entry=entry, phase=phase, display_name=display_name
+                entry=entry,
+                phase=phase,
+                display_name=display_name,
+                cycle_id=self._poll_cycle,
             )
         )
 
@@ -285,7 +302,9 @@ class Monitor(
             return
         self._event_bus.publish(
             PartialStatusUpdate(
-                statuses=statuses, display_names=display_names
+                statuses=statuses,
+                display_names=display_names,
+                cycle_id=self._poll_cycle,
             )
         )
 
@@ -295,10 +314,12 @@ class Monitor(
         with self._lock:
             statuses = dict(self._last_status)
             display_names = dict(self._display_names)
-        self._event_bus.publish(PollWaiting())
+        self._event_bus.publish(PollWaiting(cycle_id=self._poll_cycle))
         self._event_bus.publish(
             PollStatusUpdate(
-                statuses=statuses, display_names=display_names
+                statuses=statuses,
+                display_names=display_names,
+                cycle_id=self._poll_cycle,
             )
         )
 
@@ -311,6 +332,7 @@ class Monitor(
                     name=ch["name"],
                     enabled=ch.get("enabled", True),
                     monitor_only=bool(ch.get("monitor_only", False)),
+                    channel_mode=ch.get("channel_mode"),
                 )
                 for ch in channels
             ]
@@ -436,13 +458,13 @@ class Monitor(
         """Signal the polling thread to exit without blocking the caller."""
         self._stop_event.set()
 
-    def stop(self) -> None:
+    def stop(self, timeout: float | None = 5.0) -> None:
         self.request_stop()
-        self._join_thread()
+        self._join_thread(timeout=timeout)
 
-    def _join_thread(self) -> None:
+    def _join_thread(self, *, timeout: float | None = 5.0) -> None:
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=timeout)
             if not self._thread.is_alive():
                 self._thread = None
 

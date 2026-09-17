@@ -133,16 +133,46 @@ def test_engagement_forces_visible_for_twitch(monkeypatch) -> None:
     )
     try:
         effective = {"minimized": True, "hide_from_taskbar": True}
-        notifier._apply_viewer_engagement_to_launch(
+        should_keep_awake = notifier._apply_viewer_engagement_to_launch(
             "https://www.twitch.tv/foo", effective, "/tmp/profile"
         )
         assert effective["minimized"] is False
         assert effective["hide_from_taskbar"] is False
         assert effective["bring_to_front"] is True
-        assert awake_calls == [True]
+        assert should_keep_awake is True
+        # The request is registered only after the browser process starts.
+        assert awake_calls == []
     finally:
         notifier.configure_viewer_engagement(None)
         notifier._ENGAGEMENT_AWAKE_URLS.clear()
+        notifier._ENGAGEMENT_AWAKE_SINCE.clear()
+
+
+def test_keep_awake_requires_a_managed_dedicated_window(monkeypatch, tmp_path) -> None:
+    awake_calls: list[bool] = []
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        notifier, "set_system_keep_awake", lambda active: awake_calls.append(active)
+    )
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *a, **k: object())
+    notifier.configure_viewer_engagement(ViewerEngagementSettings(enabled=True))
+    try:
+        assert notifier._open_with_browser_settings(
+            "https://www.twitch.tv/foo",
+            {
+                "enabled": True,
+                "browser_path": "chrome",
+                "new_window": False,
+                "app_mode": False,
+                "user_data_dir": str(tmp_path / "profile"),
+                "per_channel_profile": False,
+            },
+        ) is True
+        assert awake_calls == []
+    finally:
+        notifier.configure_viewer_engagement(None)
+        notifier._ENGAGEMENT_AWAKE_URLS.clear()
+        notifier._ENGAGEMENT_AWAKE_SINCE.clear()
 
 
 def test_anti_throttle_flags_added_for_twitch() -> None:
@@ -289,6 +319,7 @@ def test_engagement_passes_foreground_hold_to_effective(monkeypatch) -> None:
     finally:
         notifier.configure_viewer_engagement(None)
         notifier._ENGAGEMENT_AWAKE_URLS.clear()
+        notifier._ENGAGEMENT_AWAKE_SINCE.clear()
 
 
 def test_foreground_hold_not_set_when_bring_to_front_disabled(monkeypatch) -> None:
@@ -310,6 +341,7 @@ def test_foreground_hold_not_set_when_bring_to_front_disabled(monkeypatch) -> No
     finally:
         notifier.configure_viewer_engagement(None)
         notifier._ENGAGEMENT_AWAKE_URLS.clear()
+        notifier._ENGAGEMENT_AWAKE_SINCE.clear()
 
 
 def test_config_normalizes_foreground_hold_seconds() -> None:

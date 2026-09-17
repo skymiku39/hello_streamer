@@ -17,6 +17,14 @@ def test_mark_seen_and_is_seen(tmp_path) -> None:
     db.close()
 
 
+def test_database_can_be_used_as_a_context_manager(tmp_path) -> None:
+    with SeenVideoDB(tmp_path / "context.db") as db:
+        db.mark_seen("context", "youtube", "chan", "LIVE")
+        assert db.is_seen("context", "LIVE") is True
+
+    assert db._closed is True
+
+
 def test_mark_seen_is_idempotent(tmp_path) -> None:
     db = SeenVideoDB(tmp_path / "test.db")
     db.mark_seen("abc", "youtube", "chan", "LIVE", "T1")

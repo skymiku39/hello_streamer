@@ -7,6 +7,7 @@ These exercise the UI-thread consumer without Tk by driving a recording
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 from typing import Any
 
 from stream_monitor.event_bridge import MonitorEventBridge
@@ -37,6 +38,7 @@ class _RecordingSink:
 
     def __init__(self, mode: str = "trigger", action: str = "open_and_stop") -> None:
         self._monitor_mode = mode
+        self._monitor_generation = 1
         self.wake_verify_active = False
         self.defer_channel_row_repaints = False
         self._channel_rows: list[_FakeRow] = []
@@ -52,11 +54,22 @@ class _RecordingSink:
         self.quit_calls = 0
         self.restart_calls = 0
         self.save_status_cache_calls = 0
+        self.monitor_cycle_complete_calls = 0
         self._action_event = threading.Event()
+        self.platform_services = SimpleNamespace(
+            window=SimpleNamespace(
+                tracking_available=lambda _settings, _url="": False,
+                prune_off_topic=lambda: 0,
+            )
+        )
 
     @property
     def monitor_mode(self) -> str:
         return self._monitor_mode
+
+    @property
+    def monitor_generation(self) -> int:
+        return self._monitor_generation
 
     def iter_channel_rows(self) -> list[_FakeRow]:
         return self._channel_rows
@@ -79,7 +92,11 @@ class _RecordingSink:
         self.live_row_updates.append((entry, info))
 
     def execute_live_action(
-        self, action: str, info: StreamInfo, browser_settings: Any
+        self,
+        action: str,
+        info: StreamInfo,
+        browser_settings: Any,
+        generation: int | None = None,
     ) -> None:
         self.executed_actions.append((action, info, browser_settings))
         self._action_event.set()
@@ -98,6 +115,9 @@ class _RecordingSink:
 
     def save_status_cache(self) -> None:
         self.save_status_cache_calls += 1
+
+    def on_monitor_cycle_complete(self) -> None:
+        self.monitor_cycle_complete_calls += 1
 
 
 def _live_info(channel: str = "hello") -> StreamInfo:
@@ -153,8 +173,10 @@ def test_trigger_mode_open_and_stop_runs_action_and_stops() -> None:
 
     assert sink._action_event.wait(timeout=2.0)
     assert len(sink.executed_actions) == 1
-    assert sink.executed_actions[0][0] == "open_and_stop"
-    assert sink.stop_calls == [False]
+    assert sink.executed_actions[0][0].key == "open_and_stop"
+    # The bridge only dispatches the action.  The action worker schedules the
+    # lifecycle transition after the browser launch succeeds.
+    assert sink.stop_calls == []
     assert sink.quit_calls == 0
 
 
@@ -168,6 +190,69 @@ def test_trigger_mode_monitor_only_entry_skips_action() -> None:
 
     assert sink.executed_actions == []
     assert sink.stop_calls == []
+
+
+def test_trigger_mode_notify_entry_dispatches_notification_only() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger", action="open_and_stop")
+    bridge = MonitorEventBridge(sink, bus)
+    entry = _entry(channel_mode="notify")
+    bus.publish(ChannelWentLive(entry=entry, info=_live_info()))
+
+    bridge.tick()
+
+    assert len(sink.executed_actions) == 1
+    plan = sink.executed_actions[0][0]
+    assert plan.key == "notify_only"
+    assert plan.notify is True
+    assert plan.open_browser is False
+    assert sink.monitor_cycle_complete_calls == 0
+
+
+def test_completed_poll_consumes_global_one_shot_mode() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="watch_once")
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(PollStatusUpdate(statuses={}, display_names={}))
+
+    bridge.tick()
+
+    assert sink.monitor_cycle_complete_calls == 1
+
+
+def test_trigger_once_dispatches_actions_then_consumes_global_mode() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger_once", action="open_and_stop")
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(ChannelWentLive(entry=_entry(), info=_live_info()))
+    bus.publish(PollStatusUpdate(statuses={}, display_names={}))
+
+    bridge.tick()
+
+    assert len(sink.executed_actions) == 1
+    assert sink.executed_actions[0][0].key == "open_and_stop"
+    assert sink.monitor_cycle_complete_calls == 1
+
+
+def test_one_shot_ignores_events_from_the_cycle_already_in_progress() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger_once", action="open_and_stop")
+    bridge = MonitorEventBridge(sink, bus)
+    bridge.arm_one_shot(after_cycle=4)
+
+    bus.publish(
+        ChannelWentLive(entry=_entry("old"), info=_live_info("old"), cycle_id=4)
+    )
+    bus.publish(PollStatusUpdate(statuses={}, display_names={}, cycle_id=4))
+    bus.publish(
+        ChannelWentLive(entry=_entry("new"), info=_live_info("new"), cycle_id=5)
+    )
+    bus.publish(PollStatusUpdate(statuses={}, display_names={}, cycle_id=5))
+
+    bridge.tick()
+
+    assert [info.channel for _, info, _ in sink.executed_actions] == ["new"]
+    assert sink.monitor_cycle_complete_calls == 1
 
 
 def test_back_pressure_requeues_events_beyond_tick_budget() -> None:

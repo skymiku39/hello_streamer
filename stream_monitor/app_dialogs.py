@@ -42,7 +42,7 @@ from stream_monitor.notifier import (
     open_browser_for_signin,
     open_url,
 )
-from stream_monitor.url_parser import parse_url
+from stream_monitor.url_parser import parse_channel_url
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,8 @@ class AddChannelDialog(ctk.CTkToplevel):
         self.grab_set()
 
         self.result: dict[str, str] | None = None
+        self._validation_token: object | None = None
+        self._validation_timeout_id: str | None = None
 
         self._heading_label = ctk.CTkLabel(
             self,
@@ -235,6 +237,14 @@ class AddChannelDialog(ctk.CTkToplevel):
     def _on_destroy(self, event: Any = None) -> None:
         if event is not None and event.widget is not self:
             return
+        self._validation_token = None
+        timeout_id = self._validation_timeout_id
+        if timeout_id is not None:
+            try:
+                self.after_cancel(timeout_id)
+            except Exception:  # noqa: BLE001
+                pass
+            self._validation_timeout_id = None
         if getattr(self, "_unsub_i18n", None):
             self._unsub_i18n()
             self._unsub_i18n = None
@@ -251,7 +261,9 @@ class AddChannelDialog(ctk.CTkToplevel):
 
     def _on_url_change(self, _event: Any = None) -> None:
         text = self.url_entry.get()
-        parsed = parse_url(text)
+        # URL feedback runs for every keystroke; keep it strictly local so a
+        # YouTube watch URL can never block the Tk event loop on HTTP retries.
+        parsed = parse_channel_url(text)
         if parsed:
             self._set_message(
                 "add.msg.parsed",
@@ -270,7 +282,7 @@ class AddChannelDialog(ctk.CTkToplevel):
 
     def _on_add(self) -> None:
         url_text = self.url_entry.get().strip()
-        parsed = parse_url(url_text)
+        parsed = parse_channel_url(url_text)
 
         if parsed:
             plat, name = parsed.platform, parsed.name
@@ -290,9 +302,14 @@ class AddChannelDialog(ctk.CTkToplevel):
         self._set_inputs_enabled(False)
         self._pending_platform = plat
         self._pending_name = name
+        token = object()
+        self._validation_token = token
+        self._validation_timeout_id = self.after(
+            20_000, self._on_validation_timeout, token
+        )
 
         threading.Thread(
-            target=self._validate_channel, args=(plat, name), daemon=True
+            target=self._validate_channel, args=(plat, name, token), daemon=True
         ).start()
 
     def _set_inputs_enabled(self, enabled: bool) -> None:
@@ -311,17 +328,40 @@ class AddChannelDialog(ctk.CTkToplevel):
                     if isinstance(child, ctk.CTkButton) and child is not self._cancel_btn:
                         child.configure(state=state)
 
-    def _validate_channel(self, plat: str, name: str) -> None:
+    def _validate_channel(self, plat: str, name: str, token: object) -> None:
         try:
             fetcher = get_fetcher(plat)
             info = fetcher.get_stream_info(name)
         except Exception:
             info = None
-        self.after(0, self._on_validate_done, info)
+        try:
+            self.after(0, self._on_validate_done, info, token)
+        except Exception:  # noqa: BLE001
+            # The dialog may have been destroyed while the daemon worker was
+            # still waiting for a platform response.
+            logger.debug("Channel validation finished after dialog closed")
 
-    def _on_validate_done(self, info: StreamInfo | None) -> None:
+    def _on_validation_timeout(self, token: object) -> None:
+        if token is not self._validation_token or not self.winfo_exists():
+            return
+        self._validation_token = None
+        self._validation_timeout_id = None
+        self._set_message("add.msg.timeout", color="#ef5350")
+        self._set_inputs_enabled(True)
+
+    def _on_validate_done(self, info: StreamInfo | None, token: object) -> None:
+        if token is not self._validation_token:
+            return
         if not self.winfo_exists():
             return
+        self._validation_token = None
+        timeout_id = self._validation_timeout_id
+        if timeout_id is not None:
+            try:
+                self.after_cancel(timeout_id)
+            except Exception:  # noqa: BLE001
+                pass
+            self._validation_timeout_id = None
         plat = self._pending_platform
         name = self._pending_name
 
@@ -585,9 +625,50 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             f"hello_streamer_app_mode_test_profile_{profile_stamp}"
         )
         self._last_test_url: str | None = None
+        self._path_refresh_after: str | None = None
 
-        self.content_frame = ctk.CTkScrollableFrame(self, fg_color=_CLR_BG_DARK)
-        self.content_frame.pack(padx=12, pady=(8, 0), fill="both", expand=True)
+        # Settings used to be one very tall child frame moved by a custom
+        # scrollbar.  On Windows that makes every input and card participate
+        # in a large native-child move during a drag.  Keep each section in a
+        # fixed tab instead: changing tabs only changes visibility, never the
+        # Y position of a populated form.
+        self._scroll_container = ctk.CTkFrame(self, fg_color=_CLR_BG_DARK)
+        self._scroll_container.pack(padx=12, pady=(8, 0), fill="both", expand=True)
+        self._settings_tabs = ctk.CTkTabview(
+            self._scroll_container,
+            fg_color=_CLR_BG_DARK,
+            segmented_button_fg_color=_CLR_CARD,
+            segmented_button_selected_color=_CLR_LINK,
+            segmented_button_selected_hover_color=_CLR_LINK_HOVER,
+            segmented_button_unselected_color=_CLR_CARD,
+            segmented_button_unselected_hover_color="#243052",
+            segmented_button_font=_font(12),
+        )
+        self._settings_tabs.pack(fill="both", expand=True)
+        tab_specs = (
+            ("basic", "browser.tab.basic"),
+            ("window", "browser.tab.window"),
+            ("account", "browser.tab.account"),
+            ("lifecycle", "browser.tab.lifecycle"),
+            ("engagement", "browser.tab.engagement"),
+            ("more", "browser.tab.more"),
+        )
+        self._settings_tab_names: dict[str, str] = {}
+        self._settings_tab_keys = dict(tab_specs)
+        self._settings_pages: dict[str, Any] = {}
+        for tab_id, label_key in tab_specs:
+            label = tr(label_key)
+            self._settings_tabs.add(label)
+            page = self._settings_tabs.tab(label)
+            page.grid_columnconfigure(0, weight=1)
+            self._settings_tab_names[tab_id] = label
+            self._settings_pages[tab_id] = page
+        self._settings_tabs._segmented_button.configure(
+            height=34,
+            corner_radius=7,
+        )
+
+        self.content_frame = self._settings_pages["basic"]
         self.advanced_frame = self.content_frame
 
         default_profile_dir = default_browser_profile_dir()
@@ -641,13 +722,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._use_custom_hint.pack(padx=12, pady=(0, 12), anchor="w")
 
-        self._settings_body = ctk.CTkFrame(
-            self.content_frame, fg_color="transparent"
-        )
-        self._settings_body.pack(fill="x")
+        self._settings_body = self.content_frame
         self._program_options_frame = self._settings_body
 
-        self._open_card = _browser_card(self._settings_body, pady=(0, 10))
+        self._open_card = _browser_card(self.content_frame, pady=(0, 10))
         open_card = self._open_card
         self._dim_placement_label = ctk.CTkLabel(
             open_card,
@@ -728,7 +806,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             justify="left",
         )
 
-        self._geometry_card = _browser_card(self._settings_body, pady=(0, 10))
+        self._geometry_card = _browser_card(
+            self._settings_pages["window"], pady=(0, 10)
+        )
         self._geometry_section_label = ctk.CTkLabel(
             self._geometry_card,
             text=tr("browser.section.geometry"),
@@ -810,7 +890,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self.h_entry = _make_int_entry(pos_frame, int(settings.get("height", 720)))
         self.h_entry.grid(row=2, column=3, padx=(0, 14), pady=(4, 0), sticky="w")
 
-        self._login_card = _browser_card(self._settings_body, pady=(0, 10))
+        self._login_card = _browser_card(
+            self._settings_pages["account"], pady=(0, 10)
+        )
         login_card = self._login_card
         self._dim_identity_label = ctk.CTkLabel(
             login_card,
@@ -908,7 +990,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._signin_btn.grid(row=1, column=0, columnspan=2, sticky="w", padx=(12, 0), pady=(8, 0))
         _tooltip_tr(self._signin_btn, "browser.btn.signin.tooltip")
 
-        self._auto_card = _browser_card(self._settings_body, pady=(0, 10))
+        self._auto_card = _browser_card(
+            self._settings_pages["lifecycle"], pady=(0, 10)
+        )
         toggle_frame = ctk.CTkFrame(self._auto_card, fg_color="transparent")
         toggle_frame.pack(padx=12, pady=12, fill="x")
 
@@ -1041,7 +1125,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._hide_taskbar_hint.pack(anchor="w", pady=(0, 2))
 
-        self._engagement_card = _browser_card(self._settings_body, pady=(0, 10))
+        self._engagement_card = _browser_card(
+            self._settings_pages["engagement"], pady=(0, 10)
+        )
         engagement_card = self._engagement_card
         self._engagement_section_label = ctk.CTkLabel(
             engagement_card,
@@ -1118,7 +1204,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._engagement_tips.pack(padx=12, pady=(4, 12), anchor="w")
         self._sync_engagement_enabled_state()
 
-        self._more_card = _browser_card(self._settings_body, pady=(0, 10))
+        self._more_card = _browser_card(self._settings_pages["more"], pady=(0, 10))
         more_card = self._more_card
         self._more_section_label = ctk.CTkLabel(
             more_card,
@@ -1157,7 +1243,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self.path_entry.insert(0, settings.get("browser_path", "chrome"))
         self.path_entry.grid(row=0, column=1, sticky="ew")
-        self.path_entry.bind("<KeyRelease>", self._on_path_change)
+        self.path_entry.bind("<KeyRelease>", self._schedule_path_change)
         self._path_hint = ctk.CTkLabel(
             more_card,
             text=tr("browser.path.hint"),
@@ -1328,6 +1414,12 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.title(tr("browser.title"))
         except Exception:  # noqa: BLE001
             return
+        for tab_id, label_key in self._settings_tab_keys.items():
+            old_name = self._settings_tab_names[tab_id]
+            new_name = tr(label_key)
+            if old_name != new_name:
+                self._settings_tabs.rename(old_name, new_name)
+                self._settings_tab_names[tab_id] = new_name
         self._scope_hint.configure(text=tr("browser.scope.hint"))
         self._more_section_label.configure(text=tr("browser.section.more"))
         self._more_section_hint.configure(text=tr("browser.section.more.hint"))
@@ -1420,6 +1512,12 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
     def _on_destroy(self, event: Any = None) -> None:
         if event is not None and event.widget is not self:
             return
+        if self._path_refresh_after is not None:
+            try:
+                self.after_cancel(self._path_refresh_after)
+            except Exception:
+                pass
+            self._path_refresh_after = None
         if getattr(self, "_unsub_i18n", None):
             self._unsub_i18n()
             self._unsub_i18n = None
@@ -1461,15 +1559,20 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.app_mode_var.set(False)
 
     def _refresh_placement_radios(self) -> None:
-        for widget in (
+        widgets = (
             self._placement_tab_rb,
             self._placement_tab_hint,
             self._placement_window_rb,
             self._placement_window_hint,
             self._placement_player_rb,
             self._placement_player_hint,
-        ):
-            widget.pack_forget()
+        )
+        if all(widget.winfo_manager() == "pack" for widget in widgets):
+            return
+
+        for widget in widgets:
+            if widget.winfo_manager() == "pack":
+                widget.pack_forget()
 
         for rb, hint in (
             (self._placement_tab_rb, self._placement_tab_hint),
@@ -1493,37 +1596,36 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             launch, self.identity_var.get(), placement
         )
 
-        if use_custom:
-            self._settings_body.pack(fill="x")
-        else:
-            self._settings_body.pack_forget()
-
         user_state = "normal" if use_custom else "disabled"
         for widget in self._user_option_widgets:
-            widget.configure(state=user_state)
+            self._set_widget_state(widget, user_state)
 
-        if dedicated and use_custom:
-            self._identity_path_frame.pack(fill="x", padx=12, pady=(0, 12))
-        else:
-            self._identity_path_frame.pack_forget()
+        self._set_pack_visibility(
+            self._identity_path_frame,
+            dedicated and use_custom,
+            fill="x",
+            padx=12,
+            pady=(0, 12),
+        )
 
         profile_entry_state = "normal" if dedicated and use_custom else "disabled"
-        self.user_data_dir_entry.configure(state=profile_entry_state)
-        self._signin_btn.configure(state=profile_entry_state)
+        self._set_widget_state(self.user_data_dir_entry, profile_entry_state)
+        self._set_widget_state(self._signin_btn, profile_entry_state)
 
         per_channel_state = "normal" if dedicated and use_custom else "disabled"
-        self.per_channel_profile_cb.configure(state=per_channel_state)
+        self._set_widget_state(self.per_channel_profile_cb, per_channel_state)
 
         geom_available = bsm.geometry_placement_available(launch, placement)
 
         auto_visible = bsm.auto_cleanup_ui_available(launch, self.identity_var.get())
 
-        if use_custom and auto_visible:
-            self._auto_card.pack(
-                padx=16, pady=(0, 10), fill="x", before=self._more_card
-            )
-        else:
-            self._auto_card.pack_forget()
+        self._set_pack_visibility(
+            self._auto_card,
+            use_custom and auto_visible,
+            padx=16,
+            pady=(0, 10),
+            fill="x",
+        )
 
         mgmt_state = "normal" if use_custom and mgmt_available else "disabled"
         for widget in (
@@ -1533,21 +1635,23 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self.close_off_topic_cb,
             self.hide_from_taskbar_cb,
         ):
-            widget.configure(state=mgmt_state)
+            self._set_widget_state(widget, mgmt_state)
 
-        if use_custom and auto_visible and not mgmt_available:
-            self._auto_window_required_hint.pack(
-                anchor="w", pady=(0, 8), before=self.minimized_cb
-            )
-        else:
-            self._auto_window_required_hint.pack_forget()
+        self._set_pack_visibility(
+            self._auto_window_required_hint,
+            use_custom and auto_visible and not mgmt_available,
+            anchor="w",
+            pady=(0, 8),
+            before=self.minimized_cb,
+        )
 
-        if use_custom and geom_available:
-            self._geometry_card.pack(
-                padx=16, pady=(0, 10), fill="x", before=self._login_card
-            )
-        else:
-            self._geometry_card.pack_forget()
+        self._set_pack_visibility(
+            self._geometry_card,
+            use_custom and geom_available,
+            padx=16,
+            pady=(0, 10),
+            fill="x",
+        )
 
         self._on_path_change()
         self._refresh_win32_management_state()
@@ -1567,19 +1671,17 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
     def _refresh_win32_management_state(self) -> None:
         if not self.use_custom_var.get():
-            self._no_window_tracking_label.pack_forget()
+            self._set_pack_visibility(self._no_window_tracking_label, False)
             self._refresh_geometry_state()
             return
 
-        if (
-            self.use_custom_var.get()
-            and self.placement_var.get() == bsm.PLACEMENT_TAB
-        ):
-            self._no_window_tracking_label.pack(
-                padx=12, anchor="w", pady=(0, 8)
-            )
-        else:
-            self._no_window_tracking_label.pack_forget()
+        self._set_pack_visibility(
+            self._no_window_tracking_label,
+            self.placement_var.get() == bsm.PLACEMENT_TAB,
+            padx=12,
+            anchor="w",
+            pady=(0, 8),
+        )
 
         self._refresh_geometry_state()
 
@@ -1600,8 +1702,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         """
         if not self.use_custom_var.get() or not self.enabled_var.get():
             for entry in (self.x_entry, self.y_entry, self.w_entry, self.h_entry):
-                entry.configure(state="disabled")
-            self.reset_geometry_btn.configure(state="disabled")
+                self._set_widget_state(entry, "disabled")
+            self._set_widget_state(self.reset_geometry_btn, "disabled")
             return
 
         executable = self.path_entry.get().strip() or "chrome"
@@ -1613,8 +1715,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         entry_state = "normal" if geometry_active else "disabled"
         for entry in (self.x_entry, self.y_entry, self.w_entry, self.h_entry):
-            entry.configure(state=entry_state)
-        self.reset_geometry_btn.configure(state=entry_state)
+            self._set_widget_state(entry, entry_state)
+        self._set_widget_state(self.reset_geometry_btn, entry_state)
 
     def _on_reset_geometry(self) -> None:
         """Reset X/Y/W/H to the system-default values."""
@@ -1632,14 +1734,50 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             entry.configure(state=current_state)
         self._set_message("browser.msg.reset_done", color="#64b5f6")
 
+    @staticmethod
+    def _set_widget_state(widget: Any, state: str) -> None:
+        """Avoid a CustomTkinter redraw when a state did not change."""
+        try:
+            if widget.cget("state") == state:
+                return
+        except Exception:
+            pass
+        widget.configure(state=state)
+
+    @staticmethod
+    def _set_pack_visibility(
+        widget: Any, visible: bool, **pack_options: Any
+    ) -> None:
+        """Only mutate the pack layout when visibility actually changes."""
+        manager = widget.winfo_manager()
+        if visible:
+            if manager != "pack":
+                widget.pack(**pack_options)
+        elif manager == "pack":
+            widget.pack_forget()
+
+    def _schedule_path_change(self, _event: Any = None) -> None:
+        """Debounce executable-family detection while the path is being typed."""
+        if self._path_refresh_after is not None:
+            try:
+                self.after_cancel(self._path_refresh_after)
+            except Exception:
+                pass
+        self._path_refresh_after = self.after(120, self._flush_path_change)
+
+    def _flush_path_change(self) -> None:
+        self._path_refresh_after = None
+        if self.winfo_exists():
+            self._on_path_change()
+
     def _on_path_change(self, _event: Any = None) -> None:
         if not self.use_custom_var.get():
             self._set_compat("browser.compat.disabled", "#ffb74d")
             executable = self.path_entry.get().strip() or "chrome"
             if detect_browser_family(executable) == "firefox":
-                self._placement_player_rb.configure(state="disabled")
+                self._set_widget_state(self._placement_player_rb, "disabled")
             else:
-                self._placement_player_rb.configure(state="normal")
+                self._set_widget_state(self._placement_player_rb, "normal")
             return
 
         executable = self.path_entry.get().strip() or "chrome"
@@ -1648,13 +1786,13 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         if family == "firefox":
             self._set_compat("browser.compat.firefox", "#ffb74d")
             for widget in self._family_dependent:
-                widget.configure(state="disabled")
-            self._placement_player_rb.configure(state="disabled")
+                self._set_widget_state(widget, "disabled")
+            self._set_widget_state(self._placement_player_rb, "disabled")
             if self.placement_var.get() == bsm.PLACEMENT_PLAYER:
                 self.placement_var.set(bsm.PLACEMENT_WINDOW)
                 self._sync_internal_vars_from_dimensions()
         elif family == "chromium":
-            self._placement_player_rb.configure(state="normal")
+            self._set_widget_state(self._placement_player_rb, "normal")
             self._set_compat("browser.compat.chromium", "#81c784")
             # Chromium can run every advanced flag, but app_mode + the
             # geometry entries still require the dedicated-profile
@@ -1668,7 +1806,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
     def _sync_engagement_enabled_state(self) -> None:
         state = "normal" if self.engagement_enabled_var.get() else "disabled"
         for switch in self._engagement_sub_switches:
-            switch.configure(state=state)
+            self._set_widget_state(switch, state)
 
     def _collect_viewer_engagement(self) -> dict[str, Any]:
         # Start from the incoming (normalized) settings so any field without a

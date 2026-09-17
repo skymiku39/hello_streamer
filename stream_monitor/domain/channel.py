@@ -7,8 +7,22 @@ These have no dependency on the polling engine or the event bus, so both
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
+from stream_monitor.channel_policy import (
+    CHANNEL_MODE_MONITOR,
+    normalize_channel_mode,
+)
 from stream_monitor.util import channel_key, normalize_channel_name
+
+
+class ChannelState(StrEnum):
+    """Canonical observable state for one channel snapshot."""
+
+    LIVE = "live"
+    UPCOMING = "upcoming"
+    OFFLINE = "offline"
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -16,15 +30,19 @@ class ChannelEntry:
     platform: str
     name: str
     enabled: bool = True
-    # monitor_only = True ⇒ the polling thread should still observe this
-    # channel (status updates, "LIVE" labels in the UI) but downstream
-    # action dispatch (notifications, opening the browser, close_on_offline)
-    # must be suppressed. The flag is carried on the entry so callbacks can
-    # easily see it without re-resolving the channel via config_manager.
+    # Legacy compatibility view. The canonical per-channel policy is
+    # ``channel_mode``: trigger / monitor / notify. One-shot is global and is
+    # selected from the bottom monitor controls.
     monitor_only: bool = False
+    channel_mode: str | None = None
 
     def __post_init__(self) -> None:
         self.name = normalize_channel_name(self.platform, self.name)
+        self.channel_mode = normalize_channel_mode(
+            self.channel_mode,
+            legacy_monitor_only=self.monitor_only,
+        )
+        self.monitor_only = self.channel_mode == CHANNEL_MODE_MONITOR
 
     @property
     def key(self) -> str:
@@ -36,8 +54,9 @@ class ChannelStatus:
     """Immutable snapshot of a channel's last-known status.
 
     ``status`` is the canonical state token: ``True`` (live), ``"upcoming"``
-    (scheduled/waiting room), or ``False``/``None`` (offline). Some legacy
-    paths also use the string ``"live"``; :attr:`is_live` normalises both.
+    (scheduled/waiting room), or ``False`` (offline). Some legacy paths also
+    use the string ``"live"``. ``None`` or an unrecognised token means
+    ``unknown`` and must not be treated as a confirmed offline result.
 
     The class is ``frozen`` on purpose:
 
@@ -63,16 +82,31 @@ class ChannelStatus:
     ended_at_source: str = ""  # "vod" | "confirmed" | "pending"
 
     @property
+    def state(self) -> ChannelState:
+        """Return the canonical state without exposing legacy encodings."""
+        if self.status is True or self.status == "live":
+            return ChannelState.LIVE
+        if self.status == "upcoming":
+            return ChannelState.UPCOMING
+        if self.status is False or self.status == "offline":
+            return ChannelState.OFFLINE
+        return ChannelState.UNKNOWN
+
+    @property
     def is_live(self) -> bool:
-        return self.status is True or self.status == "live"
+        return self.state is ChannelState.LIVE
 
     @property
     def is_upcoming(self) -> bool:
-        return self.status == "upcoming"
+        return self.state is ChannelState.UPCOMING
 
     @property
     def is_offline(self) -> bool:
-        return not self.is_live and not self.is_upcoming
+        return self.state is ChannelState.OFFLINE
+
+    @property
+    def is_unknown(self) -> bool:
+        return self.state is ChannelState.UNKNOWN
 
 
 @dataclass

@@ -11,6 +11,7 @@ import customtkinter as ctk
 from PIL import Image, ImageDraw
 
 from stream_monitor import i18n
+from stream_monitor.action_plan import ACTION_ORDER
 from stream_monitor.i18n import tr
 from stream_monitor.util import parse_iso_datetime
 
@@ -117,7 +118,9 @@ def _status_bar_text_width() -> int:
     keys = (
         "status.idle",
         "status.trigger_running",
+        "status.trigger_once_running",
         "status.watching",
+        "status.watching_once",
         "status.stopped",
         "status.monitor_restarted",
         "status.poll_checking",
@@ -191,21 +194,34 @@ def _format_minutes_delta(total_seconds: float) -> str:
 
 
 def monitor_mode_button_states(mode: str) -> dict[str, str]:
-    """Map a monitor mode to the tri-state of the three control buttons.
+    """Map a monitor mode to the state of the four start and stop buttons.
 
     Pure decision separated from the Tk side-effect in
     :meth:`App._apply_monitor_mode_buttons`, so the "which button is enabled
     in which run state" contract is unit-testable without a display.
 
-    - ``trigger`` : Start is the *current* mode → disabled; Watch/Stop live.
-    - ``watch``   : Watch is the *current* mode → disabled; Start/Stop live.
-    - anything else (``idle``): nothing is running → Stop disabled.
+    - ``trigger`` / ``watch``: the selected continuous mode is disabled.
+    - ``trigger_once`` / ``watch_once``: the selected one-cycle mode is
+      disabled while that cycle is running.
+    - ``idle``: all start buttons are available and Stop is disabled.
     """
-    if mode == "trigger":
-        return {"start": "disabled", "watch": "normal", "stop": "normal"}
-    if mode == "watch":
-        return {"start": "normal", "watch": "disabled", "stop": "normal"}
-    return {"start": "normal", "watch": "normal", "stop": "disabled"}
+    states = {
+        "start": "normal",
+        "watch": "normal",
+        "start_once": "normal",
+        "watch_once": "normal",
+        "stop": "disabled",
+    }
+    selected = {
+        "trigger": "start",
+        "watch": "watch",
+        "trigger_once": "start_once",
+        "watch_once": "watch_once",
+    }.get(mode)
+    if selected is not None:
+        states[selected] = "disabled"
+        states["stop"] = "normal"
+    return states
 
 
 def _format_countdown(target: str) -> str:
@@ -245,12 +261,7 @@ def _format_row_time(
 # Constants
 # ---------------------------------------------------------------------------
 PLATFORM_OPTIONS = ["twitch", "youtube"]
-ACTION_KEYS: list[str] = [
-    "open_and_stop",
-    "open_and_keep",
-    "notify_only",
-    "open_and_exit",
-]
+ACTION_KEYS: list[str] = list(ACTION_ORDER)
 
 
 def _action_labels() -> dict[str, str]:

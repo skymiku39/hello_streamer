@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 from typing import Any
 
 from stream_monitor.browser_settings_model import coerce_browser_settings
@@ -25,11 +24,6 @@ from stream_monitor.events import (
     PollWaiting,
 )
 from stream_monitor.fetcher.base import StreamInfo
-from stream_monitor.notifier import (
-    browser_window_tracking_available,
-    execute_action,
-    prune_off_topic_tracked_windows,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +104,27 @@ class MonitorEventBridge:
         self._bus = event_bus
         self._pending = PendingStatusStore()
         self._pending_display_names = PendingDisplayNamesStore()
+        self._one_shot_after_cycle: int | None = None
 
     def reset(self) -> None:
         """Drop buffered status updates (called when monitoring stops)."""
         self._pending.clear()
         self._pending_display_names.clear()
+        self._one_shot_after_cycle = None
+
+    def arm_one_shot(self, *, after_cycle: int) -> None:
+        """Accept only events from the next monitor cycle onward.
+
+        A mode switch can happen while the background monitor is halfway
+        through a poll.  Cycle IDs prevent that in-flight cycle from being
+        mistaken for the requested one-shot run.
+        """
+        self._bus.clear()
+        self.reset()
+        self._one_shot_after_cycle = after_cycle
+
+    def disarm_one_shot(self) -> None:
+        self._one_shot_after_cycle = None
 
     def tick(self) -> None:
         sink = self._sink
@@ -129,6 +139,14 @@ class MonitorEventBridge:
         max_events_per_tick = 12
         events_processed = 0
         buffered = self._bus.drain()
+
+        if self._one_shot_after_cycle is not None:
+            boundary = self._one_shot_after_cycle
+            buffered = [
+                event
+                for event in buffered
+                if getattr(event, "cycle_id", 0) > boundary
+            ]
 
         other_events: list[MonitorEvent] = []
         for event in buffered:
@@ -199,7 +217,9 @@ class MonitorEventBridge:
             )
             tracking_available = bool(
                 raw_browser_settings is not None
-                and browser_window_tracking_available(raw_browser_settings)
+                and sink.platform_services.window.tracking_available(
+                    raw_browser_settings
+                )
             )
             if should_prune_blank_tabs(
                 mode=mode,
@@ -207,24 +227,28 @@ class MonitorEventBridge:
                 tracking_available=tracking_available,
             ):
                 try:
-                    closed = prune_off_topic_tracked_windows()
+                    closed = sink.platform_services.window.prune_off_topic()
                     if closed:
                         logger.info(
                             "blank-tab prune closed %d window(s)", closed
                         )
                 except Exception:
                     logger.exception("blank-tab prune failed")
-            elif mode == "trigger" and close_off_topic and not tracking_available:
+            elif (
+                mode in ("trigger", "trigger_once")
+                and close_off_topic
+                and not tracking_available
+            ):
                 logger.debug(
                     "Skipped blank-tab prune: HWND window tracking unavailable "
                     "(need dedicated profile and app mode or separate window)"
                 )
 
-        configured_action = sink.config.get("action", "open_and_stop")
-        browser_settings = sink.current_browser_settings()
-        should_stop = False
-        should_exit = False
 
+        configured_action = sink.config.get("action", "open_and_stop")
+        trigger_settings = sink.config.get("trigger_settings")
+        browser_settings = sink.current_browser_settings()
+        generation = sink.monitor_generation
         for entry, info in live_events:
             if not poll_complete and not sink.defer_channel_row_repaints:
                 sink.apply_live_row_status(entry, info)
@@ -232,8 +256,10 @@ class MonitorEventBridge:
             decision = resolve_live_action(
                 mode=mode,
                 monitor_only=getattr(entry, "monitor_only", False),
+                channel_mode=getattr(entry, "channel_mode", None),
                 configured_action=configured_action,
                 stream_status=info.stream_status or "live",
+                trigger_settings=trigger_settings,
             )
             if decision.action is None:
                 if decision.suppressed_reason == "monitor_only":
@@ -241,48 +267,47 @@ class MonitorEventBridge:
                         "Skipped action for %s (monitor_only)", entry.key
                     )
                 continue
-
-            if decision.opens_window:
-                threading.Thread(
-                    target=sink.execute_live_action,
-                    args=(decision.action, info, browser_settings),
-                    daemon=True,
-                ).start()
-                if decision.triggers_stop:
-                    should_stop = True
-                elif decision.triggers_exit:
-                    should_exit = True
-            else:
-                noop = lambda: None  # noqa: E731
-                execute_action(
+            if decision.plan is None:
+                logger.warning(
+                    "Live action policy returned no plan for %s (action=%s)",
+                    entry.key,
                     decision.action,
-                    info,
-                    stop_fn=noop,
-                    exit_fn=noop,
-                    browser_settings=browser_settings,
                 )
+                continue
+
+            # The bridge only submits the pure plan.  ActionCoordinator owns
+            # worker lifetime and post-launch lifecycle transitions, keeping
+            # the event drain independent from desktop side-effects.
+            sink.execute_live_action(
+                decision.plan, info, browser_settings, generation
+            )
 
         close_on_offline = bool(
             browser_settings is not None and browser_settings.close_on_offline
         )
         offline_tracking_available = bool(
             browser_settings is not None
-            and browser_window_tracking_available(browser_settings)
+            and sink.platform_services.window.tracking_available(
+                browser_settings
+            )
         )
         for entry, offline_info in offline_events:
             if should_close_on_offline(
                 mode=mode,
                 monitor_only=getattr(entry, "monitor_only", False),
+                channel_mode=getattr(entry, "channel_mode", None),
                 wake_verify_active=sink.wake_verify_active,
                 close_on_offline=close_on_offline,
                 tracking_available=offline_tracking_available,
             ):
                 sink.handle_channel_offline(entry, offline_info)
 
-        if should_stop:
-            sink.on_stop(is_user_action=False)
-        elif should_exit:
-            sink.quit_app()
+        # Consume a global one-shot only after all events from this completed
+        # cycle have been dispatched.  This keeps trigger actions intact while
+        # still guaranteeing that the monitor will not begin another cycle.
+        if poll_complete and mode in ("trigger_once", "watch_once"):
+            self._one_shot_after_cycle = None
+            sink.on_monitor_cycle_complete()
 
         sink.maybe_restart_dead_monitor()
 
@@ -304,7 +329,7 @@ def prefer_richer_offline_status(old: Any, new: Any) -> Any:
 
 def pending_status_is_live(status: Any) -> bool:
     if isinstance(status, ChannelStatus):
-        return status.status is True
+        return status.is_live
     return status is True
 
 

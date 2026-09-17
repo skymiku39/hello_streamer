@@ -3,16 +3,28 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
-from stream_monitor import base_dir, default_browser_profile_dir, i18n
+from stream_monitor import default_browser_profile_dir, i18n
+from stream_monitor.action_plan import (
+    ACTION_KEYS,
+    LifecycleEffect,
+    TriggerSettings,
+)
+from stream_monitor.channel_policy import CHANNEL_MODES, normalize_channel_mode
+from stream_monitor.portable_storage import portable_paths
 
-# Bump when persisted schema semantics change.  Older files without this key
+# Bump when persisted schema semantics change. Older files without this key
 # (or with a lower number) receive :func:`_migrate_iso_features_without_profile`
 # once on load.  Save never runs that migration so explicit UI choices such as
 # "local identity + app mode" are not overwritten.
-CONFIG_FORMAT_VERSION = 1
+CONFIG_FORMAT_VERSION = 3
+
+DEFAULT_TRIGGER_SETTINGS: dict[str, Any] = TriggerSettings().as_dict()
 
 DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     "enabled": True,
@@ -77,6 +89,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "channels": [],
     "check_interval": 60,
     "action": "open_and_stop",
+    # New canonical trigger contract.  ``action`` remains as a deprecated
+    # compatibility field for older integrations and is no longer read by the
+    # main UI once this mapping exists.
+    "trigger_settings": deepcopy(DEFAULT_TRIGGER_SETTINGS),
     "monitor_mode": "trigger",
     "run_on_startup": False,
     "minimize_to_tray": True,
@@ -89,23 +105,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "channel_status_cache": {},
 }
 
-ACTION_KEYS: set[str] = {
-    "open_and_stop",
-    "open_and_keep",
-    "notify_only",
-    "open_and_exit",
-}
-MONITOR_MODE_KEYS = {"trigger", "watch"}
+MONITOR_MODE_KEYS = {"trigger", "watch", "trigger_once", "watch_once"}
 PLATFORM_KEYS = {"twitch", "youtube"}
 MIN_CHECK_INTERVAL = 10
+
+# Config mutations can originate from UI callbacks and monitor/tray shutdown
+# paths. Keep the replace-based write atomic when those callbacks happen close
+# together in the same process.
+_SAVE_LOCK = threading.Lock()
 
 _BOOL_TRUTHY = frozenset({"true", "yes", "1", "on"})
 _BOOL_FALSY = frozenset({"false", "no", "0", "off", ""})
 
 
 def _config_path():
-    """Return the path to config.json next to the executable / script."""
-    return base_dir() / "config.json"
+    """Return the canonical config path for the portable distribution."""
+    return portable_paths().config_file
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
@@ -147,12 +162,22 @@ def _normalize_channels(value: Any) -> list[dict[str, str]]:
             enabled = _coerce_bool(item.get("enabled"), False)
             if "enabled" in item:
                 normalized["enabled"] = enabled
-            # monitor_only = True 表示「只查詢狀態，不觸發通知/開瀏覽器/關窗」。
-            # 等於 enabled=True 的子模式；enabled=False 時這個欄位實質上無意義
-            # 但我們仍保留它，這樣使用者從暫停切回監聽時能恢復先前的偏好。
+            # Legacy monitor_only remains readable for older portable configs.
+            # New files may additionally carry channel_mode:
+            # trigger = normal, monitor = observe silently, notify = observe
+            # with notifications.  One-shot semantics belong to the global
+            # bottom-bar monitor mode, not to an individual channel.
             monitor_only = _coerce_bool(item.get("monitor_only"), False)
             if "monitor_only" in item:
                 normalized["monitor_only"] = monitor_only
+            raw_channel_mode = item.get("channel_mode")
+            if isinstance(raw_channel_mode, str):
+                channel_mode = normalize_channel_mode(
+                    raw_channel_mode,
+                    legacy_monitor_only=monitor_only,
+                )
+                if raw_channel_mode.strip().lower() in CHANNEL_MODES:
+                    normalized["channel_mode"] = channel_mode
             channels.append(normalized)  # type: ignore[arg-type]
 
     return channels  # type: ignore[return-value]
@@ -295,6 +320,28 @@ def _normalize_viewer_engagement(value: Any) -> dict[str, Any]:
     return normalized
 
 
+def _trigger_settings_from_legacy_action(action: Any) -> dict[str, Any]:
+    """Translate the old composite action key into independent controls."""
+    mapping = {
+        "open_and_stop": TriggerSettings(),
+        "open_and_keep": TriggerSettings(after_open=LifecycleEffect.NONE),
+        "notify_only": TriggerSettings(open_on_live=False, after_open=LifecycleEffect.NONE),
+        "open_and_exit": TriggerSettings(after_open=LifecycleEffect.EXIT_APP),
+    }
+    return mapping.get(action, TriggerSettings()).as_dict()
+
+
+def _normalize_trigger_settings(
+    value: Any,
+    *,
+    legacy_action: Any = "open_and_stop",
+) -> dict[str, Any]:
+    """Normalize the independent trigger settings and their enum value."""
+    if isinstance(value, dict):
+        return TriggerSettings.from_mapping(value).as_dict()
+    return _trigger_settings_from_legacy_action(legacy_action)
+
+
 def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(DEFAULT_CONFIG)
     normalized["channels"] = _normalize_channels(config.get("channels"))
@@ -335,6 +382,10 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     )
     normalized["viewer_engagement"] = _normalize_viewer_engagement(
         config.get("viewer_engagement")
+    )
+    normalized["trigger_settings"] = _normalize_trigger_settings(
+        config.get("trigger_settings"),
+        legacy_action=config.get("action", normalized["action"]),
     )
 
     status_cache = config.get("channel_status_cache")
@@ -386,22 +437,80 @@ def load() -> dict[str, Any]:
     path = _config_path()
     stored: dict[str, Any] = {}
     disk_existed = False
+    corrupt = False
+    corrupt_backed_up = False
+    read_succeeded = False
     if path.exists():
         disk_existed = True
         try:
             with path.open("r", encoding="utf-8") as f:
                 raw = json.load(f)
+            read_succeeded = True
             if isinstance(raw, dict):
                 stored = raw
-        except (json.JSONDecodeError, OSError):
-            pass
+            else:
+                corrupt = True
+        except json.JSONDecodeError:
+            corrupt = True
+            backup = _next_corrupt_backup_path(path)
+            try:
+                path.replace(backup)
+                corrupt_backed_up = True
+                logger.warning(
+                    "Invalid config JSON moved to %s; restoring defaults",
+                    backup,
+                )
+            except OSError:
+                logger.warning(
+                    "Invalid config JSON could not be backed up: %s",
+                    path,
+                    exc_info=True,
+                )
+        except OSError:
+            logger.warning("Could not read config file: %s", path, exc_info=True)
+
+    if corrupt and not corrupt_backed_up and path.exists():
+        backup = _next_corrupt_backup_path(path)
+        try:
+            path.replace(backup)
+            corrupt_backed_up = True
+            logger.warning(
+                "Invalid config content moved to %s; restoring defaults",
+                backup,
+            )
+        except OSError:
+            logger.warning(
+                "Invalid config content could not be backed up: %s",
+                path,
+                exc_info=True,
+            )
+
+    if corrupt and not corrupt_backed_up:
+        # Never destroy the only copy of an unreadable config.  The app can
+        # still continue with the in-memory defaults for this run.
+        logger.error(
+            "Skipping config self-heal because the invalid file was not backed up"
+        )
 
     merged = deepcopy(DEFAULT_CONFIG)
     merged.update(stored)
+    # ``merged`` contains the new default mapping, so explicitly substitute the
+    # legacy action when loading an older file that has no trigger_settings key.
+    if "trigger_settings" not in stored and "action" in stored:
+        merged["trigger_settings"] = _trigger_settings_from_legacy_action(
+            stored.get("action")
+        )
     apply_legacy = _stored_format_version(stored) < CONFIG_FORMAT_VERSION
     finalized = _finalize_config(merged, apply_legacy_migration=apply_legacy)
 
-    if disk_existed and _needs_self_heal(stored, finalized):
+    can_self_heal = (read_succeeded or corrupt_backed_up) and (
+        not corrupt or corrupt_backed_up
+    )
+    if (
+        (disk_existed or corrupt)
+        and can_self_heal
+        and (corrupt or _needs_self_heal(stored, finalized))
+    ):
         try:
             save(finalized)
             logger.info(
@@ -416,15 +525,28 @@ def load() -> dict[str, Any]:
     return finalized
 
 
+def _next_corrupt_backup_path(path: Path) -> Path:
+    """Return a non-destructive destination for an invalid config file."""
+    candidate = path.with_name(f"{path.name}.corrupt")
+    index = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}.corrupt.{index}")
+        index += 1
+    return candidate
+
+
 def save(config: dict[str, Any]) -> dict[str, Any]:
     """Persist config to disk and return the canonical in-memory form."""
-    path = _config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.tmp")
-    normalized = _finalize_config(config, apply_legacy_migration=False)
-    with temp_path.open("w", encoding="utf-8") as f:
-        json.dump(normalized, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    temp_path.replace(path)
-    return normalized
+    with _SAVE_LOCK:
+        path = _config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(f".{path.name}.tmp")
+        normalized = _finalize_config(config, apply_legacy_migration=False)
+        with temp_path.open("w", encoding="utf-8") as f:
+            json.dump(normalized, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        temp_path.replace(path)
+        return normalized
 

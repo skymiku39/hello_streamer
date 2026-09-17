@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-__version__ = "1.1.9"
+__version__ = "1.2.0"
 
 
 def base_dir() -> Path:
@@ -16,8 +16,10 @@ def base_dir() -> Path:
 
 
 def default_browser_profile_dir() -> str:
-    """Return ``<base_dir>/browser_profile`` as a string, or ``""`` on failure."""
+    """Return the portable browser-profile directory as a string."""
     try:
-        return str(base_dir() / "browser_profile")
+        from stream_monitor.portable_storage import portable_paths
+
+        return str(portable_paths().browser_profile_dir)
     except Exception:  # noqa: BLE001 — never block callers on path resolution.
         return ""

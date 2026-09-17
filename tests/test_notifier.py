@@ -3,6 +3,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from stream_monitor import notifier
+from stream_monitor.action_plan import action_plan_for
 from stream_monitor.fetcher.base import StreamInfo
 
 
@@ -18,8 +19,14 @@ def _info(**kwargs) -> StreamInfo:
     return StreamInfo(**defaults)
 
 
+def _execute(action: str, info: StreamInfo, **kwargs):
+    plan = action_plan_for(action)
+    assert plan is not None
+    return notifier.execute_action_plan(plan, info, **kwargs)
+
+
 # ─────────────────────────────────────────────
-# Action dispatch (unchanged behaviour)
+# Action execution through the plan/result boundary
 # ─────────────────────────────────────────────
 def test_execute_open_and_stop_opens_browser_and_stops(monkeypatch) -> None:
     events: list[tuple[str, object]] = []
@@ -34,7 +41,7 @@ def test_execute_open_and_stop_opens_browser_and_stops(monkeypatch) -> None:
         lambda url, new=0: events.append(("open", url)),
     )
 
-    notifier.execute_action(
+    _execute(
         "open_and_stop",
         _info(),
         stop_fn=lambda: events.append(("stop", None)),
@@ -60,7 +67,7 @@ def test_execute_open_and_keep_opens_without_stopping(monkeypatch) -> None:
         lambda url, new=0: events.append(("open", url)),
     )
 
-    notifier.execute_action("open_and_keep", _info())
+    _execute("open_and_keep", _info())
 
     assert events == [
         ("toast", False),
@@ -76,7 +83,7 @@ def test_execute_notify_only_shows_open_button(monkeypatch) -> None:
         lambda _info, with_open_button=True: events.append(("toast", with_open_button)),
     )
 
-    notifier.execute_action("notify_only", _info())
+    _execute("notify_only", _info())
 
     assert events == [("toast", True)]
 
@@ -94,7 +101,7 @@ def test_execute_open_and_exit_uses_exit_callback(monkeypatch) -> None:
         lambda url, new=0: events.append(("open", url)),
     )
 
-    notifier.execute_action(
+    _execute(
         "open_and_exit",
         _info(),
         exit_fn=lambda: events.append(("exit", None)),
@@ -105,6 +112,39 @@ def test_execute_open_and_exit_uses_exit_callback(monkeypatch) -> None:
         ("open", "https://www.twitch.tv/hello"),
         ("exit", None),
     ]
+
+
+def test_open_and_stop_keeps_monitoring_when_browser_launch_fails(monkeypatch) -> None:
+    events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        notifier,
+        "_toast",
+        lambda _info, with_open_button=True: events.append(("toast", with_open_button)),
+    )
+    monkeypatch.setattr(notifier, "open_url", lambda *_a, **_k: False)
+
+    _execute(
+        "open_and_stop",
+        _info(),
+        stop_fn=lambda: events.append(("stop", None)),
+    )
+
+    assert events == [("toast", False), ("toast", True)]
+
+
+def test_open_and_exit_does_not_exit_when_browser_launch_fails(monkeypatch) -> None:
+    exit_called: list[bool] = []
+    monkeypatch.setattr(notifier, "_toast", lambda *_a, **_k: None)
+    monkeypatch.setattr(notifier, "open_url", lambda *_a, **_k: False)
+
+    result = _execute(
+        "open_and_exit",
+        _info(),
+        exit_fn=lambda: exit_called.append(True),
+    )
+
+    assert result.succeeded is False
+    assert exit_called == []
 
 
 def test_open_url_falls_back_to_windows_shell(monkeypatch) -> None:
@@ -120,6 +160,47 @@ def test_open_url_falls_back_to_windows_shell(monkeypatch) -> None:
 
     assert notifier.open_url("https://www.twitch.tv/hello") is True
     assert events == [("startfile", "https://www.twitch.tv/hello")]
+
+
+def test_linux_toast_open_button_opens_when_action_is_clicked(monkeypatch) -> None:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return MagicMock(returncode=0, stdout="watch\n")
+
+    monkeypatch.setattr(notifier.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(notifier.subprocess, "run", fake_run)
+    opened: list[str] = []
+    monkeypatch.setattr(
+        notifier,
+        "open_url",
+        lambda url, **_kwargs: opened.append(url) or True,
+    )
+
+    notifier._toast_linux(_info(), with_open_button=True)
+
+    assert opened == ["https://www.twitch.tv/hello"]
+    assert "--wait" in calls[0][0]
+    assert f"--action=watch={notifier.tr('notify.watch_now')}" in calls[0][0]
+    assert calls[0][0][-1] == "Live now"
+
+
+def test_linux_toast_falls_back_when_actions_are_unsupported(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return MagicMock(returncode=1, stdout="")
+
+    monkeypatch.setattr(notifier.subprocess, "run", fake_run)
+    monkeypatch.setattr(notifier.platform, "system", lambda: "Linux")
+
+    notifier._toast_linux(_info(), with_open_button=True)
+
+    assert len(calls) == 2
+    assert any(item.startswith("--action=watch=") for item in calls[0])
+    assert not any(item.startswith("--action=watch=") for item in calls[1])
 
 
 # ─────────────────────────────────────────────
@@ -371,7 +452,7 @@ def test_execute_open_and_keep_passes_browser_settings(monkeypatch) -> None:
     monkeypatch.setattr(notifier, "open_url", fake_open)
 
     settings = {"enabled": True, "browser_path": "chrome"}
-    notifier.execute_action("open_and_keep", _info(), browser_settings=settings)
+    _execute("open_and_keep", _info(), browser_settings=settings)
 
     assert captured["url"] == "https://www.twitch.tv/hello"
     assert captured["settings"] is settings

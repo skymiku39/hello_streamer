@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from stream_monitor.action_plan import ActionPlan
 from stream_monitor.browser_settings_model import BrowserSettings
 from stream_monitor.domain import ChannelEntry
 from stream_monitor.fetcher.base import StreamInfo
+from stream_monitor.platform_ports import PlatformServices
 
 
 class ChannelRowView(Protocol):
@@ -30,7 +32,13 @@ class AppEventSink(Protocol):
     config: dict[str, Any]
 
     @property
+    def platform_services(self) -> PlatformServices: ...
+
+    @property
     def monitor_mode(self) -> str: ...
+
+    @property
+    def monitor_generation(self) -> int: ...
 
     @property
     def wake_verify_active(self) -> bool: ...
@@ -56,9 +64,10 @@ class AppEventSink(Protocol):
 
     def execute_live_action(
         self,
-        action: str,
+        action: ActionPlan | str,
         info: StreamInfo,
         browser_settings: BrowserSettings | dict[str, Any] | None,
+        generation: int | None = None,
     ) -> None: ...
 
     def handle_channel_offline(
@@ -72,3 +81,5 @@ class AppEventSink(Protocol):
     def maybe_restart_dead_monitor(self) -> None: ...
 
     def save_status_cache(self) -> None: ...
+
+    def on_monitor_cycle_complete(self) -> None: ...

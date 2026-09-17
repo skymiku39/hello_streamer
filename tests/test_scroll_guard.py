@@ -68,20 +68,51 @@ class _FakeRoot:
 def test_scroll_guard_defers_until_idle() -> None:
     root = _FakeRoot()
     idle_calls: list[str] = []
+    now = [0.0]
     guard = ScrollRepaintGuard(
         _FakeScrollFrame(),
         root,
         idle_ms=150,
         on_idle=lambda: idle_calls.append("idle"),
+        clock=lambda: now[0],
     )
 
     assert guard.repaints_deferred is False
     guard._on_scroll_activity()
     assert guard.repaints_deferred is True
 
+    now[0] = 0.150
     root.run_idle()
     assert guard.repaints_deferred is False
     assert idle_calls == ["idle"]
+
+
+def test_scroll_guard_coalesces_scroll_activity_without_restarting_timer() -> None:
+    root = _FakeRoot()
+    now = [0.0]
+    frame = _FakeScrollFrame()
+    guard = ScrollRepaintGuard(frame, root, idle_ms=150, clock=lambda: now[0])
+
+    guard._on_scroll_activity()
+    first_timer_count = len(root._callbacks)
+    now[0] = 0.05
+    guard._on_scroll_activity()
+
+    assert len(root._callbacks) == first_timer_count
+    assert root._cancelled == set()
+
+
+def test_scroll_guard_does_not_force_synchronous_canvas_repaint() -> None:
+    root = _FakeRoot()
+    now = [0.0]
+    frame = _FakeScrollFrame()
+    guard = ScrollRepaintGuard(frame, root, idle_ms=150, clock=lambda: now[0])
+
+    guard._on_scroll_activity()
+    now[0] = 0.150
+    root.run_idle()
+
+    assert frame._parent_canvas.update_calls == 0
 
 
 def test_yscroll_wrapper_marks_scroll_active() -> None:

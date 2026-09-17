@@ -2,12 +2,14 @@
 
 from stream_monitor.domain.channel import (
     ChannelEntry,
+    ChannelState,
     ChannelStatus,
     OfflineInfo,
 )
 
 __all__ = [
     "ChannelEntry",
+    "ChannelState",
     "ChannelStatus",
     "OfflineInfo",
 ]

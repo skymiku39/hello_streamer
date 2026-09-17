@@ -13,12 +13,14 @@ from stream_monitor.fetcher.base import StreamInfo
 class ChannelWentLive:
     entry: ChannelEntry
     info: StreamInfo
+    cycle_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class ChannelWentOffline:
     entry: ChannelEntry
     offline_info: OfflineInfo
+    cycle_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,12 +28,14 @@ class PollActivity:
     entry: ChannelEntry
     phase: str
     display_name: str
+    cycle_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class PartialStatusUpdate:
     statuses: dict[str, Any]
     display_names: dict[str, str]
+    cycle_id: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "statuses", dict(self.statuses))
@@ -40,13 +44,14 @@ class PartialStatusUpdate:
 
 @dataclass(frozen=True, slots=True)
 class PollWaiting:
-    pass
+    cycle_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class PollStatusUpdate:
     statuses: dict[str, Any]
     display_names: dict[str, str]
+    cycle_id: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "statuses", dict(self.statuses))

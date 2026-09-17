@@ -5,6 +5,7 @@ from stream_monitor.monitor.deps import get_fetcher
 from stream_monitor.monitor.types import (
     _MIN_POLL_REST_S,
     ChannelEntry,
+    ChannelState,
     ChannelStatus,
     OfflineInfo,
     _live_cache_key,
@@ -15,6 +16,7 @@ from stream_monitor.monitor.types import (
 
 __all__ = [
     "ChannelEntry",
+    "ChannelState",
     "ChannelStatus",
     "Monitor",
     "OfflineInfo",

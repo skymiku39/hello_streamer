@@ -90,12 +90,12 @@ def test_heal_startup_rewrites_stale_exe_path(monkeypatch) -> None:
     monkeypatch.setattr(
         startup.sys,
         "executable",
-        r"D:\Tools\HelloStreamer-v1.1.9-windows-x64.exe",
+        r"D:\Tools\HelloStreamer-v1.2.0-windows-x64.exe",
     )
 
     assert startup.heal_startup_command_if_enabled() is True
     assert fake_winreg.values["StreamMonitor"] == (
-        r"D:\Tools\HelloStreamer-v1.1.9-windows-x64.exe --silent"
+        r"D:\Tools\HelloStreamer-v1.2.0-windows-x64.exe --silent"
     )
 
 

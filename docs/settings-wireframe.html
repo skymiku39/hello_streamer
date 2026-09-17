@@ -90,7 +90,7 @@ h1.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow
   <div class="panel-head">
     <div>
       <div class="panel-title">監控與觸發</div>
-      <div class="panel-sub">決定輪詢行為、開播時執行什麼動作</div>
+      <div class="panel-sub">決定輪詢行為、是否只跑一輪，以及開播時執行什麼動作</div>
     </div>
   </div>
 
@@ -107,11 +107,23 @@ h1.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow
       <div class="msub">config.monitor_mode = "watch"</div>
       <div class="msub" style="margin-top:4px">只更新狀態列；不通知、不開窗、不離線關窗</div>
     </div>
+    <div class="mopt2" id="mm-trigger-once" onclick="setMonitorMode('trigger_once')">
+      <div class="mradio"></div>
+      <div class="mname">監聽 + 觸發一次</div>
+      <div class="msub">config.monitor_mode = "trigger_once"</div>
+      <div class="msub" style="margin-top:4px">完成一輪後停止；本輪依設定通知與開窗</div>
+    </div>
+    <div class="mopt2" id="mm-watch-once" onclick="setMonitorMode('watch_once')">
+      <div class="mradio"></div>
+      <div class="mname">僅監聽一次</div>
+      <div class="msub">config.monitor_mode = "watch_once"</div>
+      <div class="msub" style="margin-top:4px">完成一輪後停止；本輪不通知、不開窗</div>
+    </div>
   </div>
 
   <div class="capbar">
-    <div class="capitem"><div class="capdot" style="background:#9ece6a"></div>trigger 時可用</div>
-    <div class="capitem"><div class="capdot" style="background:var(--color-border-secondary)"></div>watch 時 dim</div>
+    <div class="capitem"><div class="capdot" style="background:#9ece6a"></div>trigger / trigger_once 時可用</div>
+    <div class="capitem"><div class="capdot" style="background:var(--color-border-secondary)"></div>watch / watch_once 時 dim</div>
     <div class="cap-desc" id="mm-cap">目前：只監測 — action 與生命週期關閉不生效</div>
   </div>
 
@@ -301,10 +313,10 @@ h1.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow
   <div class="panel-head">
     <div>
       <div class="panel-title">頻道觸發覆寫</div>
-      <div class="panel-sub">每個頻道可獨立設為「只監測不觸發」，覆寫全局 trigger 設定</div>
+      <div class="panel-sub">每個頻道的眼睛按鈕獨立選擇觸發、僅監聽或僅監聽含通知；一次性模式由下方全域控制列負責</div>
     </div>
   </div>
-  <div class="dep-note">全局 <strong>watch</strong> 時，所有頻道都不觸發；全局 <strong>trigger</strong> 時，下列 <strong>monitor_only</strong> 頻道仍只更新狀態。</div>
+  <div class="dep-note">全局 <strong>watch / watch_once</strong> 時，所有頻道都不觸發；全局 <strong>trigger / trigger_once</strong> 時，單頻道仍可用眼睛按鈕選擇僅監聽或僅監聽含通知。</div>
   <div class="chlist" id="ch-summary"></div>
 </div>
 
@@ -355,9 +367,15 @@ function setMonitorMode(m){
   monitorMode=m;
   document.getElementById('mm-trigger').classList.toggle('active',m==='trigger');
   document.getElementById('mm-watch').classList.toggle('active',m==='watch');
-  document.getElementById('mm-cap').textContent=m==='trigger'
-    ? '目前：監聽+觸發 — action 與生命週期可依下方設定生效'
-    : '目前：只監測 — action 與生命週期設定保留但不執行';
+  document.getElementById('mm-trigger-once').classList.toggle('active',m==='trigger_once');
+  document.getElementById('mm-watch-once').classList.toggle('active',m==='watch_once');
+  document.getElementById('mm-cap').textContent=(m==='trigger'||m==='trigger_once')
+    ? (m==='trigger_once'
+      ? '目前：監聽+觸發一次 — 完成一輪後停止，action 與生命週期可依設定生效'
+      : '目前：監聽+觸發 — action 與生命週期可依下方設定生效')
+    : (m==='watch_once'
+      ? '目前：僅監聽一次 — 完成一輪後停止，action 與生命週期不執行'
+      : '目前：只監測 — action 與生命週期設定保留但不執行');
   applyCrossDeps();
   render();
 }
@@ -400,7 +418,7 @@ function setBrowserMode(m){
 }
 
 function isPure(){ return browserMode==='2-1' && mainOn; }
-function isTrigger(){ return monitorMode==='trigger'; }
+function isTrigger(){ return monitorMode==='trigger'||monitorMode==='trigger_once'; }
 function actionOpensBrowser(){
   var a=document.getElementById('action-sel').value;
   return a==='open_and_stop'||a==='open_and_keep'||a==='open_and_exit';
@@ -435,17 +453,17 @@ function applyCrossDeps(){
 
   var notes=[];
   if(!mainOn) notes.push('browser_settings.enabled = false → 瀏覽器細項全部不執行');
-  if(!trig) notes.push('monitor_mode = watch → action 與 close_on_* 不執行（設定仍寫入 config）');
+  if(!trig) notes.push('monitor_mode = '+monitorMode+' → action 與 close_on_* 不執行（設定仍寫入 config）');
   if(mainOn&&pure&&trig&&actionOpensBrowser()) notes.push('trigger + 2-1 + 開窗 action → 生命週期三項可生效');
   if(mainOn&&trig&&browserMode!=='2-1'&&actionOpensBrowser()) notes.push('非 2-1 模式開窗 → 無 HWND 追蹤，close_on_* 不生效');
-  if(trig&&monitorOnlyChannels.length) notes.push(monitorOnlyChannels.length+' 個頻道 monitor_only → 該頻道略過 action 與 close_on_offline');
+  if(trig&&monitorOnlyChannels.length) notes.push(monitorOnlyChannels.length+' 個頻道僅監聽 → 該頻道略過 action 與 close_on_offline');
   document.getElementById('browser-dep-note').innerHTML=notes.length
     ? '<strong>跨設定依賴：</strong>'+notes.join(' · ')
     : '';
 
   var ch=document.getElementById('ch-summary');
   ch.innerHTML=monitorOnlyChannels.map(function(c){
-    return '<div class="chitem"><span class="badge mo">monitor_only</span><span>'+c.display+'</span><span style="margin-left:auto;font-family:var(--font-mono);font-size:10px">'+c.platform+'</span></div>';
+    return '<div class="chitem"><span class="badge mo">僅監聽</span><span>'+c.display+'</span><span style="margin-left:auto;font-family:var(--font-mono);font-size:10px">'+c.platform+'</span></div>';
   }).join('')+'<div style="margin-top:8px;font-size:10px;color:var(--color-text-secondary)">其餘 14 個頻道跟隨全局 monitor_mode / action</div>';
 }
 

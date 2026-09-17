@@ -35,6 +35,8 @@ def test_load_bad_json_uses_defaults(tmp_path, monkeypatch) -> None:
     _use_config_path(monkeypatch, path)
 
     assert config_manager.load() == _migrated_defaults()
+    assert path.exists()
+    assert (tmp_path / "config.json.corrupt").read_text(encoding="utf-8") == "{"
 
 
 def test_load_validates_config_values(tmp_path, monkeypatch) -> None:
@@ -137,6 +139,29 @@ def test_load_preserves_monitor_only_field(tmp_path, monkeypatch) -> None:
     assert config["channels"][3]["monitor_only"] is True
 
 
+def test_load_preserves_channel_mode_for_notification_monitor(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "channels": [
+                    {"platform": "twitch", "name": "notify", "channel_mode": "notify"},
+                    {"platform": "twitch", "name": "monitor", "channel_mode": "monitor"},
+                    {"platform": "twitch", "name": "bad", "channel_mode": "invalid"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    assert config_manager.load()["channels"] == [
+        {"platform": "twitch", "name": "notify", "channel_mode": "notify"},
+        {"platform": "twitch", "name": "monitor", "channel_mode": "monitor"},
+        {"platform": "twitch", "name": "bad"},
+    ]
+
+
 def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
     path = tmp_path / "nested" / "config.json"
     _use_config_path(monkeypatch, path)
@@ -171,6 +196,14 @@ def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
         ],
         "check_interval": 30,
         "action": "notify_only",
+        "trigger_settings": {
+            "notify_on_live": True,
+            "open_on_live": False,
+            "after_open": "none",
+            "notify_on_upcoming": True,
+            "open_on_upcoming": False,
+            "notify_on_open_failure": True,
+        },
         "monitor_mode": "trigger",
         "run_on_startup": True,
         "minimize_to_tray": False,
@@ -180,6 +213,49 @@ def test_save_is_atomic_and_reloadable(tmp_path, monkeypatch) -> None:
         "viewer_engagement": dict(config_manager.DEFAULT_VIEWER_ENGAGEMENT),
         "channel_status_cache": {},
     }
+
+
+def test_legacy_action_migrates_to_independent_trigger_settings(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"action": "open_and_exit", "config_format_version": 1}),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    config = config_manager.load()
+
+    assert config["trigger_settings"] == {
+        "notify_on_live": True,
+        "open_on_live": True,
+        "after_open": "exit_app",
+        "notify_on_upcoming": True,
+        "open_on_upcoming": False,
+        "notify_on_open_failure": True,
+    }
+
+
+def test_custom_trigger_settings_are_normalized_without_legacy_action_override() -> None:
+    config = config_manager._finalize_config(
+        {
+            "action": "open_and_stop",
+            "trigger_settings": {
+                "notify_on_live": False,
+                "open_on_live": True,
+                "after_open": "exit_app",
+                "notify_on_upcoming": False,
+                "open_on_upcoming": True,
+                "notify_on_open_failure": False,
+            },
+        },
+        apply_legacy_migration=False,
+    )
+
+    assert config["trigger_settings"]["notify_on_live"] is False
+    assert config["trigger_settings"]["open_on_upcoming"] is True
+    assert config["trigger_settings"]["after_open"] == "exit_app"
 
 
 def test_load_normalizes_browser_settings(tmp_path, monkeypatch) -> None:
@@ -240,6 +316,17 @@ def test_load_watch_monitor_mode(tmp_path, monkeypatch) -> None:
     _use_config_path(monkeypatch, path)
 
     assert config_manager.load()["monitor_mode"] == "watch"
+
+
+@pytest.mark.parametrize("mode", ["trigger_once", "watch_once"])
+def test_load_preserves_global_one_shot_monitor_mode(
+    tmp_path, monkeypatch, mode
+) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"monitor_mode": mode}), encoding="utf-8")
+    _use_config_path(monkeypatch, path)
+
+    assert config_manager.load()["monitor_mode"] == mode
 
 
 def test_load_normalizes_close_on_offline(tmp_path, monkeypatch) -> None:

@@ -9,6 +9,7 @@ from typing import Any
 from stream_monitor.monitor import deps as _monitor_deps
 from stream_monitor.monitor.types import (
     ChannelEntry,
+    ChannelState,
     ChannelStatus,
     _youtube_upcoming_is_usable,
 )
@@ -21,17 +22,21 @@ class WakeVerifyMixin:
 
     @staticmethod
     def _status_bucket(status: Any) -> str:
+        if isinstance(status, ChannelStatus):
+            return status.state.value
         if status is True or status == "live":
             return "live"
         if status == "upcoming":
             return "upcoming"
-        return "offline"
+        if status is False or status == "offline":
+            return "offline"
+        return ChannelState.UNKNOWN.value
 
     def _cached_status_bucket(self, entry: ChannelEntry) -> str:
         with self._lock:
             prev = self._last_status.get(entry.key)
         if prev is None:
-            return "offline"
+            return ChannelState.UNKNOWN.value
         if isinstance(prev, ChannelStatus):
             # TIDUS stores schedulable waiting rooms on the offline row
             # (status=False + upcoming_url); fallback uses status="upcoming".

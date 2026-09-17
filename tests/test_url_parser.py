@@ -1,4 +1,4 @@
-from stream_monitor.url_parser import ParsedChannel, parse_url
+from stream_monitor.url_parser import ParsedChannel, parse_channel_url, parse_url
 
 
 def test_parse_youtube_bare_handle_shorthand() -> None:
@@ -121,6 +121,10 @@ def test_parse_youtube_watch_url_resolves_channel(monkeypatch) -> None:
         platform="youtube",
         name="LofiGirl",
     )
+
+
+def test_parse_channel_url_never_resolves_watch_url() -> None:
+    assert parse_channel_url("https://www.youtube.com/watch?v=abc123") is None
 
 
 def test_parse_rejects_youtube_shorts_and_live_pages() -> None:

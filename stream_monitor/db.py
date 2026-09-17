@@ -8,7 +8,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from stream_monitor import base_dir
+from stream_monitor.portable_storage import portable_paths
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def _style_key(style: str) -> str:
 
 
 def _db_path() -> Path:
-    return base_dir() / "seen_videos.db"
+    return portable_paths().database_file
 
 
 class SeenVideoDB:
@@ -40,13 +40,26 @@ class SeenVideoDB:
         self._path = path or _db_path()
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._closed = False
         self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
+        # The monitor serialises access to its connection, but another process
+        # (or a portable copy started during an update) can still briefly hold
+        # SQLite's file lock. A bounded wait avoids an immediate lock failure.
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._ensure_schema()
 
+    def __enter__(self) -> "SeenVideoDB":
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+        self.close()
+
     def close(self) -> None:
         with self._lock:
-            self._conn.close()
+            if not self._closed:
+                self._conn.close()
+                self._closed = True
 
     def _ensure_schema(self) -> None:
         if not self._table_exists("seen_videos"):
@@ -99,6 +112,8 @@ class SeenVideoDB:
 
     def is_seen(self, video_id: str, style: str) -> bool:
         with self._lock:
+            if self._closed:
+                return False
             row = self._conn.execute(
                 "SELECT 1 FROM seen_videos WHERE video_id = ? AND style = ?",
                 (video_id, _style_key(style)),
@@ -115,6 +130,8 @@ class SeenVideoDB:
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._lock:
+            if self._closed:
+                return
             self._conn.execute(
                 "INSERT OR IGNORE INTO seen_videos "
                 "(video_id, platform, channel, style, title, first_seen) "
@@ -127,6 +144,8 @@ class SeenVideoDB:
         """Delete records older than *days*. Return number of rows removed."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         with self._lock:
+            if self._closed:
+                return 0
             cursor = self._conn.execute(
                 "DELETE FROM seen_videos WHERE first_seen < ?", (cutoff,)
             )

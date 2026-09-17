@@ -31,7 +31,9 @@ _VALID_STATES = ("live", "upcoming", "offline")
 
 def _status_state(status: Any) -> str | None:
     """Map a ChannelStatus / primitive into a serializable state token."""
-    value = status.status if isinstance(status, ChannelStatus) else status
+    if isinstance(status, ChannelStatus):
+        return status.state.value if not status.is_unknown else None
+    value = status
     if value is True or value == "live":
         return "live"
     if value == "upcoming":

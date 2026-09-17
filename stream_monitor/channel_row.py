@@ -24,17 +24,25 @@ from stream_monitor.app_ui import (
     _tooltip,
     _tooltip_tr,
 )
+from stream_monitor.channel_policy import (
+    CHANNEL_MODE_MONITOR,
+    CHANNEL_MODE_NOTIFY,
+    CHANNEL_MODE_TRIGGER,
+    apply_channel_mode,
+    channel_mode_for,
+    next_channel_mode,
+)
 from stream_monitor.channel_reorder import LONG_PRESS_CANCEL_PX, LONG_PRESS_MS
 from stream_monitor.i18n import tr
-from stream_monitor.monitor import ChannelStatus
+from stream_monitor.monitor import ChannelState, ChannelStatus
 from stream_monitor.notifier import open_url
 from stream_monitor.util import channel_key, channel_page_url
 
 logger = logging.getLogger(__name__)
 
 
-def is_live_state(state: bool | str | None) -> bool:
-    return state is True or state == "live"
+def is_live_state(state: bool | str | ChannelState | None) -> bool:
+    return state is True or state == ChannelState.LIVE or state == "live"
 
 
 class ChannelRow(ctk.CTkFrame):
@@ -222,7 +230,8 @@ class ChannelRow(ctk.CTkFrame):
         # this channel. Coupled to the pause/resume toggle:
         #   • clicking the eye while paused → unpauses straight into monitor-only
         #   • clicking the eye while triggering → switches to monitor-only
-        #   • clicking the eye while monitor-only → switches back to triggering
+        #   • clicking the eye while monitor-only → switches to notify-only
+        #   • clicking the eye while notify-only → switches back to triggering
         #   • clicking pause/resume always clears monitor-only (resume = full)
         self.monitor_only_btn = ctk.CTkButton(
             self,
@@ -398,38 +407,39 @@ class ChannelRow(ctk.CTkFrame):
     def _refresh_monitor_only_tip(self) -> None:
         if not hasattr(self, "_monitor_only_tip"):
             return
-        if self.channel.get("monitor_only", False) and self.channel.get(
-            "enabled", True
-        ):
-            self._monitor_only_tip.set_text(key="tooltip.row.monitor_only.disable")
+        if not self.channel.get("enabled", True):
+            self._monitor_only_tip.set_text(key="tooltip.row.monitor_mode.enable")
         else:
-            self._monitor_only_tip.set_text(key="tooltip.row.monitor_only.enable")
+            mode = channel_mode_for(self.channel)
+            tip_key = {
+                CHANNEL_MODE_TRIGGER: "tooltip.row.monitor_mode.trigger",
+                CHANNEL_MODE_MONITOR: "tooltip.row.monitor_mode.monitor",
+                CHANNEL_MODE_NOTIFY: "tooltip.row.monitor_mode.notify",
+            }[mode]
+            self._monitor_only_tip.set_text(key=tip_key)
 
     def _on_toggle_click(self) -> None:
         enabled = not self.channel.get("enabled", True)
         self.channel["enabled"] = enabled
-        # Pause/resume always clears monitor-only — resume goes back into
-        # "full triggering" mode and pause resets the next-resume baseline.
+        # Pause/resume always returns the channel to the full-trigger mode.
         self.channel["monitor_only"] = False
+        apply_channel_mode(self.channel, CHANNEL_MODE_TRIGGER)
         # enabled really changed → we want a clean visual (and the polling
         # backend is going to give us a fresh status reading anyway).
         self._apply_enabled_visual(reset_status=True)
         self._on_toggle_enabled()
 
     def _on_monitor_only_click(self) -> None:
-        # Toggling the eye always implies the channel must be enabled — if
-        # the user clicks it from a paused state, they're effectively
-        # un-pausing into monitor-only mode.
+        # The compact eye control is a three-state selector. A paused row can
+        # be re-enabled directly into silent monitoring, preserving the old
+        # convenient shortcut.
         was_enabled = self.channel.get("enabled", True)
-        currently_monitor_only = was_enabled and self.channel.get(
-            "monitor_only", False
-        )
-        if currently_monitor_only:
-            self.channel["enabled"] = True
-            self.channel["monitor_only"] = False
+        if not was_enabled:
+            mode = CHANNEL_MODE_MONITOR
         else:
-            self.channel["enabled"] = True
-            self.channel["monitor_only"] = True
+            mode = next_channel_mode(channel_mode_for(self.channel))
+        self.channel["enabled"] = True
+        apply_channel_mode(self.channel, mode)
         # Crucial: when the channel was *already* enabled, we are only
         # flipping the trigger-suppression flag — the live/upcoming/offline
         # display the user is currently watching (and especially the
@@ -452,7 +462,8 @@ class ChannelRow(ctk.CTkFrame):
 
     def _apply_enabled_visual(self, reset_status: bool = True) -> None:
         enabled = self.channel.get("enabled", True)
-        monitor_only = bool(self.channel.get("monitor_only", False)) and enabled
+        channel_mode = channel_mode_for(self.channel)
+        active_mode = channel_mode if enabled else CHANNEL_MODE_TRIGGER
         if reset_status:
             self._reset_status_cache()
         if enabled:
@@ -488,23 +499,30 @@ class ChannelRow(ctk.CTkFrame):
                 fg_color="transparent",
             )
             self._set_link_tip_key("tooltip.row.link.paused")
-        self._apply_toggle_visual(enabled, monitor_only)
-        self._apply_monitor_only_visual(monitor_only, enabled)
+        self._apply_toggle_visual(enabled, active_mode)
+        self._apply_monitor_only_visual(active_mode, enabled)
         self._refresh_toggle_tip()
         self._refresh_monitor_only_tip()
         if reset_status and hasattr(self, "_status_tip"):
             self._status_tip.set_text("")
 
-    def _apply_monitor_only_visual(self, monitor_only: bool, enabled: bool) -> None:
-        """Color the eye button so it stands out when monitor-only is active."""
+    def _apply_monitor_only_visual(self, channel_mode: str, enabled: bool) -> None:
+        """Use distinct colors for silent and notification-capable monitoring."""
         if not hasattr(self, "monitor_only_btn"):
             return
-        if monitor_only:
+        if channel_mode == CHANNEL_MODE_MONITOR and enabled:
             self.monitor_only_btn.configure(
                 fg_color="#1565c0",
                 text_color="white",
                 border_color="#1565c0",
                 hover_color="#1976d2",
+            )
+        elif channel_mode == CHANNEL_MODE_NOTIFY and enabled:
+            self.monitor_only_btn.configure(
+                fg_color="#7c3aed",
+                text_color="white",
+                border_color="#a78bfa",
+                hover_color="#8b5cf6",
             )
         elif enabled:
             self.monitor_only_btn.configure(
@@ -523,7 +541,7 @@ class ChannelRow(ctk.CTkFrame):
                 hover_color="#243052",
             )
 
-    def _apply_toggle_visual(self, enabled: bool, monitor_only: bool) -> None:
+    def _apply_toggle_visual(self, enabled: bool, channel_mode: str) -> None:
         """Pick the pause/resume button's icon + accent so the user can see
         at a glance that this channel is being "watched but not triggered".
 
@@ -540,7 +558,7 @@ class ChannelRow(ctk.CTkFrame):
                 hover_color="#243052",
             )
             return
-        if monitor_only:
+        if channel_mode != CHANNEL_MODE_TRIGGER:
             self.toggle_btn.configure(
                 text="⏸",
                 border_color="#1565c0",
@@ -567,11 +585,11 @@ class ChannelRow(ctk.CTkFrame):
         self._verification_pending = pending
 
         detail = status if isinstance(status, ChannelStatus) else None
-        state = detail.status if detail else status
+        state = detail.state if detail else status
         self._active_url = detail.url if detail else ""
         self._status_title = detail.title if detail else ""
 
-        if state is None:
+        if state is None or state == ChannelState.UNKNOWN or state == "unknown":
             self._status_state = None
             self._status_countdown = ""
             self._status_elapsed = ""

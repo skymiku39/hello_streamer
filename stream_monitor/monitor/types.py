@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from stream_monitor.domain import ChannelEntry, ChannelStatus, OfflineInfo
+from stream_monitor.domain import ChannelEntry, ChannelState, ChannelStatus, OfflineInfo
 from stream_monitor.fetcher.base import FinishedVod, StreamInfo, VideoItem
 from stream_monitor.util import (
     parse_iso_datetime,
@@ -16,6 +16,7 @@ from stream_monitor.util import (
 
 __all__ = [
     "ChannelEntry",
+    "ChannelState",
     "ChannelStatus",
     "OfflineInfo",
 ]
@@ -223,7 +224,7 @@ def poll_rest_overshoot_seconds(
 def status_looks_live(status: Any) -> bool:
     """True when a cached / seeded status represents an active live stream."""
     if isinstance(status, ChannelStatus):
-        return status.status is True or status.status == "live"
+        return status.is_live
     return status is True or status == "live"
 
 

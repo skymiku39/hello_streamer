@@ -1,4 +1,8 @@
-"""觸發行為 — 開播偵測後的四種動作 + 桌面通知（Windows Toast / Linux notify-send）。"""
+"""Platform effects for notifications, browser launches, and window control.
+
+Action policy and concurrency live in ``action_plan`` / ``action_coordinator``;
+this module remains the platform-facing facade used by the executor.
+"""
 
 from __future__ import annotations
 
@@ -9,12 +13,20 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import webbrowser
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import stream_monitor.browser_win32 as _browser_win32
 from stream_monitor import channel_policy
+from stream_monitor.action_executor import (
+    ActionCallback,
+    ActionExecutor,
+    ActionResult,
+    CancellationCheck,
+)
+from stream_monitor.action_plan import ActionPlan
 from stream_monitor.browser_settings_model import (
     BrowserSettings,
     coerce_browser_settings,
@@ -22,7 +34,14 @@ from stream_monitor.browser_settings_model import (
 from stream_monitor.chrome_prefs import merge_tab_discarding_exceptions
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
-from stream_monitor.url_parser import parse_url
+from stream_monitor.platform_adapters import (
+    BrowserAdapter,
+    NotificationAdapter,
+    PowerPolicyAdapter,
+    WindowManagerAdapter,
+)
+from stream_monitor.platform_ports import PlatformServices
+from stream_monitor.url_parser import parse_channel_url
 
 _BW_PATCHABLE = (
     "_apply_new_browser_window_settings_async",
@@ -112,8 +131,6 @@ from stream_monitor.viewer_engagement_model import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-ActionCallback = Callable[[], None]
-
 # Process-wide viewer-engagement assist config (mirrors the module-global Win32
 # window tracking below; browser launching is inherently process-global). Set
 # by the App via ``configure_viewer_engagement`` and consulted when a Twitch URL
@@ -122,6 +139,7 @@ _VIEWER_ENGAGEMENT: ViewerEngagementSettings | None = None
 # Twitch URLs currently holding a keep-awake request, so we release it once the
 # last engagement window we opened is closed.
 _ENGAGEMENT_AWAKE_URLS: set[str] = set()
+_ENGAGEMENT_AWAKE_SINCE: dict[str, float] = {}
 _ENGAGEMENT_AWAKE_LOCK = threading.Lock()
 
 
@@ -146,6 +164,7 @@ def _release_engagement_keep_awake(url: str) -> None:
     with _ENGAGEMENT_AWAKE_LOCK:
         if url in _ENGAGEMENT_AWAKE_URLS:
             _ENGAGEMENT_AWAKE_URLS.discard(url)
+            _ENGAGEMENT_AWAKE_SINCE.pop(url, None)
             if not _ENGAGEMENT_AWAKE_URLS:
                 set_system_keep_awake(False)
 
@@ -155,6 +174,7 @@ def _release_engagement_keep_awake(url: str) -> None:
 # names from ``notifier``, so the wrappers transparently apply everywhere.
 _close_browser_window_for_url_impl = close_browser_window_for_url
 _close_all_tracked_windows_impl = close_all_tracked_windows
+_prune_off_topic_tracked_windows_impl = prune_off_topic_tracked_windows
 
 
 def close_browser_window_for_url(
@@ -169,7 +189,28 @@ def close_all_tracked_windows() -> int:
     closed = _close_all_tracked_windows_impl()
     with _ENGAGEMENT_AWAKE_LOCK:
         _ENGAGEMENT_AWAKE_URLS.clear()
+        _ENGAGEMENT_AWAKE_SINCE.clear()
     set_system_keep_awake(False)
+    return closed
+
+
+def prune_off_topic_tracked_windows(*, min_age_s: float = 6.0) -> int:
+    """Prune browser chrome and release keep-awake for manually closed HWNDs."""
+    closed = _prune_off_topic_tracked_windows_impl(min_age_s=min_age_s)
+    now = time.monotonic()
+    with _ENGAGEMENT_AWAKE_LOCK:
+        candidates = [
+            (url, _ENGAGEMENT_AWAKE_SINCE.get(url, 0.0))
+            for url in _ENGAGEMENT_AWAKE_URLS
+        ]
+    for url, since in candidates:
+        # Give the post-launch worker time to discover the HWND before treating
+        # an empty bucket as a user-closed window.
+        if (
+            now - since >= max(min_age_s, 0.0)
+            and not tracked_hwnds_for_url(url)
+        ):
+            _release_engagement_keep_awake(url)
     return closed
 
 # Chromium switches that stop a backgrounded / occluded Twitch tab from being
@@ -297,13 +338,23 @@ def _slugify_channel(value: str, *, max_len: int = 64) -> str:
     return cleaned[:max_len]
 
 
-def _derive_channel_profile_subdir(url: str) -> str | None:
+def _derive_channel_profile_subdir(
+    url: str,
+    profile_hint: tuple[str, str] | None = None,
+) -> str | None:
     """Return a per-channel sub-folder name (e.g. ``twitch_kaicenat``) or None.
 
     Falls back to None when the URL doesn't match a known platform pattern;
     the caller should then keep using the base user_data_dir as-is.
     """
-    parsed = parse_url(url)
+    parsed = (
+        None
+        if profile_hint is not None
+        else parse_channel_url(url)
+    )
+    if profile_hint is not None:
+        platform_name, channel_name = profile_hint
+        return f"{_slugify_channel(platform_name)}_{_slugify_channel(channel_name)}"
     if parsed is None:
         return None
     return f"{_slugify_channel(parsed.platform)}_{_slugify_channel(parsed.name)}"
@@ -375,7 +426,10 @@ def browser_isolation_available(
 
 
 def _resolve_effective_user_data_dir(
-    url: str, base_dir: str, per_channel: bool
+    url: str,
+    base_dir: str,
+    per_channel: bool,
+    profile_hint: tuple[str, str] | None = None,
 ) -> str:
     """Pick the actual --user-data-dir path to feed the browser.
 
@@ -404,7 +458,7 @@ def _resolve_effective_user_data_dir(
     if not per_channel:
         return base_dir
 
-    subdir = _derive_channel_profile_subdir(url)
+    subdir = _derive_channel_profile_subdir(url, profile_hint)
     if not subdir:
         return base_dir
     expanded = Path(os.path.expandvars(os.path.expanduser(base_dir)))
@@ -566,18 +620,21 @@ def _apply_viewer_engagement_to_launch(
     url: str,
     effective_settings: dict[str, Any],
     effective_user_data_dir: str,
-) -> None:
+    *,
+    manage: bool = True,
+) -> bool:
     """Adjust launch settings for the Twitch watch-credit assist (in place).
 
     A minimised / taskbar-hidden window reads as a background tab to Twitch, so
     when the assist is enabled for a Twitch URL we keep the window visible and
-    optionally bring it to the front. We also hold a system keep-awake request
-    while the window is open, and (for a dedicated profile) add twitch.tv to
-    Chrome's Memory Saver allowlist so the tab is not frozen.
+    optionally bring it to the front.  The keep-awake request is registered
+    separately, only after a managed browser process starts successfully, and
+    (for a dedicated profile) twitch.tv is added to Chrome's Memory Saver
+    allowlist so the tab is not frozen.
     """
     engagement = _active_viewer_engagement()
     if engagement is None or not is_twitch_url(url):
-        return
+        return False
     if engagement.force_visible:
         effective_settings["minimized"] = False
         effective_settings["hide_from_taskbar"] = False
@@ -586,10 +643,6 @@ def _apply_viewer_engagement_to_launch(
         effective_settings["foreground_hold_seconds"] = (
             engagement.foreground_hold_seconds
         )
-    if engagement.keep_system_awake:
-        with _ENGAGEMENT_AWAKE_LOCK:
-            _ENGAGEMENT_AWAKE_URLS.add(url)
-        set_system_keep_awake(True)
     if engagement.whitelist_performance and effective_user_data_dir:
         try:
             merge_tab_discarding_exceptions(effective_user_data_dir)
@@ -599,6 +652,18 @@ def _apply_viewer_engagement_to_launch(
                 "allowlist for %s",
                 effective_user_data_dir,
             )
+    # User-initiated row opens are intentionally unmanaged and must not leave
+    # a process-wide keep-awake request behind.  The request is registered only
+    # after Popen succeeds by the caller below.
+    return bool(manage and engagement.keep_system_awake)
+
+
+def _register_engagement_keep_awake(url: str) -> None:
+    """Register a successful managed Twitch launch for keep-awake tracking."""
+    with _ENGAGEMENT_AWAKE_LOCK:
+        _ENGAGEMENT_AWAKE_URLS.add(url)
+        _ENGAGEMENT_AWAKE_SINCE[url] = time.monotonic()
+    set_system_keep_awake(True)
 
 
 def _wants_geometry_only_fixup(
@@ -622,6 +687,7 @@ def _open_with_browser_settings(
     *,
     title_hints: tuple[str, ...] = (),
     manage: bool = True,
+    profile_hint: tuple[str, str] | None = None,
 ) -> bool:
     """Spawn the configured browser with CLI args.
 
@@ -648,12 +714,18 @@ def _open_with_browser_settings(
     base_user_data_dir = (settings.get("user_data_dir") or "").strip()
     per_channel = bool(settings.get("per_channel_profile", True))
     effective_user_data_dir = _resolve_effective_user_data_dir(
-        url, base_user_data_dir, per_channel
+        url,
+        base_user_data_dir,
+        per_channel,
+        profile_hint,
     )
     effective_settings["user_data_dir"] = effective_user_data_dir
 
-    _apply_viewer_engagement_to_launch(
-        url, effective_settings, effective_user_data_dir
+    keep_awake_requested = _apply_viewer_engagement_to_launch(
+        url,
+        effective_settings,
+        effective_user_data_dir,
+        manage=manage,
     )
 
     args = _build_browser_args(url, effective_settings)
@@ -698,6 +770,12 @@ def _open_with_browser_settings(
     want_window_management = (
         _is_windows() and new_window_expected and isolation_available and manage
     )
+    keep_awake_after_launch = keep_awake_requested and want_window_management
+    if keep_awake_requested and not want_window_management:
+        logger.warning(
+            "Viewer engagement keep-awake skipped: the browser launch is not "
+            "a managed dedicated window"
+        )
     want_geometry_only_fixup = _wants_geometry_only_fixup(
         isolation_available=isolation_available,
         app_mode=app_mode,
@@ -792,6 +870,9 @@ def _open_with_browser_settings(
         logger.exception("Failed to spawn browser with custom settings: %s", args)
         return False
 
+    if keep_awake_after_launch:
+        _register_engagement_keep_awake(url)
+
     if class_name:
         if want_window_management:
             _unmark_url_closing(url)
@@ -833,6 +914,7 @@ def open_url(
     *,
     title_hints: tuple[str, ...] | list[str] | None = None,
     manage: bool = True,
+    profile_hint: tuple[str, str] | None = None,
 ) -> bool:
     """Open *url* in the user's browser.
 
@@ -860,6 +942,7 @@ def open_url(
             coerced,
             title_hints=hints_tuple,
             manage=manage,
+            profile_hint=profile_hint,
         ):
             return True
         custom_launch_failed = True
@@ -1060,7 +1143,7 @@ def _build_toast_text(info: StreamInfo) -> tuple[str, str]:
     return title, body
 
 
-def _toast_windows(info: StreamInfo, with_open_button: bool = True) -> None:
+def _toast_windows(info: StreamInfo, with_open_button: bool = True) -> bool:
     """Send a rich Windows Toast notification via winotify."""
     try:
         from winotify import Notification
@@ -1080,29 +1163,60 @@ def _toast_windows(info: StreamInfo, with_open_button: bool = True) -> None:
             toast.add_actions(label=tr("notify.watch_now"), launch=info.url)
 
         toast.show()
+        return True
     except Exception:
         logger.exception("Failed to show Windows toast notification")
+        return False
 
 
-def _toast_linux(info: StreamInfo, with_open_button: bool = True) -> None:
+def _toast_linux(info: StreamInfo, with_open_button: bool = True) -> bool:
     """Send a desktop notification via notify-send (Linux)."""
     try:
         title, body = _build_toast_text(info)
 
-        cmd = ["notify-send", "--app-name=Hello Streamer", title, body]
-        subprocess.run(cmd, check=False, timeout=5)
+        cmd = ["notify-send", "--app-name=Hello Streamer"]
+        if with_open_button:
+            # notify-send actions are optional in desktop notification daemons.
+            # When supported, --wait returns the action key so we can provide
+            # the same "watch now" affordance as the Windows toast.
+            cmd.extend(["--wait", f"--action=watch={tr('notify.watch_now')}"])
+        cmd.extend([title, body])
+        completed = subprocess.run(
+            cmd,
+            check=False,
+            timeout=5,
+            capture_output=with_open_button,
+            text=with_open_button,
+        )
+        if with_open_button and completed.returncode != 0:
+            # Older notification daemons may reject actions entirely. Keep the
+            # notification visible even when the optional open affordance is
+            # unavailable.
+            logger.warning(
+                "notify-send actions unsupported (exit=%s); retrying plain notification",
+                completed.returncode,
+            )
+            fallback = subprocess.run(
+                ["notify-send", "--app-name=Hello Streamer", title, body],
+                check=False,
+                timeout=5,
+            )
+            return fallback.returncode == 0
+        if with_open_button and (completed.stdout or "").strip() == "watch":
+            open_url(info.url, manage=False)
+        return completed.returncode == 0
     except FileNotFoundError:
         logger.warning("notify-send not found; desktop notifications unavailable")
     except Exception:
         logger.exception("Failed to show Linux notification")
+    return False
 
 
-def _toast(info: StreamInfo, with_open_button: bool = True) -> None:
+def _toast(info: StreamInfo, with_open_button: bool = True) -> bool:
     """Send a desktop notification (platform-dispatched)."""
     if platform.system() == "Windows":
-        _toast_windows(info, with_open_button)
-    else:
-        _toast_linux(info, with_open_button)
+        return _toast_windows(info, with_open_button)
+    return _toast_linux(info, with_open_button)
 
 
 def _title_hints_from_stream_info(info: StreamInfo) -> tuple[str, ...]:
@@ -1123,76 +1237,69 @@ def _title_hints_from_stream_info(info: StreamInfo) -> tuple[str, ...]:
     return tuple(parts)
 
 
-def open_and_stop(
-    info: StreamInfo,
-    stop_fn: ActionCallback,
-    browser_settings: BrowserSettings | dict[str, Any] | None = None,
-) -> None:
-    """Open stream URL in browser and stop monitoring."""
-    _toast(info, with_open_button=False)
-    open_url(
-        info.url,
-        browser_settings,
-        title_hints=_title_hints_from_stream_info(info),
-    )
-    stop_fn()
+def platform_services() -> PlatformServices:
+    """Build all desktop adapters used by the application composition root.
 
-
-def open_and_keep(
-    info: StreamInfo,
-    browser_settings: BrowserSettings | dict[str, Any] | None = None,
-) -> None:
-    """Open stream URL in browser, keep monitoring other channels."""
-    _toast(info, with_open_button=False)
-    open_url(
-        info.url,
-        browser_settings,
-        title_hints=_title_hints_from_stream_info(info),
+    The adapters resolve module functions at call time, so platform tests can
+    replace one backend without touching the domain or coordination layers.
+    """
+    return PlatformServices(
+        notification=NotificationAdapter(_toast),
+        browser=BrowserAdapter(
+            lambda info, browser_settings: open_url(
+                info.url,
+                browser_settings,
+                title_hints=_title_hints_from_stream_info(info),
+                profile_hint=(info.platform, info.channel),
+            )
+        ),
+        window=WindowManagerAdapter(
+            availability=browser_window_tracking_available,
+            close_url=close_browser_window_for_url,
+            close_everything=close_all_tracked_windows,
+            prune=prune_off_topic_tracked_windows,
+        ),
+        power=PowerPolicyAdapter(set_system_keep_awake),
     )
 
 
-def notify_only(info: StreamInfo) -> None:
-    """Show a toast notification with 'open' button — no auto-browser."""
-    _toast(info, with_open_button=True)
-
-
-def open_and_exit(
+def _execute_action_plan(
+    plan: ActionPlan,
     info: StreamInfo,
-    exit_fn: ActionCallback,
-    browser_settings: BrowserSettings | dict[str, Any] | None = None,
-) -> None:
-    """Open stream URL in browser, then exit the application."""
-    _toast(info, with_open_button=False)
-    open_url(
-        info.url,
-        browser_settings,
-        title_hints=_title_hints_from_stream_info(info),
-    )
-    exit_fn()
-
-
-def execute_action(
-    action: str,
-    info: StreamInfo,
+    *,
     stop_fn: ActionCallback | None = None,
     exit_fn: ActionCallback | None = None,
     browser_settings: BrowserSettings | dict[str, Any] | None = None,
-) -> None:
-    """Dispatch the configured action."""
-    logger.info(
-        "execute_action: action=%s platform=%s channel=%s url=%s",
-        action,
-        info.platform,
-        info.channel,
-        info.url,
+    is_cancelled: CancellationCheck | None = None,
+) -> ActionResult:
+    """Execute a plan through the notifier's platform adapters."""
+    return ActionExecutor(
+        ports=platform_services(),
+    ).execute(
+        plan,
+        info,
+        stop_fn=stop_fn,
+        exit_fn=exit_fn,
+        browser_settings=browser_settings,
+        is_cancelled=is_cancelled,
     )
-    if action == "open_and_stop":
-        open_and_stop(info, stop_fn or (lambda: None), browser_settings)
-    elif action == "open_and_keep":
-        open_and_keep(info, browser_settings)
-    elif action == "notify_only":
-        notify_only(info)
-    elif action == "open_and_exit":
-        open_and_exit(info, exit_fn or (lambda: None), browser_settings)
-    else:
-        logger.warning("Unknown action: %s", action)
+
+
+def execute_action_plan(
+    plan: ActionPlan,
+    info: StreamInfo,
+    *,
+    stop_fn: ActionCallback | None = None,
+    exit_fn: ActionCallback | None = None,
+    browser_settings: BrowserSettings | dict[str, Any] | None = None,
+    is_cancelled: CancellationCheck | None = None,
+) -> ActionResult:
+    """Execute a validated plan; used by ``ActionCoordinator``."""
+    return _execute_action_plan(
+        plan,
+        info,
+        stop_fn=stop_fn,
+        exit_fn=exit_fn,
+        browser_settings=browser_settings,
+        is_cancelled=is_cancelled,
+    )

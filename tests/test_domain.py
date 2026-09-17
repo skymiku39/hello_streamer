@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from stream_monitor.domain import ChannelEntry, ChannelStatus, OfflineInfo
+from stream_monitor.domain import ChannelEntry, ChannelState, ChannelStatus, OfflineInfo
 
 
 def test_channel_entry_normalizes_and_keys() -> None:
@@ -33,8 +33,9 @@ def test_channel_status_state_helpers() -> None:
 
     # "live" string form is normalised to live as well.
     assert ChannelStatus(status="live").is_live
-    # None (unknown) is treated as offline.
-    assert ChannelStatus(status=None).is_offline
+    unknown = ChannelStatus(status=None)
+    assert unknown.state is ChannelState.UNKNOWN
+    assert unknown.is_unknown and not unknown.is_offline
 
 
 def test_channel_status_is_hashable_and_field_equal() -> None:

@@ -44,10 +44,17 @@ from typing import Any
 import pytest
 
 from stream_monitor import notifier
+from stream_monitor.action_plan import action_plan_for
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
+
+
+def _execute(action: str, info, **kwargs):
+    plan = action_plan_for(action)
+    assert plan is not None
+    return notifier.execute_action_plan(plan, info, **kwargs)
 
 
 def _reset_tracked_hwnds() -> None:
@@ -1258,7 +1265,7 @@ def test_fwd_8i_title_hints_reach_worker_for_hwnd_discovery(
 
 
 # ---------------------------------------------------------------------------
-# Group 9 — Action dispatch (execute_action)
+# Group 9 — Action plan execution
 # ---------------------------------------------------------------------------
 #
 # This is the boundary where Monitor (live-detection thread) hands off to
@@ -1314,15 +1321,16 @@ def test_act_9a_open_and_stop_opens_then_stops(monkeypatch) -> None:
     opened: list[tuple[str, dict, tuple]] = []
     stop_called: list[bool] = []
 
-    def fake_open(url, settings=None, *, title_hints=None):
+    def fake_open(url, settings=None, *, title_hints=None, profile_hint=None):
         opened.append((url, settings, tuple(title_hints or ())))
+        assert profile_hint == ("twitch", "kaicenat")
         return True
 
     monkeypatch.setattr(notifier, "open_url", fake_open)
 
     info = _make_stream_info()
     bs = _settings(enabled=True, close_on_stop=True)
-    notifier.execute_action(
+    _execute(
         "open_and_stop",
         info,
         stop_fn=lambda: stop_called.append(True),
@@ -1343,7 +1351,7 @@ def test_act_9b_open_and_keep_opens_no_callback(monkeypatch) -> None:
         lambda url, settings=None, **kw: opened.append(url) or True,
     )
     # No stop_fn / exit_fn provided — must not raise.
-    notifier.execute_action(
+    _execute(
         "open_and_keep",
         _make_stream_info(),
         browser_settings=_settings(),
@@ -1360,7 +1368,7 @@ def test_act_9c_notify_only_does_not_open_browser(monkeypatch) -> None:
     monkeypatch.setattr(
         notifier, "open_url", lambda *a, **k: open_called.append(a) or True
     )
-    notifier.execute_action(
+    _execute(
         "notify_only", _make_stream_info(), browser_settings=_settings()
     )
     assert open_called == []
@@ -1376,7 +1384,7 @@ def test_act_9d_open_and_exit_opens_then_exits(monkeypatch) -> None:
         lambda url, settings=None, **kw: opened.append(url) or True,
     )
 
-    notifier.execute_action(
+    _execute(
         "open_and_exit",
         _make_stream_info(),
         exit_fn=lambda: exit_called.append(True),
@@ -1417,9 +1425,10 @@ def test_act_9h_action_helpers_thread_title_hints(monkeypatch) -> None:
     _stub_toast(monkeypatch)
     captured: dict[str, Any] = {}
 
-    def fake_open(url, settings=None, *, title_hints=None):
+    def fake_open(url, settings=None, *, title_hints=None, profile_hint=None):
         captured["url"] = url
         captured["title_hints"] = tuple(title_hints or ())
+        captured["profile_hint"] = profile_hint
         return True
 
     monkeypatch.setattr(notifier, "open_url", fake_open)
@@ -1429,12 +1438,13 @@ def test_act_9h_action_helpers_thread_title_hints(monkeypatch) -> None:
         display_name="Kai Cenat",
         title="!!! LIVE NOW !!!",
     )
-    notifier.execute_action(
+    _execute(
         "open_and_keep", info, browser_settings=_settings()
     )
     assert "kaicenat" in captured["title_hints"]
     assert "Kai Cenat" in captured["title_hints"]
     assert "!!! LIVE NOW !!!" in captured["title_hints"]
+    assert captured["profile_hint"] == ("twitch", "kaicenat")
 
 
 def test_act_9i_action_helpers_pass_browser_settings_verbatim(
@@ -1451,7 +1461,7 @@ def test_act_9i_action_helpers_pass_browser_settings_verbatim(
         or True,
     )
     sentinel = _settings(close_on_offline=True, close_off_topic_pages=True)
-    notifier.execute_action(
+    _execute(
         "open_and_keep", _make_stream_info(), browser_settings=sentinel
     )
     assert captured["settings"] is sentinel

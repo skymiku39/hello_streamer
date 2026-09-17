@@ -80,6 +80,8 @@ def test_monitor_mode_buttons_idle_disables_only_stop() -> None:
     assert monitor_mode_button_states("idle") == {
         "start": "normal",
         "watch": "normal",
+        "start_once": "normal",
+        "watch_once": "normal",
         "stop": "disabled",
     }
 
@@ -95,6 +97,24 @@ def test_monitor_mode_buttons_watch_disables_watch() -> None:
     states = monitor_mode_button_states("watch")
     assert states["start"] == "normal"
     assert states["watch"] == "disabled"
+    assert states["stop"] == "normal"
+
+
+def test_monitor_mode_buttons_trigger_once_disables_only_trigger_once() -> None:
+    states = monitor_mode_button_states("trigger_once")
+    assert states["start"] == "normal"
+    assert states["watch"] == "normal"
+    assert states["start_once"] == "disabled"
+    assert states["watch_once"] == "normal"
+    assert states["stop"] == "normal"
+
+
+def test_monitor_mode_buttons_watch_once_disables_only_watch_once() -> None:
+    states = monitor_mode_button_states("watch_once")
+    assert states["start"] == "normal"
+    assert states["watch"] == "normal"
+    assert states["start_once"] == "normal"
+    assert states["watch_once"] == "disabled"
     assert states["stop"] == "normal"
 
 

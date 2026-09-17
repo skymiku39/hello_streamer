@@ -35,6 +35,7 @@ class _FakeMonitor:
         self.started = 0
         self.request_stops = 0
         self.restarts = 0
+        self.poll_cycle = 0
         self.updated_channels: list = []
         self.updated_intervals: list = []
 
@@ -42,7 +43,7 @@ class _FakeMonitor:
         self.is_running = True
         self.started += 1
 
-    def stop(self) -> None:
+    def stop(self, timeout=None) -> None:
         self.is_running = False
 
     def request_stop(self) -> None:
@@ -105,6 +106,31 @@ def test_start_again_reuses_running_monitor(controller) -> None:
     monitor = controller._created[0]
     assert monitor.updated_intervals[-1] == 45
     assert monitor.updated_channels[-1] == channels
+
+
+def test_start_one_shot_sets_a_cycle_boundary_when_reusing_monitor(controller) -> None:
+    channels = [{"platform": "twitch", "name": "a"}]
+    controller.start("watch", channels, 30)
+    monitor = controller._created[0]
+    monitor.poll_cycle = 7
+
+    controller.start("trigger_once", channels, 30)
+
+    assert controller.mode == "trigger_once"
+    assert controller._bridge._one_shot_after_cycle == 7
+
+
+@pytest.mark.parametrize("mode", ["trigger_once", "watch_once"])
+def test_finish_one_shot_stops_after_the_current_cycle(controller, mode) -> None:
+    channels = [{"platform": "twitch", "name": "a"}]
+    controller.start(mode, channels, 30)
+    monitor = controller._created[0]
+
+    assert controller.finish_one_shot() in ("trigger", "watch")
+    assert controller.mode == "idle"
+    assert controller.is_running is False
+    assert monitor.request_stops == 1
+    assert controller.generation == 1
 
 
 def test_stop_resets_mode_and_signals_monitor(controller) -> None:

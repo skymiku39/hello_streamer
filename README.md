@@ -8,6 +8,8 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 支援 Windows、Linux 與 Raspberry Pi 64-bit。主要介面使用 CustomTkinter，通知支援 Windows Toast 與 Linux `notify-send`。
 
+本專案只提供可攜版：所有程式資料都放在執行檔同層，不寫入作業系統的 AppData、XDG 或其他使用者資料目錄。請確保該資料夾可寫入；搬移整個資料夾即可搬移設定、資料庫、log 與瀏覽器 Profile。若使用「開機自動啟動」，那是使用者主動啟用的作業系統整合，Windows 會寫入 Run Registry、Linux 會寫入 XDG Autostart；搬移可攜版後請重新設定該選項。
+
 ## 功能特色
 
 - 監控 Twitch 與 YouTube 頻道，不需要使用者提供 API Token。
@@ -17,11 +19,11 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 - 可停用單一頻道、調整頻道順序、移除頻道。
 - 支援繁體中文、簡體中文、英文、日文、韓文介面，語言可在執行中切換。
 - 內建開播 / 離線防抖機制，降低平台短暫查詢異常造成的重複通知或誤關閉視窗。
-- 支援全域「只監測」與單一頻道「只監測」，可只更新狀態而不觸發通知或瀏覽器。
+- 支援全域四種監聽操作：監聽＋觸發、僅監聽、監聽＋觸發一次、僅監聽一次；單一頻道眼睛按鈕另有三態副作用設定。
 - 瀏覽器設定採單頁流程：開啟方式、帳號、視窗大小與自動整理依選項自動顯示或隱藏，減少術語與無效勾選。
 - 程式專用帳號提供登入輔助工具，可先登入 Twitch / YouTube，讓後續自動開啟的播放器沿用 cookies。
 - 自動整理（下播關窗、停止時關閉等）僅在程式專用帳號搭配獨立視窗時可用，避免誤關使用者原本的瀏覽器。
-- 支援兩種監控模式：
+- 支援四種全域監控操作：
   - 觸發模式：偵測到開播時執行設定的動作。
   - 觀察模式：只更新畫面狀態，不自動通知或開啟瀏覽器。
 - 支援系統匣最小化、單一實例、防止重複啟動。
@@ -36,9 +38,9 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 | 平台 | 檔案 |
 | --- | --- |
-| Windows x64 | `HelloStreamer-v1.1.9-windows-x64.exe` |
-| Linux x64 | `HelloStreamer-v1.1.9-linux-x64.tar.gz` |
-| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v1.1.9-linux-arm64.tar.gz` |
+| Windows x64 | `HelloStreamer-v1.2.0-windows-x64.exe` |
+| Linux x64 | `HelloStreamer-v1.2.0-linux-x64.tar.gz` |
+| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v1.2.0-linux-arm64.tar.gz` |
 
 Windows 第一次執行時可能會顯示安全提示，請確認來源是本專案的 GitHub Release。
 
@@ -47,7 +49,7 @@ Windows 第一次執行時可能會顯示安全提示，請確認來源是本專
 1. 下載並啟動 `HelloStreamer`。
 2. 按「新增頻道」。
 3. 貼上 Twitch 或 YouTube 頻道網址。
-4. 選擇偵測到開播時要執行的動作。
+4. 設定開播時是否通知、是否開啟直播頁，以及開啟成功後要不要停止監聽。
 5. 按「開始監聽」。
 
 支援的網址範例：
@@ -59,29 +61,35 @@ Windows 第一次執行時可能會顯示安全提示，請確認來源是本專
 | YouTube channel ID | `https://www.youtube.com/channel/UCxxxxxxxx` |
 | YouTube handle 簡寫 | `@handle` |
 
-## 開播動作
+## 開播觸發設定
 
-偵測到直播開播時，可以選擇以下動作：
+主視窗的「開播觸發」將三個概念分開設定：
 
-| 動作 | 說明 |
+| 設定 | 說明 |
 | --- | --- |
-| 開啟並停止監聽 | 打開直播頁後停止監控。 |
-| 開啟並繼續監聽 | 打開直播頁後繼續監控其他頻道。 |
-| 只通知 | 只顯示系統通知，不自動開啟瀏覽器。 |
-| 開啟並結束程式 | 打開直播頁後關閉 Hello Streamer。 |
+| 通知 | 開播時是否顯示系統通知。 |
+| 開啟直播頁 | 開播時是否自動開啟直播頁。 |
+| 開啟後 | 直播頁成功開啟後繼續監聽、停止監聽，或結束程式；只有開啟直播頁時才生效。 |
+| 預定通知 | 偵測到 YouTube 預定直播時是否通知。 |
+| 開啟待機室 | 偵測到預定直播時是否開啟待機室；不會停止或結束監聽。 |
+| 開啟失敗通知 | 自動開啟直播頁失敗時是否顯示可手動開啟的通知。 |
 
-YouTube 預定直播會強制走「只通知」，避免尚未開播時就自動打開播放器。
+YouTube 預定直播目前預設只通知、不自動開啟播放器，避免尚未開播時就開啟無法觀看的頁面；全域「只監測」與單頻道的「僅監聽」設定完全不通知、不開窗。單頻道的「僅監聽含通知」只保留通知，不會開啟瀏覽器或執行開啟後生命週期。全域的兩個「一次」按鈕會完成下一個完整輪詢週期後停止；前者仍依全域通知／開啟開關執行觸發，後者完全不產生副作用。狀態欄的 `unknown` 代表尚未確認，不會被當成已離線。
+
+若同一輪有多個頻道同時開播，停止監聽與結束程式只允許同一監控世代的第一個成功動作執行終止效果，其餘事件不會再次停止或結束程式。停止監控或結束程式時，尚未完成的背景觸發也會被取消。
 
 ## 監控模式
 
-主視窗下方提供兩種啟動方式：
+主視窗最下方提供四種啟動方式：
 
 | 模式 | 說明 |
 | --- | --- |
 | 監聽+觸發 | 依照「觸發行為」設定通知、開啟直播頁、停止監聽或結束程式。 |
 | 只監測 | 只輪詢 Twitch / YouTube 狀態並更新畫面，不送通知、不自動開啟瀏覽器，也不執行離線關閉。 |
+| 監聽+觸發一次 | 從按下按鈕後的下一個完整輪詢開始，完成一輪後停止；本輪依照「觸發行為」設定執行。 |
+| 僅監聽一次 | 從按下按鈕後的下一個完整輪詢開始，完成一輪後停止；本輪只更新狀態，不通知、不開啟瀏覽器。 |
 
-每個頻道列也有眼睛按鈕，可把單一頻道切到「只監測」。這適合想觀察某些頻道狀態，但不想讓它們觸發通知、開瀏覽器或關閉播放器的情境。
+每個頻道列的眼睛按鈕維持三態循環：監聽＋觸發 → 僅監聽 → 僅監聽含通知 → 監聽＋觸發。它只控制該頻道是否通知／開啟，不會改變全域輪詢是否只執行一次；按鈕顏色與懸停提示會說明目前模式。
 
 ## 監控穩定性
 
@@ -177,7 +185,7 @@ Chrome 與 Edge 會共用長駐的 master process。若瀏覽器已經開著，�
 
 ## 設定檔與資料
 
-執行時會在程式所在目錄附近使用以下檔案：
+執行時會在程式所在目錄使用以下檔案：
 
 | 檔案 / 資料夾 | 說明 |
 | --- | --- |
@@ -185,6 +193,8 @@ Chrome 與 Edge 會共用長駐的 master process。若瀏覽器已經開著，�
 | `seen_videos.db` | SQLite 資料庫，記錄已看過的 YouTube 影片與直播。 |
 | `logs/stream_monitor.log` | 執行 log；單檔上限 2 MB、保留 5 份備份，總計約 12 MB 後自動輪替，適合長期常駐。 |
 | `browser_profile/` | 預設獨立瀏覽器 Profile 位置。 |
+
+可攜版的路徑由 `portable_storage.py` 統一管理；原始碼執行時的根目錄是專案根目錄，打包後則是執行檔所在目錄。請不要只複製 `.exe` 或單一執行檔，需連同 `config.json`、`seen_videos.db` 與需要的資料夾一起搬移。
 
 ### 疑難排解（漏檢開播）
 
@@ -325,13 +335,35 @@ getconf LONG_BIT
 
 ## 專案結構
 
+開播事件採用「偵測 → 純規則決策 → 動作協調 → 平台效果」的分層：
+
+```text
+Monitor → EventBus/EventBridge → ActionPlan → ActionCoordinator
+                                      ├─ ActionExecutor
+                                      └─ ActionResult
+                                           ↓
+                                      Platform Ports
+                                      ├─ Desktop notification
+                                      └─ Browser / lifecycle effects
+```
+
+`ActionPlan` 只描述要通知、是否開瀏覽器，以及成功後的生命週期效果；
+`ActionCoordinator` 負責背景執行、generation 防舊事件、重複動作去重、待處理數量上限與同一輪終止型動作的互斥。
+`ActionExecutor` 只依賴 `platform_ports.py` 的小介面，並回傳包含通知／瀏覽器結果的 `ActionResult`；`notifier.py` 是組合平台 adapter 的邊界，`browser_win32.py` 則只處理 Win32 視窗能力。
+
 ```text
 stream_monitor/
   app.py                 CustomTkinter 主視窗、監控生命週期
+  action_plan.py         動作計畫與狀態規則的純資料模型
+  action_coordinator.py  背景動作、舊事件隔離與生命週期協調
+  action_executor.py     以 ActionPorts 執行動作並回傳 ActionResult
+  platform_ports.py      動作層使用的通知／瀏覽器能力介面
+  platform_adapters.py   將既有桌面實作接到 platform ports 的 adapter
+  portable_storage.py    可攜版的統一路徑模型
   channel_row.py         頻道列表單列 UI
   events/                監控 Pub/Sub 事件型別與 EventBus
   event_sink.py          EventBridge 窄介面 Protocol（ISP）
-  event_bridge.py        EventBus 訂閱者 → UI 執行緒副作用
+  event_bridge.py        EventBus 訂閱者 → ActionPlan 派發
   app_dialogs.py         頻道 / 語言 / 瀏覽器設定對話框
   app_ui.py              UI 共用工具（字型、按鈕、tooltip、時間格式化）
   browser_settings_model.py  瀏覽器設定 UI 維度與能力判斷
@@ -340,7 +372,7 @@ stream_monitor/
   db.py                  SQLite seen video database
   i18n.py                多國語言字串表、語言切換與訂閱機制
   monitor/               背景輪詢（types、core、probes/ 平台策略）
-  notifier.py            通知、瀏覽器啟動（轉發 browser_win32）
+  notifier.py            平台 adapter 組合、通知與瀏覽器啟動 facade
   single_instance.py     單一實例保護
   startup.py             Windows Registry / Linux XDG Autostart
   tray.py                系統匣圖示與選單
