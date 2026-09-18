@@ -40,11 +40,14 @@ jobs:
       - name: Build Executable
         run: uv run python build.py
 
-      - name: Package Windows executable
+      - name: Package Windows onedir zip
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release
-          Copy-Item -LiteralPath dist/HelloStreamer.exe -Destination "release/HelloStreamer-${{ github.ref_name }}-windows-x64.exe"
+          if (-not (Test-Path -LiteralPath "dist/HelloStreamer/HelloStreamer.exe")) {
+            throw "Expected onedir exe at dist/HelloStreamer/HelloStreamer.exe"
+          }
+          Compress-Archive -Path "dist/HelloStreamer" -DestinationPath "release/HelloStreamer-${{ github.ref_name }}-windows-x64.zip"
 
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
@@ -111,7 +114,9 @@ jobs:
               python -m pytest -q
               python build.py
               echo "=== Build output ==="
-              file dist/HelloStreamer
+              test -x dist/HelloStreamer/HelloStreamer
+              file dist/HelloStreamer/HelloStreamer
+              ls -la dist/HelloStreamer
             '
 
       - name: Fix file ownership
@@ -119,10 +124,8 @@ jobs:
 
       - name: Package Linux executable
         run: |
-          mkdir -p release package
-          cp dist/HelloStreamer package/HelloStreamer
-          chmod +x package/HelloStreamer
-          tar -czf "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C package HelloStreamer
+          mkdir -p release
+          tar -czf "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C dist HelloStreamer
 
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4

@@ -38,19 +38,20 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 | 平台 | 檔案 |
 | --- | --- |
-| Windows x64 | `HelloStreamer-v1.2.0-windows-x64.exe` |
-| Linux x64 | `HelloStreamer-v1.2.0-linux-x64.tar.gz` |
-| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v1.2.0-linux-arm64.tar.gz` |
+| Windows x64 | `HelloStreamer-v1.2.1-windows-x64.zip`（解壓後執行資料夾內的 `HelloStreamer.exe`） |
+| Linux x64 | `HelloStreamer-v1.2.1-linux-x64.tar.gz` |
+| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v1.2.1-linux-arm64.tar.gz` |
 
-Windows 第一次執行時可能會顯示安全提示，請確認來源是本專案的 GitHub Release。
+Windows 請**整包解壓後再執行**，不要只抽出單一 `.exe`（同層還有 `_internal` 等相依檔）。第一次執行時 SmartScreen 仍可能顯示安全提示，請確認來源是本專案的 GitHub Release。v1.2.1 起改為資料夾版（onedir）打包，以降低 Windows Defender 對「單檔自解」的誤判。
 
 ## 快速開始
 
-1. 下載並啟動 `HelloStreamer`。
-2. 按「新增頻道」。
-3. 貼上 Twitch 或 YouTube 頻道網址。
-4. 設定開播時是否通知、是否開啟直播頁，以及開啟成功後要不要停止監聽。
-5. 按「開始監聽」。
+1. 下載並解壓 `HelloStreamer`（Windows 為 zip；Linux 為 tar.gz）。
+2. 啟動資料夾內的 `HelloStreamer`（Windows 為 `HelloStreamer.exe`）。
+3. 按「新增頻道」。
+4. 貼上 Twitch 或 YouTube 頻道網址。
+5. 設定開播時是否通知、是否開啟直播頁，以及開啟成功後要不要停止監聽。
+6. 按「開始監聽」。
 
 支援的網址範例：
 
@@ -194,7 +195,7 @@ Chrome 與 Edge 會共用長駐的 master process。若瀏覽器已經開著，�
 | `logs/stream_monitor.log` | 執行 log；單檔上限 2 MB、保留 5 份備份，總計約 12 MB 後自動輪替，適合長期常駐。 |
 | `browser_profile/` | 預設獨立瀏覽器 Profile 位置。 |
 
-可攜版的路徑由 `portable_storage.py` 統一管理；原始碼執行時的根目錄是專案根目錄，打包後則是執行檔所在目錄。請不要只複製 `.exe` 或單一執行檔，需連同 `config.json`、`seen_videos.db` 與需要的資料夾一起搬移。
+可攜版的路徑由 `portable_storage.py` 統一管理；原始碼執行時的根目錄是專案根目錄，打包後則是執行檔所在目錄（與 `_internal` 同層）。請不要只複製 `.exe` 或單一執行檔，需連同 `_internal`、`config.json`、`seen_videos.db` 與需要的資料夾一起搬移。
 
 ### 疑難排解（漏檢開播）
 
@@ -296,10 +297,10 @@ uv run python build.py
 
 | 平台 | 輸出 |
 | --- | --- |
-| Windows | `dist/HelloStreamer.exe` |
-| Linux | `dist/HelloStreamer` |
+| Windows | `dist/HelloStreamer/HelloStreamer.exe`（整包 onedir） |
+| Linux | `dist/HelloStreamer/HelloStreamer`（整包 onedir） |
 
-推送 `v*` tag 後，release workflow 會建立 GitHub Release 並上傳對應平台的產物。
+推送 `v*` tag 後，release workflow 會建立 GitHub Release：Windows 上傳 zip、Linux 上傳含整包目錄的 tar.gz。
 
 ## Linux / Raspberry Pi
 

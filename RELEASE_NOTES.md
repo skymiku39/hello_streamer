@@ -1,3 +1,23 @@
+# Hello Streamer v1.2.1
+
+## Windows 打包改為資料夾版，降低 Defender 誤判
+
+- **onedir 發佈**：Windows 改為下載 `HelloStreamer-v1.2.1-windows-x64.zip`，解壓後執行資料夾內的 `HelloStreamer.exe`（需保留同層 `_internal`）。
+- **不再使用單檔自解**：拿掉 PyInstaller `--onefile`，避免啟動時解包到 `%TEMP%` 而被啟發式掃描當成 dropper。
+- **關閉 UPX**：Windows／Linux 建置皆加 `--noupx`。
+- **PE 版本資訊**：Windows 執行檔嵌入產品名、版號與發行者字串，減少「無名匿名 exe」的可疑分數。
+- **Linux 同步**：Linux 產物同樣改為整包目錄的 tar.gz。
+
+## 升級提醒
+
+請下載最新 zip／tar.gz 並**整包解壓覆蓋**；不要只替換單一 `.exe`。若已啟用開機啟動，第一次開啟 v1.2.1 後會依目前執行檔路徑自癒捷徑。設定檔格式不變。
+
+## 下載政策
+
+請只使用最新版安裝檔。較舊 Release 的可執行檔會自 GitHub 移除，僅保留版本說明與 tag 供查閱。
+
+---
+
 # Hello Streamer v1.2.0
 
 ## 監聽控制與視窗重繪重構
