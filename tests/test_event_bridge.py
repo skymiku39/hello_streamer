@@ -61,6 +61,7 @@ class _RecordingSink:
             window=SimpleNamespace(
                 tracking_available=lambda _settings, _url="": False,
                 prune_off_topic=lambda: 0,
+                release_keep_awake_for_closed=lambda: 0,
             )
         )
 
@@ -463,3 +464,56 @@ def test_deferred_display_names_flush_when_repaints_resume() -> None:
 
     assert sink.applied_display_names == [{"twitch:hello": "Hello"}]
     assert len(row.applied) == 1
+
+
+def test_poll_complete_releases_keep_awake_when_blank_tab_cleanup_disabled() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger")
+    released: list[int] = []
+    pruned: list[int] = []
+    sink.config["browser_settings"] = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "user_data_dir": "C:/tmp/profile",
+        "app_mode": True,
+        "close_off_topic_pages": False,
+    }
+    sink.platform_services = SimpleNamespace(
+        window=SimpleNamespace(
+            tracking_available=lambda *_a, **_k: True,
+            prune_off_topic=lambda: pruned.append(1) or 0,
+            release_keep_awake_for_closed=lambda: released.append(1) or 1,
+        )
+    )
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(PollStatusUpdate(statuses={}, display_names={}))
+    bridge.tick()
+    assert released == [1]
+    assert pruned == []
+
+
+def test_poll_complete_uses_prune_path_when_blank_tab_cleanup_enabled() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger")
+    released: list[int] = []
+    pruned: list[int] = []
+    sink.config["browser_settings"] = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "user_data_dir": "C:/tmp/profile",
+        "app_mode": True,
+        "close_off_topic_pages": True,
+    }
+    sink.platform_services = SimpleNamespace(
+        window=SimpleNamespace(
+            tracking_available=lambda *_a, **_k: True,
+            prune_off_topic=lambda: pruned.append(1) or 1,
+            release_keep_awake_for_closed=lambda: released.append(1) or 1,
+        )
+    )
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(PollStatusUpdate(statuses={}, display_names={}))
+    bridge.tick()
+    assert pruned == [1]
+    # Keep-awake sync is owned by prune when cleanup is enabled.
+    assert released == []

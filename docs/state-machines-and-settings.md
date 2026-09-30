@@ -104,7 +104,7 @@
 | A＝自訂程式 **且** C∈{新視窗, 播放器} | 幾何欄位（X）出現 | `geometry_placement_available(launch, placement)` |
 | A＝自訂程式 **且** B＝專用 **且** C∈{新視窗, 播放器} | 自動管理各項可勾選（D 生效） | `window_management_available(launch, identity, placement)` |
 | 幾何出現 **且** 為 Chromium **且** 勾選套用幾何 | X/Y/W/H 可編輯 | `_refresh_geometry_state` |
-| 非 frozen **且** 觀看認定啟用 **且** `page_assist_enabled` **且** 專用 Profile 受管 Twitch | CDP 頁內輔助 | `ViewerEngagementSettings.page_assist_active` + `should_start_page_assist` |
+| 非 frozen **且** 觀看認定啟用 **且** `page_assist_enabled` **且** 專用 Profile **且** 受管獨立視窗（新視窗／播放器，非一般分頁） | CDP 頁內輔助 | `ViewerEngagementSettings.page_assist_active` + `should_start_page_assist` / `is_standalone_managed_window` |
 
 ### 3.2 互斥／強制關閉（有 A 就不能有 B）
 

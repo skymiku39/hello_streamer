@@ -933,7 +933,7 @@ _EN: dict[str, str] = {
     "engagement.page_assist.section": "In-page assist (CDP, source builds only)",
     "engagement.page_assist.frozen": "Packaged HelloStreamer.exe does not offer in-page assist. Run from source with uv / run_hello_streamer.bat.",
     "engagement.toggle.page_assist": "Enable in-page assist (CDP)",
-    "engagement.toggle.page_assist.hint": "Requires custom Chromium, a dedicated profile, and a managed solo window. Opens remote debugging on launch and stops when the window closes.",
+    "engagement.toggle.page_assist.hint": "Requires custom Chromium, a dedicated profile, and a managed standalone window (separate window or solo player). Opens remote debugging on launch and stops when the window closes.",
     "engagement.toggle.accept_gate": "Auto-accept content classification / Start Watching",
     "engagement.toggle.accept_gate.hint": "Clicks the content-warning or Start Watching button so the player actually starts.",
     "engagement.toggle.claim_points": "Auto-claim Channel Points chest",

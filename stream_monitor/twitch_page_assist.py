@@ -17,7 +17,7 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
-from stream_monitor.cdp_client import CdpClient
+from stream_monitor.cdp_client import DEFAULT_CDP_ATTACH_TIMEOUT_S, CdpClient
 from stream_monitor.viewer_engagement_model import (
     ViewerEngagementSettings,
     coerce_viewer_engagement,
@@ -110,6 +110,20 @@ def fuzzy_uniform(low: float, high: float) -> float:
     return random.uniform(a, b)
 
 
+def is_standalone_managed_window(
+    *,
+    managed: bool,
+    app_mode: bool,
+    new_window: bool,
+) -> bool:
+    """True when Twitch opens in a managed separate/solo window (UI docs).
+
+    Regular tabs (``managed`` with neither app mode nor new window) are not
+    standalone; tab management disabled (``managed=False``) also fails.
+    """
+    return bool(managed and (app_mode or new_window))
+
+
 def should_start_page_assist(
     url: str,
     settings: ViewerEngagementSettings | dict[str, Any] | None,
@@ -117,13 +131,19 @@ def should_start_page_assist(
     managed: bool,
     isolated_profile: bool,
     chromium_family: bool,
+    standalone_window: bool,
 ) -> bool:
     engagement = coerce_viewer_engagement(settings)
     if engagement is None or not engagement.page_assist_active():
         return False
     if not page_assist_runtime_allowed():
         return False
-    if not (managed and isolated_profile and chromium_family):
+    if not (
+        managed
+        and isolated_profile
+        and chromium_family
+        and standalone_window
+    ):
         return False
     return is_twitch_url(url)
 
@@ -162,7 +182,7 @@ class _PageAssistWorker:
     def _run(self) -> None:
         client = CdpClient()
         try:
-            client.connect(self.port, self.url, timeout=45.0)
+            client.connect(self.port, self.url, timeout=DEFAULT_CDP_ATTACH_TIMEOUT_S)
             logger.info("Twitch page assist attached via CDP for %s", self.url)
             next_refresh_at = self._schedule_refresh()
             while not self._stop.is_set():

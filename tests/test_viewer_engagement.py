@@ -454,3 +454,53 @@ def test_hold_foreground_stops_when_tracked_url_cleared(monkeypatch) -> None:
         assert len(foreground_calls) < 20
     finally:
         _clear_tracked_hwnds(url)
+
+
+def test_release_keep_awake_when_only_tracked_window_closes(monkeypatch) -> None:
+    awake_calls: list[bool] = []
+    monkeypatch.setattr(
+        notifier, "set_system_keep_awake", lambda active: awake_calls.append(active)
+    )
+    monkeypatch.setattr(notifier, "stop_page_assist", lambda *_a: None)
+    monkeypatch.setattr(notifier, "tracked_hwnds_for_url", lambda _url: set())
+    url = "https://www.twitch.tv/only"
+    notifier._ENGAGEMENT_AWAKE_URLS.add(url)
+    notifier._ENGAGEMENT_AWAKE_SINCE[url] = 0.0
+    try:
+        released = notifier.release_keep_awake_for_closed_tracked_windows(min_age_s=0.0)
+        assert released == 1
+        assert awake_calls == [False]
+        assert url not in notifier._ENGAGEMENT_AWAKE_URLS
+    finally:
+        notifier._ENGAGEMENT_AWAKE_URLS.clear()
+        notifier._ENGAGEMENT_AWAKE_SINCE.clear()
+
+
+def test_release_keep_awake_holds_while_another_tracked_window_remains(
+    monkeypatch,
+) -> None:
+    awake_calls: list[bool] = []
+    monkeypatch.setattr(
+        notifier, "set_system_keep_awake", lambda active: awake_calls.append(active)
+    )
+    monkeypatch.setattr(notifier, "stop_page_assist", lambda *_a: None)
+
+    closed = "https://www.twitch.tv/closed"
+    open_url = "https://www.twitch.tv/open"
+
+    def hwnds(url: str):
+        return {99} if url == open_url else set()
+
+    monkeypatch.setattr(notifier, "tracked_hwnds_for_url", hwnds)
+    notifier._ENGAGEMENT_AWAKE_URLS.update({closed, open_url})
+    notifier._ENGAGEMENT_AWAKE_SINCE[closed] = 0.0
+    notifier._ENGAGEMENT_AWAKE_SINCE[open_url] = 0.0
+    try:
+        released = notifier.release_keep_awake_for_closed_tracked_windows(min_age_s=0.0)
+        assert released == 1
+        assert awake_calls == []
+        assert closed not in notifier._ENGAGEMENT_AWAKE_URLS
+        assert open_url in notifier._ENGAGEMENT_AWAKE_URLS
+    finally:
+        notifier._ENGAGEMENT_AWAKE_URLS.clear()
+        notifier._ENGAGEMENT_AWAKE_SINCE.clear()

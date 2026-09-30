@@ -39,8 +39,17 @@ class TwitchPlatformProbe:
             info = fetcher.get_stream_info(entry.name)
             if info is not None and not info.is_live and prev_status is True:
                 retry = fetcher.get_stream_info(entry.name)
-                if retry is not None:
-                    info = retry
+                if retry is None:
+                    # First sample was non-LIVE but the confirm retry is missing:
+                    # that is unavailable evidence, not a second offline strike.
+                    logger.warning(
+                        "Twitch %s: offline confirm retry unavailable, "
+                        "keeping prev_status=True (no strike)",
+                        entry.key,
+                    )
+                    snap.fetcher = fetcher
+                    return []
+                info = retry
         except Exception:
             logger.exception("Error fetching %s", entry.key)
             return facade.handle_fetch_unavailable(

@@ -14,7 +14,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +24,176 @@ _CDP_MODIFIER_ALT = 1
 _CDP_VK_ALT = 18
 _CDP_VK_T = 84
 
+# Bound attach waits so a missing endpoint fails promptly instead of hanging.
+DEFAULT_CDP_ATTACH_TIMEOUT_S = 12.0
+
+
+@dataclass(frozen=True)
+class CdpAttachResult:
+    """Observable outcome of CDP port resolve / attach preflight."""
+
+    ok: bool
+    port: int | None = None
+    reason: str = ""
+    message: str = ""
+
+
+@dataclass
+class DebuggingPortLease:
+    """Hold an ephemeral localhost port until Chrome is about to bind it."""
+
+    port: int
+    _sock: socket.socket | None = field(default=None, repr=False)
+
+    def release(self) -> int:
+        """Close the binder so the browser can claim *port*. Returns the port."""
+        sock = self._sock
+        self._sock = None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                logger.debug("CDP port lease close failed", exc_info=True)
+        return self.port
+
+
+def lease_debugging_port() -> DebuggingPortLease:
+    """Bind and hold an ephemeral port to shrink the cold-start race window."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+    except OSError:
+        sock.close()
+        raise
+    return DebuggingPortLease(port=int(sock.getsockname()[1]), _sock=sock)
+
 
 def allocate_debugging_port() -> int:
-    """Bind an ephemeral localhost port and return its number."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+    """Return an ephemeral localhost port (releases the binder immediately)."""
+    return lease_debugging_port().release()
+
+
+def profile_looks_busy(user_data_dir: str) -> bool:
+    """True when Chromium profile lock files suggest a master process is live."""
+    root = (user_data_dir or "").strip()
+    if not root:
+        return False
+    base = Path(root)
+    for name in ("SingletonLock", "SingletonCookie", "lockfile"):
+        if (base / name).exists():
+            return True
+    return False
+
+
+def read_devtools_active_port(user_data_dir: str) -> int | None:
+    """Parse Chrome's DevToolsActivePort file; return port or None."""
+    root = (user_data_dir or "").strip()
+    if not root:
+        return None
+    path = Path(root) / "DevToolsActivePort"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    first = (text.splitlines() or [""])[0].strip()
+    if not first.isdigit():
+        return None
+    port = int(first)
+    return port if port > 0 else None
+
+
+def wait_for_devtools_active_port(
+    user_data_dir: str,
+    *,
+    timeout: float = DEFAULT_CDP_ATTACH_TIMEOUT_S,
+    poll_interval: float = 0.2,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    reader: Callable[[str], int | None] = read_devtools_active_port,
+) -> CdpAttachResult:
+    """Poll DevToolsActivePort until ready or the bounded timeout elapses."""
+    deadline = clock() + max(0.5, timeout)
+    while clock() < deadline:
+        port = reader(user_data_dir)
+        if port is not None:
+            return CdpAttachResult(ok=True, port=port, reason="devtools_file")
+        sleep(max(0.05, poll_interval))
+    return CdpAttachResult(
+        ok=False,
+        reason="timeout",
+        message=(
+            f"DevToolsActivePort not ready within {timeout:.1f}s "
+            f"under {user_data_dir!r}"
+        ),
+    )
+
+
+def probe_cdp_endpoint(port: int, *, timeout: float = 1.5) -> bool:
+    """True when ``/json/list`` responds on *port*."""
+    if port <= 0:
+        return False
+    try:
+        _list_targets(port, timeout=timeout)
+        return True
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return False
+
+
+def resolve_cdp_attach(
+    user_data_dir: str,
+    *,
+    preferred_port: int | None = None,
+    profile_was_busy: bool = False,
+    timeout: float = DEFAULT_CDP_ATTACH_TIMEOUT_S,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    endpoint_probe: Callable[..., bool] = probe_cdp_endpoint,
+    wait_devtools: Callable[..., CdpAttachResult] = wait_for_devtools_active_port,
+) -> CdpAttachResult:
+    """Resolve a CDP port after launch without unbounded waiting.
+
+    Fresh profiles typically expose ``preferred_port`` or DevToolsActivePort.
+    An already-running shared profile often ignores new debugging flags; that
+    surfaces as a timely ``profile_busy`` / ``timeout`` failure instead of hang.
+    """
+    deadline = clock() + max(0.5, timeout)
+    if preferred_port and preferred_port > 0:
+        while clock() < deadline:
+            if endpoint_probe(preferred_port, timeout=min(1.0, timeout)):
+                return CdpAttachResult(
+                    ok=True, port=preferred_port, reason="preferred_port"
+                )
+            sleep(0.2)
+        if profile_was_busy:
+            return CdpAttachResult(
+                ok=False,
+                reason="profile_busy",
+                message=(
+                    "Existing browser/profile did not expose CDP on "
+                    f"port {preferred_port}"
+                ),
+            )
+        return CdpAttachResult(
+            ok=False,
+            reason="timeout",
+            message=f"CDP endpoint not ready on port {preferred_port}",
+        )
+
+    remaining = max(0.5, deadline - clock())
+    result = wait_devtools(user_data_dir, timeout=remaining, clock=clock, sleep=sleep)
+    if result.ok:
+        return result
+    if profile_was_busy:
+        return CdpAttachResult(
+            ok=False,
+            reason="profile_busy",
+            message=(
+                "Existing browser/profile did not write a usable "
+                "DevToolsActivePort endpoint"
+            ),
+        )
+    return result
 
 
 def _list_targets(port: int, timeout: float = 2.0) -> list[dict[str, Any]]:
@@ -82,7 +248,7 @@ class CdpClient:
         port: int,
         url_hint: str = "",
         *,
-        timeout: float = 45.0,
+        timeout: float = DEFAULT_CDP_ATTACH_TIMEOUT_S,
         poll_interval: float = 0.5,
     ) -> None:
         """Wait for Chrome's debug endpoint and attach to a matching page."""
@@ -103,7 +269,12 @@ class CdpClient:
                 ws_url = _pick_page_ws(port, url_hint)
                 if ws_url:
                     break
-            except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                OSError,
+                json.JSONDecodeError,
+            ) as exc:
                 last_error = exc
             time.sleep(poll_interval)
         if not ws_url:

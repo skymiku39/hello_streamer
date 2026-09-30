@@ -28,9 +28,9 @@ from stream_monitor.action_executor import (
 )
 from stream_monitor.action_plan import ActionPlan
 from stream_monitor.browser_settings_model import (
-    BrowserSettings,
     DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH,
+    BrowserSettings,
     coerce_browser_settings,
 )
 from stream_monitor.chrome_prefs import merge_tab_discarding_exceptions
@@ -126,6 +126,7 @@ from stream_monitor.browser_win32 import (  # noqa: E402, F401
     tracked_hwnds_for_url,
 )
 from stream_monitor.twitch_page_assist import (  # noqa: E402
+    is_standalone_managed_window,
     should_start_page_assist,
     start_page_assist,
     stop_all_page_assist,
@@ -207,22 +208,41 @@ def close_all_tracked_windows() -> int:
 def prune_off_topic_tracked_windows(*, min_age_s: float = 6.0) -> int:
     """Prune browser chrome and release keep-awake for manually closed HWNDs."""
     closed = _prune_off_topic_tracked_windows_impl(min_age_s=min_age_s)
+    release_keep_awake_for_closed_tracked_windows(min_age_s=min_age_s)
+    return closed
+
+
+def release_keep_awake_for_closed_tracked_windows(*, min_age_s: float = 6.0) -> int:
+    """Release keep-awake when tracked Twitch HWNDs are gone.
+
+    Independent of blank-tab cleanup: runs whenever engagement URLs are held,
+    so closing the only tracked window still clears the sleep block.
+    """
     now = time.monotonic()
+    released = 0
     with _ENGAGEMENT_AWAKE_LOCK:
         candidates = [
             (url, _ENGAGEMENT_AWAKE_SINCE.get(url, 0.0))
-            for url in _ENGAGEMENT_AWAKE_URLS
+            for url in list(_ENGAGEMENT_AWAKE_URLS)
         ]
     for url, since in candidates:
         # Give the post-launch worker time to discover the HWND before treating
         # an empty bucket as a user-closed window.
-        if (
-            now - since >= max(min_age_s, 0.0)
-            and not tracked_hwnds_for_url(url)
-        ):
-            stop_page_assist(url)
-            _release_engagement_keep_awake(url)
-    return closed
+        if now - since < max(min_age_s, 0.0):
+            continue
+        if tracked_hwnds_for_url(url):
+            continue
+        stop_page_assist(url)
+        with _ENGAGEMENT_AWAKE_LOCK:
+            if url not in _ENGAGEMENT_AWAKE_URLS:
+                continue
+            _ENGAGEMENT_AWAKE_URLS.discard(url)
+            _ENGAGEMENT_AWAKE_SINCE.pop(url, None)
+            released += 1
+            still_held = bool(_ENGAGEMENT_AWAKE_URLS)
+        if not still_held:
+            set_system_keep_awake(False)
+    return released
 
 # Chromium switches that stop a backgrounded / occluded Twitch tab from being
 # throttled or suspended, so its heartbeat keeps flowing and the view keeps
@@ -754,18 +774,38 @@ def _open_with_browser_settings(
     )
     isolation_available = bool(effective_user_data_dir)
     cdp_port: int | None = None
+    cdp_lease = None
+    profile_was_busy = False
     engagement_for_assist = _active_viewer_engagement()
+    standalone_window = is_standalone_managed_window(
+        managed=manage,
+        app_mode=bool(effective_settings.get("app_mode")),
+        new_window=bool(effective_settings.get("new_window", True)),
+    )
     if should_start_page_assist(
         url,
         engagement_for_assist,
         managed=manage,
         isolated_profile=isolation_available,
         chromium_family=family in {"chromium", "unknown"},
+        standalone_window=standalone_window,
     ):
-        from stream_monitor.cdp_client import allocate_debugging_port
+        from stream_monitor.cdp_client import (
+            lease_debugging_port,
+            profile_looks_busy,
+        )
 
-        cdp_port = allocate_debugging_port()
-        effective_settings["_cdp_debugging_port"] = cdp_port
+        profile_was_busy = profile_looks_busy(effective_user_data_dir)
+        if profile_was_busy:
+            logger.warning(
+                "Twitch page assist CDP skipped for %s: profile already in "
+                "use (existing browser may ignore remote-debugging-port)",
+                url,
+            )
+        else:
+            cdp_lease = lease_debugging_port()
+            cdp_port = cdp_lease.port
+            effective_settings["_cdp_debugging_port"] = cdp_port
 
     args = _build_browser_args(url, effective_settings)
     family = detect_browser_family(args[0])
@@ -782,6 +822,8 @@ def _open_with_browser_settings(
             logger.exception(
                 "Could not create browser user_data_dir: %s", effective_user_data_dir
             )
+            if cdp_lease is not None:
+                cdp_lease.release()
             return False
 
     want_minimize = bool(effective_settings.get("minimized")) and _is_windows()
@@ -894,6 +936,10 @@ def _open_with_browser_settings(
             startupinfo = None
 
     try:
+        if cdp_lease is not None:
+            # Release immediately before spawn so Chrome can bind the port.
+            cdp_lease.release()
+            cdp_lease = None
         subprocess.Popen(
             args,
             startupinfo=startupinfo,
@@ -905,9 +951,13 @@ def _open_with_browser_settings(
             "Browser executable not found: %s — falling back to default browser",
             args[0],
         )
+        if cdp_lease is not None:
+            cdp_lease.release()
         return False
     except OSError:
         logger.exception("Failed to spawn browser with custom settings: %s", args)
+        if cdp_lease is not None:
+            cdp_lease.release()
         return False
 
     if keep_awake_after_launch:
@@ -918,6 +968,19 @@ def _open_with_browser_settings(
             start_page_assist(url, cdp_port, engagement_for_assist)
         except Exception:
             logger.exception("Failed to start Twitch page assist for %s", url)
+    elif (
+        manage
+        and engagement_for_assist is not None
+        and engagement_for_assist.page_assist_active()
+        and standalone_window
+        and isolation_available
+        and profile_was_busy
+    ):
+        logger.warning(
+            "Twitch page assist CDP attach failed for %s: existing "
+            "browser/profile (reason=profile_busy)",
+            url,
+        )
 
     if class_name:
         if want_window_management:
@@ -1305,6 +1368,7 @@ def platform_services() -> PlatformServices:
             close_url=close_browser_window_for_url,
             close_everything=close_all_tracked_windows,
             prune=prune_off_topic_tracked_windows,
+            release_keep_awake=release_keep_awake_for_closed_tracked_windows,
         ),
         power=PowerPolicyAdapter(set_system_keep_awake),
     )

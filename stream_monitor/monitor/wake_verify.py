@@ -108,6 +108,7 @@ class WakeVerifyMixin:
         self._wake_verify_mode = True
         confirmed = 0
         deferred = 0
+        deferred_keys: set[str] = set()
         try:
             with self._lock:
                 self._pending_offline_events.clear()
@@ -135,6 +136,7 @@ class WakeVerifyMixin:
                 observed = observed_by_key.get(entry.key)
                 if observed is None:
                     deferred += 1
+                    deferred_keys.add(entry.key)
                     logger.info(
                         "wake_verify_deferred %s: fetch unavailable "
                         "cached=%s",
@@ -144,6 +146,7 @@ class WakeVerifyMixin:
                     continue
                 if observed != cached and observed != "live":
                     deferred += 1
+                    deferred_keys.add(entry.key)
                     logger.info(
                         "wake_verify_deferred %s: mismatch cached=%s "
                         "observed=%s",
@@ -181,6 +184,7 @@ class WakeVerifyMixin:
         finally:
             self._wake_verify_mode = False
             self._wake_verify_active = False
+            self._wake_deferred_keys = deferred_keys
 
         elapsed = time.monotonic() - poll_started
         logger.info(
@@ -232,8 +236,9 @@ class StartupRefreshMixin:
         refresh_started = time.monotonic()
         went_live_count = 0
         try:
-            with self._lock:
-                self._pending_offline_events.clear()
+            # Do not clear pending offline here: edges queued by the opening
+            # tier-1/2 (or wake confirm) must survive until the cycle dispatches
+            # them exactly once at the poll boundary.
 
             def refresh_one(entry: ChannelEntry) -> int:
                 # Re-probe so tier-2 has a fresh snapshot (same as wake verify).

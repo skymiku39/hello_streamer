@@ -276,25 +276,39 @@ class YouTubePlatformProbe:
                 if _entry_key_from_live_cache_key(key) == entry.key
                 and key.rsplit("|", 1)[-1] not in active_live_ids
             ]
-            for stale_key in stale_candidates:
-                strikes = session.offline_strikes.get(stale_key, 0) + 1
-                if strikes < _OFFLINE_STRIKE_THRESHOLD:
-                    session.offline_strikes[stale_key] = strikes
+            if facade.wake_verify_mode and stale_candidates:
+                # During wake, keep secondary/stale LIVE payload rows frozen.
+                # Mutating them here can enqueue offline edges that a later
+                # startup-refresh clear would drop, or overwrite wake results.
+                for stale_key in stale_candidates:
                     active_live_ids.add(stale_key.rsplit("|", 1)[-1])
                     has_strike_pending = True
-                    logger.info(
-                        "YouTube %s: ignoring transient missing video %s (%d/%d)",
-                        entry.key,
-                        stale_key.rsplit("|", 1)[-1],
-                        strikes,
-                        _OFFLINE_STRIKE_THRESHOLD,
-                    )
-                    continue
-                session.offline_strikes.pop(stale_key, None)
-                payload = session.live_payload.pop(stale_key, None)
-                if payload is not None:
-                    session.pending_offline_events.append((entry, payload))
-                    offline_payload = payload
+                logger.info(
+                    "YouTube %s: wake_verify holding %d stale secondary "
+                    "live payload(s)",
+                    entry.key,
+                    len(stale_candidates),
+                )
+            else:
+                for stale_key in stale_candidates:
+                    strikes = session.offline_strikes.get(stale_key, 0) + 1
+                    if strikes < _OFFLINE_STRIKE_THRESHOLD:
+                        session.offline_strikes[stale_key] = strikes
+                        active_live_ids.add(stale_key.rsplit("|", 1)[-1])
+                        has_strike_pending = True
+                        logger.info(
+                            "YouTube %s: ignoring transient missing video %s (%d/%d)",
+                            entry.key,
+                            stale_key.rsplit("|", 1)[-1],
+                            strikes,
+                            _OFFLINE_STRIKE_THRESHOLD,
+                        )
+                        continue
+                    session.offline_strikes.pop(stale_key, None)
+                    payload = session.live_payload.pop(stale_key, None)
+                    if payload is not None:
+                        session.pending_offline_events.append((entry, payload))
+                        offline_payload = payload
 
             for vid in observed_live_ids:
                 session.offline_strikes.pop(
