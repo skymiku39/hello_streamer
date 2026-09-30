@@ -137,27 +137,63 @@ def test_full_drag_session_harness() -> None:
     assert session.events == ["begin:1", "motion:3", "end:['a', 'c', 'b', 'd']"]
 
 
-def _make_channel_row():
+# One hidden CTk root for this module; keep alive until pytest process exits.
+# Prefer an already-live default root over creating a second top-level CTk.
+_CTK_ROOT = None
+_CTK_ROOT_ERROR: BaseException | None = None
+
+
+def _module_ctk_root():
+    """Return a live CTk/Tk root, creating one only when none exists yet."""
+    global _CTK_ROOT, _CTK_ROOT_ERROR
+    if _CTK_ROOT is not None:
+        try:
+            if int(_CTK_ROOT.winfo_exists()):
+                return _CTK_ROOT
+        except Exception:  # noqa: BLE001
+            _CTK_ROOT = None
+
+    try:
+        import tkinter as tk
+
+        existing = tk._default_root
+        if existing is not None and int(existing.winfo_exists()):
+            _CTK_ROOT = existing
+            _CTK_ROOT_ERROR = None
+            return _CTK_ROOT
+    except Exception:  # noqa: BLE001
+        pass
+
+    if _CTK_ROOT_ERROR is not None:
+        pytest.skip(f"Tk unavailable: {_CTK_ROOT_ERROR}")
     try:
         import customtkinter as ctk
+
+        root = ctk.CTk()
+        root.withdraw()
     except Exception as exc:  # noqa: BLE001
+        _CTK_ROOT_ERROR = exc
         pytest.skip(f"Tk unavailable: {exc}")
+    _CTK_ROOT = root
+    return root
+
+
+def _make_channel_row_host():
+    """Create a per-test CTkFrame host under the shared module root."""
+    import customtkinter as ctk
 
     from stream_monitor.channel_row import ChannelRow
 
-    try:
-        root = ctk.CTk()
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"Tk unavailable: {exc}")
-    root.withdraw()
-    return root, ChannelRow
+    root = _module_ctk_root()
+    host = ctk.CTkFrame(root)
+    return root, host, ChannelRow
 
 
 def test_channel_row_long_press_state_machine() -> None:
     from stream_monitor.channel_row import ChannelRow
 
     log: list[str] = []
-    root, _ = _make_channel_row()
+    root, host, _ = _make_channel_row_host()
     pending: list[Any] = []
 
     def fake_after(_ms: int, callback: Any) -> str:
@@ -168,7 +204,7 @@ def test_channel_row_long_press_state_machine() -> None:
         pending.clear()
 
     row = ChannelRow(
-        root,
+        host,
         {"platform": "twitch", "name": "chan", "enabled": True},
         on_delete=lambda: None,
         on_move_up=lambda: None,
@@ -181,33 +217,34 @@ def test_channel_row_long_press_state_machine() -> None:
     row.after = fake_after  # type: ignore[method-assign]
     row.after_cancel = fake_after_cancel  # type: ignore[method-assign]
 
-    press = type("Ev", (), {"y_root": 100})()
-    row._on_drag_handle_press(press)
-    assert pending, "long-press timer should be scheduled"
-    assert log == []
+    try:
+        press = type("Ev", (), {"y_root": 100})()
+        row._on_drag_handle_press(press)
+        assert pending, "long-press timer should be scheduled"
+        assert log == []
 
-    pending[0]()
-    assert log == ["begin:100"]
+        pending[0]()
+        assert log == ["begin:100"]
 
-    move = type("Ev", (), {"y_root": 180})()
-    row._on_drag_handle_motion(move)
-    assert log[-1] == "motion:180"
+        move = type("Ev", (), {"y_root": 180})()
+        row._on_drag_handle_motion(move)
+        assert log[-1] == "motion:180"
 
-    row._on_drag_handle_release(type("Ev", (), {})())
-    assert log[-1] == "release"
-    assert row._drag_active is False
-
-    root.destroy()
+        row._on_drag_handle_release(type("Ev", (), {})())
+        assert log[-1] == "release"
+        assert row._drag_active is False
+    finally:
+        host.destroy()
 
 
 def test_channel_row_drag_phase_transitions() -> None:
     """The row-local gesture FSM moves idle → pending → armed → idle."""
     from stream_monitor.channel_row import ChannelRow
 
-    root, _ = _make_channel_row()
+    root, host, _ = _make_channel_row_host()
     pending: list[Any] = []
     row = ChannelRow(
-        root,
+        host,
         {"platform": "twitch", "name": "chan", "enabled": True},
         on_delete=lambda: None,
         on_move_up=lambda: None,
@@ -219,46 +256,50 @@ def test_channel_row_drag_phase_transitions() -> None:
     row.after = lambda _ms, cb: pending.append(cb) or "id"  # type: ignore[method-assign]
     row.after_cancel = lambda _id: pending.clear()  # type: ignore[method-assign]
 
-    assert row._drag_phase == "idle"
-    row._on_drag_handle_press(type("Ev", (), {"y_root": 100})())
-    assert row._drag_phase == "pending"
-    assert row._drag_active is False  # pending is not yet an active drag
-    pending[0]()  # long-press fires
-    assert row._drag_phase == "armed"
-    assert row._drag_active is True
-    row._on_drag_handle_release(type("Ev", (), {})())
-    assert row._drag_phase == "idle"
-    assert row._drag_active is False
-    root.destroy()
+    try:
+        assert row._drag_phase == "idle"
+        row._on_drag_handle_press(type("Ev", (), {"y_root": 100})())
+        assert row._drag_phase == "pending"
+        assert row._drag_active is False  # pending is not yet an active drag
+        pending[0]()  # long-press fires
+        assert row._drag_phase == "armed"
+        assert row._drag_active is True
+        row._on_drag_handle_release(type("Ev", (), {})())
+        assert row._drag_phase == "idle"
+        assert row._drag_active is False
+    finally:
+        host.destroy()
 
 
 def test_channel_row_cancel_reorder_drag_clears_active() -> None:
     from stream_monitor.channel_row import ChannelRow
 
-    root, _ = _make_channel_row()
+    _root, host, _ = _make_channel_row_host()
     row = ChannelRow(
-        root,
+        host,
         {"platform": "twitch", "name": "chan", "enabled": True},
         on_delete=lambda: None,
         on_move_up=lambda: None,
         on_move_down=lambda: None,
         on_toggle_enabled=lambda: None,
     )
-    row._drag_active = True
-    row.cancel_reorder_drag()
-    assert row._drag_active is False
-    root.destroy()
+    try:
+        row._drag_active = True
+        row.cancel_reorder_drag()
+        assert row._drag_active is False
+    finally:
+        host.destroy()
 
 
 def test_channel_row_motion_before_arm_cancels_long_press() -> None:
     from stream_monitor.channel_row import ChannelRow
 
     log: list[str] = []
-    root, _ = _make_channel_row()
+    _root, host, _ = _make_channel_row_host()
     pending: list[Any] = []
 
     row = ChannelRow(
-        root,
+        host,
         {"platform": "twitch", "name": "chan", "enabled": True},
         on_delete=lambda: None,
         on_move_up=lambda: None,
@@ -269,30 +310,33 @@ def test_channel_row_motion_before_arm_cancels_long_press() -> None:
     row.after = lambda _ms, cb: pending.append(cb) or "id"  # type: ignore[method-assign]
     row.after_cancel = lambda _id: pending.clear()  # type: ignore[method-assign]
 
-    row._on_drag_handle_press(type("Ev", (), {"y_root": 100})())
-    row._on_drag_handle_motion(type("Ev", (), {"y_root": 130})())
-    assert pending == []
-    row._on_drag_handle_release(type("Ev", (), {})())
-    assert log == []
-
-    root.destroy()
+    try:
+        row._on_drag_handle_press(type("Ev", (), {"y_root": 100})())
+        row._on_drag_handle_motion(type("Ev", (), {"y_root": 130})())
+        assert pending == []
+        row._on_drag_handle_release(type("Ev", (), {})())
+        assert log == []
+    finally:
+        host.destroy()
 
 
 def test_move_frame_button_heights_match_spec() -> None:
     from stream_monitor.channel_row import ChannelRow
 
-    root, _ = _make_channel_row()
+    root, host, _ = _make_channel_row_host()
     row = ChannelRow(
-        root,
+        host,
         {"platform": "twitch", "name": "x", "enabled": True},
         on_delete=lambda: None,
         on_move_up=lambda: None,
         on_move_down=lambda: None,
         on_toggle_enabled=lambda: None,
     )
-    row.pack()
-    root.update_idletasks()
-    assert row.up_btn.cget("height") == 20
-    assert row.down_btn.cget("height") == 20
-    assert row.drag_handle.cget("height") == 6
-    root.destroy()
+    try:
+        row.pack()
+        root.update_idletasks()
+        assert row.up_btn.cget("height") == 20
+        assert row.down_btn.cget("height") == 20
+        assert row.drag_handle.cget("height") == 6
+    finally:
+        host.destroy()

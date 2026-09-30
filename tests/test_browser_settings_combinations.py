@@ -50,6 +50,46 @@ from stream_monitor.action_plan import action_plan_for
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
 
+# One hidden CTk root for this module; keep alive until pytest process exits.
+# Prefer an already-live default root over creating a second top-level CTk.
+_CTK_ROOT = None
+_CTK_ROOT_ERROR: BaseException | None = None
+
+
+def _module_ctk_root():
+    """Return a live CTk/Tk root, creating one only when none exists yet."""
+    global _CTK_ROOT, _CTK_ROOT_ERROR
+    if _CTK_ROOT is not None:
+        try:
+            if int(_CTK_ROOT.winfo_exists()):
+                return _CTK_ROOT
+        except Exception:  # noqa: BLE001
+            _CTK_ROOT = None
+
+    try:
+        import tkinter as tk
+
+        existing = tk._default_root
+        if existing is not None and int(existing.winfo_exists()):
+            _CTK_ROOT = existing
+            _CTK_ROOT_ERROR = None
+            return _CTK_ROOT
+    except Exception:  # noqa: BLE001
+        pass
+
+    if _CTK_ROOT_ERROR is not None:
+        pytest.skip(f"Tk unavailable in this environment: {_CTK_ROOT_ERROR}")
+    try:
+        import customtkinter as ctk
+
+        root = ctk.CTk()
+        root.withdraw()
+    except Exception as exc:  # noqa: BLE001 — Tk missing on headless CI
+        _CTK_ROOT_ERROR = exc
+        pytest.skip(f"Tk unavailable in this environment: {exc}")
+    _CTK_ROOT = root
+    return root
+
 
 def _execute(action: str, info, **kwargs):
     plan = action_plan_for(action)
@@ -2221,28 +2261,17 @@ def test_dialog_preserves_foreground_hold_seconds_without_ui() -> None:
     so the dialog has to carry the incoming value through rather than reset it
     to the default on every save.
     """
+    from stream_monitor.app_dialogs import BrowserSettingsDialog
+
+    root = _module_ctk_root()
+    dialog = BrowserSettingsDialog(
+        root,
+        {"enabled": True},
+        {"enabled": True, "foreground_hold_seconds": 30},
+    )
     try:
-        import customtkinter as ctk
-
-        from stream_monitor.app_dialogs import BrowserSettingsDialog
-
-        root = ctk.CTk()
-        root.withdraw()
-    except Exception as exc:  # noqa: BLE001 — Tk missing on headless CI
-        import pytest
-
-        pytest.skip(f"Tk unavailable in this environment: {exc}")
-    try:
-        dialog = BrowserSettingsDialog(
-            root,
-            {"enabled": True},
-            {"enabled": True, "foreground_hold_seconds": 30},
-        )
-        try:
-            collected = dialog._collect_viewer_engagement()
-            assert collected["foreground_hold_seconds"] == 30
-            assert collected["enabled"] is True
-        finally:
-            dialog.destroy()
+        collected = dialog._collect_viewer_engagement()
+        assert collected["foreground_hold_seconds"] == 30
+        assert collected["enabled"] is True
     finally:
-        root.destroy()
+        dialog.destroy()
