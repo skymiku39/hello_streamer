@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from stream_monitor import chrome_prefs, config_manager, notifier
 from stream_monitor.viewer_engagement_model import (
@@ -10,6 +11,8 @@ from stream_monitor.viewer_engagement_model import (
     coerce_viewer_engagement,
     is_twitch_url,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +543,7 @@ _FORBIDDEN_COPY_FRAGMENTS = (
     "첫 하트비트가 시청 중으로 인식",
     "reduce missed counts from sleep",
     "降低因休眠等導致觀看不被計入的機率",
+    "降低背景分頁／休眠導致觀看不被計入的機率",
     "降低因休眠等导致观看不被计入的概率",
     "スリープ等による未計上リスクを軽減",
     "절전 등으로 집계되지 않을 가능성을 줄입니다",
@@ -577,3 +581,9 @@ def test_engagement_i18n_matches_twitch_viewer_count_faq() -> None:
     assert "artificial view inflation" in en_tips
     assert "coordinated fake engagement" in en_tips
     assert "unspecified" in en_tips
+
+    # README (repo root) must not restate unsupported count claims.
+    readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert _OFFICIAL_VIEWER_COUNT_URL in readme
+    for fragment in _FORBIDDEN_COPY_FRAGMENTS:
+        assert fragment not in readme, fragment

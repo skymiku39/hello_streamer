@@ -173,7 +173,7 @@ Hello Streamer 內建多國語言介面，可透過主視窗左上方的語言�
 
 ### 觀看認定與頁內輔助（Twitch）
 
-瀏覽器設定中的「觀看認定」可降低背景分頁／休眠導致觀看不被計入的機率（強制可見、防休眠、Chrome 省電白名單、短暫前景）。
+瀏覽器設定中的「觀看認定」僅為 best-effort 嘗試維持本程式開啟的直播持續播放（強制可見、防休眠、Chrome 省電白名單、短暫前景），不保證 Twitch 會將觀看計入。依 [Twitch 官方觀看人數 FAQ](https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat)：背景或未聚焦的分頁只要直播影片持續播放仍會計入；觀看人數更新可能需要數分鐘。
 
 另有可選的 **頁內輔助（CDP）**：內容分級確認、Channel Points 寶箱、劇院模式（Alt+T）、定時刷新。此功能：
 
