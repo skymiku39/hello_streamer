@@ -504,3 +504,76 @@ def test_release_keep_awake_holds_while_another_tracked_window_remains(
     finally:
         notifier._ENGAGEMENT_AWAKE_URLS.clear()
         notifier._ENGAGEMENT_AWAKE_SINCE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Localized copy — Twitch Viewer Count FAQ alignment (issue #7)
+# ---------------------------------------------------------------------------
+_OFFICIAL_VIEWER_COUNT_URL = (
+    "https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat"
+)
+_OFFICIAL_BOT_URL = (
+    "https://help.twitch.tv/s/article/how-to-handle-view-follow-bots"
+)
+
+# False claims that official Twitch sources do not support.
+_FORBIDDEN_COPY_FRAGMENTS = (
+    "only up to 2 Twitch streams per IP",
+    "同一 IP 同時最多 2",
+    "同一 IP 同时最多 2",
+    "同一 IP で同時に計上されるのは最大 2",
+    "동일 IP에서 동시에 집계되는 것은 최대 2",
+    "mute the tab, not the player's speaker",
+    "請對「分頁」靜音而非點播放器喇叭",
+    "请对“标签页”静音而非点播放器喇叭",
+    "プレーヤーのスピーカーではなく「タブ」をミュート",
+    '플레이어 스피커가 아니라 "탭"을 음소거',
+    "keeps sending its heartbeat and the player keeps rendering",
+    "只在分頁持續送出心跳且播放器持續播放時才計入",
+    "只在标签页持续发送心跳且播放器持续播放时才计入",
+    "タブがハートビートを送り続け、プレーヤーが再生し続けている間だけ",
+    "탭이 하트비트를 계속 보내고 플레이어가 계속 재생될 때만",
+    "first heartbeat counts as watched",
+    "確保首次心跳被認定為觀看中",
+    "确保首次心跳被认定为观看中",
+    "最初のハートビートを視聴中と認識",
+    "첫 하트비트가 시청 중으로 인식",
+    "reduce missed counts from sleep",
+    "降低因休眠等導致觀看不被計入的機率",
+    "降低因休眠等导致观看不被计入的概率",
+    "スリープ等による未計上リスクを軽減",
+    "절전 등으로 집계되지 않을 가능성을 줄입니다",
+)
+
+
+def test_engagement_i18n_matches_twitch_viewer_count_faq() -> None:
+    """All five locales must reflect official FAQ facts; no unsupported claims."""
+    from stream_monitor import i18n
+
+    for code, table in i18n._TRANSLATIONS.items():
+        intro = table["engagement.intro"]
+        tips = table["engagement.tips"]
+        bring_hint = table["engagement.toggle.bring_front.hint"]
+        tooltip = table["tooltip.viewer_engagement"]
+        combined = f"{intro}\n{tips}\n{bring_hint}\n{tooltip}"
+
+        assert _OFFICIAL_VIEWER_COUNT_URL in tips, code
+        assert _OFFICIAL_BOT_URL in tips, code
+
+        for fragment in _FORBIDDEN_COPY_FRAGMENTS:
+            assert fragment not in combined, (code, fragment)
+
+    # English copy is the SSOT for FAQ facts; other locales mirror the meaning.
+    en = i18n._TRANSLATIONS["en"]
+    en_intro = en["engagement.intro"]
+    en_tips = en["engagement.tips"]
+    assert "muted Twitch player or browser tab still counts" in en_intro
+    assert "background or unfocused tab still counts" in en_intro
+    assert "viewer-count updates may take a few minutes" in en_intro
+    assert "do not state a fixed tab-heartbeat interval" in en_intro
+    assert "per-IP view limit" in en_intro
+    assert "only attempt to keep playback active" in en_intro
+    assert "do not guarantee view credit" in en_intro
+    assert "artificial view inflation" in en_tips
+    assert "coordinated fake engagement" in en_tips
+    assert "unspecified" in en_tips
