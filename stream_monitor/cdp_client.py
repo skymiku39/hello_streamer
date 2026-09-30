@@ -1,8 +1,9 @@
 """Minimal Chromium DevTools Protocol client for Twitch page assist.
 
 Source-run only. Packaged builds must not import the execution path that
-attaches to a live browser; helpers that allocate a port remain safe to call
-from tests.
+attaches to a live browser. Production cold-start uses Chromium's
+``--remote-debugging-port=0`` plus ``DevToolsActivePort`` resolution;
+port-lease helpers remain only for tests / legacy callers.
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ _CDP_VK_T = 84
 
 # Bound attach waits so a missing endpoint fails promptly instead of hanging.
 DEFAULT_CDP_ATTACH_TIMEOUT_S = 12.0
+# Already-running profiles either expose CDP immediately or never will.
+BUSY_CDP_ATTACH_TIMEOUT_S = 1.5
 
 
 @dataclass(frozen=True)
@@ -40,13 +43,13 @@ class CdpAttachResult:
 
 @dataclass
 class DebuggingPortLease:
-    """Hold an ephemeral localhost port until Chrome is about to bind it."""
+    """Test helper: hold an ephemeral localhost port (not used in production)."""
 
     port: int
     _sock: socket.socket | None = field(default=None, repr=False)
 
     def release(self) -> int:
-        """Close the binder so the browser can claim *port*. Returns the port."""
+        """Close the binder so a caller can claim *port*. Returns the port."""
         sock = self._sock
         self._sock = None
         if sock is not None:
@@ -58,7 +61,7 @@ class DebuggingPortLease:
 
 
 def lease_debugging_port() -> DebuggingPortLease:
-    """Bind and hold an ephemeral port to shrink the cold-start race window."""
+    """Bind and hold an ephemeral port (tests / legacy only)."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -146,54 +149,69 @@ def resolve_cdp_attach(
     preferred_port: int | None = None,
     profile_was_busy: bool = False,
     timeout: float = DEFAULT_CDP_ATTACH_TIMEOUT_S,
-    clock: Callable[[], float] = time.monotonic,
-    sleep: Callable[[float], None] = time.sleep,
-    endpoint_probe: Callable[..., bool] = probe_cdp_endpoint,
-    wait_devtools: Callable[..., CdpAttachResult] = wait_for_devtools_active_port,
+    poll_interval: float = 0.2,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+    endpoint_probe: Callable[..., bool] | None = None,
+    port_reader: Callable[[str], int | None] | None = None,
 ) -> CdpAttachResult:
-    """Resolve a CDP port after launch without unbounded waiting.
+    """Resolve a usable CDP port without unbounded waiting.
 
-    Fresh profiles typically expose ``preferred_port`` or DevToolsActivePort.
-    An already-running shared profile often ignores new debugging flags; that
-    surfaces as a timely ``profile_busy`` / ``timeout`` failure instead of hang.
+    Production cold-start launches with ``--remote-debugging-port=0`` and then
+    polls + validates ``DevToolsActivePort``. An already-running profile is
+    attached only when an existing endpoint is already usable; otherwise this
+    returns promptly with ``reason=profile_busy``.
     """
-    deadline = clock() + max(0.5, timeout)
-    if preferred_port and preferred_port > 0:
-        while clock() < deadline:
-            if endpoint_probe(preferred_port, timeout=min(1.0, timeout)):
+    tick = clock or time.monotonic
+    pause = sleep or time.sleep
+    probe = endpoint_probe or probe_cdp_endpoint
+    reader = port_reader or read_devtools_active_port
+
+    effective_timeout = float(timeout)
+    if profile_was_busy:
+        effective_timeout = min(effective_timeout, BUSY_CDP_ATTACH_TIMEOUT_S)
+    deadline = tick() + max(0.05, effective_timeout)
+    probe_timeout = min(1.0, max(0.2, effective_timeout))
+
+    while tick() < deadline:
+        if preferred_port and preferred_port > 0:
+            if probe(preferred_port, timeout=probe_timeout):
                 return CdpAttachResult(
                     ok=True, port=preferred_port, reason="preferred_port"
                 )
-            sleep(0.2)
-        if profile_was_busy:
-            return CdpAttachResult(
-                ok=False,
-                reason="profile_busy",
-                message=(
-                    "Existing browser/profile did not expose CDP on "
-                    f"port {preferred_port}"
-                ),
-            )
+        port = reader(user_data_dir)
+        if port is not None and probe(port, timeout=probe_timeout):
+            return CdpAttachResult(ok=True, port=port, reason="devtools_file")
+        pause(max(0.05, poll_interval))
+
+    if profile_was_busy:
+        detail = (
+            f"on port {preferred_port}"
+            if preferred_port and preferred_port > 0
+            else "via DevToolsActivePort"
+        )
+        return CdpAttachResult(
+            ok=False,
+            reason="profile_busy",
+            message=(
+                "Existing browser/profile did not expose a usable CDP endpoint "
+                f"{detail}"
+            ),
+        )
+    if preferred_port and preferred_port > 0:
         return CdpAttachResult(
             ok=False,
             reason="timeout",
             message=f"CDP endpoint not ready on port {preferred_port}",
         )
-
-    remaining = max(0.5, deadline - clock())
-    result = wait_devtools(user_data_dir, timeout=remaining, clock=clock, sleep=sleep)
-    if result.ok:
-        return result
-    if profile_was_busy:
-        return CdpAttachResult(
-            ok=False,
-            reason="profile_busy",
-            message=(
-                "Existing browser/profile did not write a usable "
-                "DevToolsActivePort endpoint"
-            ),
-        )
-    return result
+    return CdpAttachResult(
+        ok=False,
+        reason="timeout",
+        message=(
+            f"DevToolsActivePort / CDP endpoint not ready within "
+            f"{effective_timeout:.1f}s under {user_data_dir!r}"
+        ),
+    )
 
 
 def _list_targets(port: int, timeout: float = 2.0) -> list[dict[str, Any]]:

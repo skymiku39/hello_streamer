@@ -214,46 +214,22 @@ def test_allocate_debugging_port_is_bindable() -> None:
     assert 0 < port < 65536
 
 
-def test_cdp_fresh_profile_resolves_preferred_port_without_browser() -> None:
-    from stream_monitor.cdp_client import resolve_cdp_attach
-
-    result = resolve_cdp_attach(
-        "",
-        preferred_port=9333,
-        profile_was_busy=False,
-        timeout=0.6,
-        clock=lambda: 0.0,
-        sleep=lambda _s: None,
-        endpoint_probe=lambda port, timeout=1.0: port == 9333,
+def test_build_browser_args_includes_ephemeral_cdp_port() -> None:
+    args = notifier._build_browser_args(
+        "https://www.twitch.tv/foo",
+        {
+            "browser_path": "chrome",
+            "user_data_dir": "C:/tmp/profile",
+            "app_mode": True,
+            "apply_geometry": False,
+            "_cdp_debugging_port": 0,
+        },
     )
-    assert result.ok is True
-    assert result.port == 9333
-    assert result.reason == "preferred_port"
+    assert "--remote-debugging-port=0" in args
+    assert "--remote-allow-origins=*" in args
 
 
-def test_cdp_existing_profile_busy_fails_timely_without_browser(tmp_path) -> None:
-    from stream_monitor.cdp_client import profile_looks_busy, resolve_cdp_attach
-
-    (tmp_path / "SingletonLock").write_text("busy", encoding="utf-8")
-    assert profile_looks_busy(str(tmp_path)) is True
-
-    times = iter([0.0, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
-
-    result = resolve_cdp_attach(
-        str(tmp_path),
-        preferred_port=9444,
-        profile_was_busy=True,
-        timeout=2.0,
-        clock=lambda: next(times),
-        sleep=lambda _s: None,
-        endpoint_probe=lambda *_a, **_k: False,
-    )
-    assert result.ok is False
-    assert result.reason == "profile_busy"
-    assert "Existing browser/profile" in result.message
-
-
-def test_build_browser_args_includes_cdp_port() -> None:
+def test_build_browser_args_includes_explicit_cdp_port() -> None:
     args = notifier._build_browser_args(
         "https://www.twitch.tv/foo",
         {
@@ -268,35 +244,48 @@ def test_build_browser_args_includes_cdp_port() -> None:
     assert "--remote-allow-origins=*" in args
 
 
-def test_open_with_browser_settings_starts_page_assist(
-    monkeypatch, tmp_path
-) -> None:
-    monkeypatch.delattr(sys, "frozen", raising=False)
-    started: list[tuple[str, int]] = []
-
-    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *a, **k: object())
+def _patch_open_browser_common(monkeypatch) -> None:
     monkeypatch.setattr(notifier, "_is_windows", lambda: True)
-    import stream_monitor.cdp_client as cdp_client
-
-    class _Lease:
-        port = 18888
-
-        def release(self) -> int:
-            return self.port
-
-    monkeypatch.setattr(cdp_client, "lease_debugging_port", lambda: _Lease())
-    monkeypatch.setattr(cdp_client, "profile_looks_busy", lambda _p: False)
-    monkeypatch.setattr(
-        notifier,
-        "start_page_assist",
-        lambda url, port, settings: started.append((url, port)) or True,
-    )
     monkeypatch.setattr(
         notifier,
         "_apply_new_browser_window_settings_async",
         lambda *a, **k: None,
     )
     monkeypatch.setattr(notifier, "_enum_browser_hwnds", lambda *_a, **_k: set())
+
+
+def test_open_fresh_profile_ephemeral_port_resolves_devtools(
+    monkeypatch, tmp_path
+) -> None:
+    """Production path: --remote-debugging-port=0 then DevToolsActivePort."""
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    import stream_monitor.cdp_client as cdp_client
+
+    profile = tmp_path / "profile"
+    started: list[tuple[str, int]] = []
+    launched: list[list[str]] = []
+
+    def fake_popen(args, **_k):
+        launched.append(list(args))
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / "DevToolsActivePort").write_text(
+            "34567\n/devtools/browser/fake\n", encoding="utf-8"
+        )
+        return object()
+
+    _patch_open_browser_common(monkeypatch)
+    monkeypatch.setattr(notifier.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(cdp_client, "profile_looks_busy", lambda _p: False)
+    monkeypatch.setattr(
+        cdp_client,
+        "probe_cdp_endpoint",
+        lambda port, timeout=1.5: port == 34567,
+    )
+    monkeypatch.setattr(
+        notifier,
+        "start_page_assist",
+        lambda url, port, settings: started.append((url, port)) or True,
+    )
 
     notifier.configure_viewer_engagement(
         ViewerEngagementSettings(
@@ -313,13 +302,198 @@ def test_open_with_browser_settings_starts_page_assist(
                 "browser_path": "chrome",
                 "app_mode": True,
                 "new_window": False,
-                "user_data_dir": str(tmp_path / "profile"),
+                "user_data_dir": str(profile),
                 "per_channel_profile": False,
             },
             manage=True,
         )
         assert ok is True
-        assert started == [("https://www.twitch.tv/foo", 18888)]
+        assert launched, "browser should still launch"
+        assert "--remote-debugging-port=0" in launched[0]
+        assert started == [("https://www.twitch.tv/foo", 34567)]
+    finally:
+        notifier.configure_viewer_engagement(None)
+        stop_all_page_assist()
+
+
+def test_open_busy_profile_attaches_existing_usable_endpoint(
+    monkeypatch, tmp_path
+) -> None:
+    """Busy profile with a live CDP endpoint still starts page assist."""
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    import stream_monitor.cdp_client as cdp_client
+
+    profile = tmp_path / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "SingletonLock").write_text("busy", encoding="utf-8")
+    (profile / "DevToolsActivePort").write_text(
+        "35555\n/devtools/browser/existing\n", encoding="utf-8"
+    )
+
+    started: list[tuple[str, int]] = []
+    launched: list[list[str]] = []
+
+    def fake_popen(args, **_k):
+        launched.append(list(args))
+        return object()
+
+    _patch_open_browser_common(monkeypatch)
+    monkeypatch.setattr(notifier.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        cdp_client,
+        "probe_cdp_endpoint",
+        lambda port, timeout=1.5: port == 35555,
+    )
+    monkeypatch.setattr(
+        notifier,
+        "start_page_assist",
+        lambda url, port, settings: started.append((url, port)) or True,
+    )
+
+    notifier.configure_viewer_engagement(
+        ViewerEngagementSettings(
+            enabled=True,
+            page_assist_enabled=True,
+            keep_system_awake=False,
+        )
+    )
+    try:
+        ok = notifier._open_with_browser_settings(
+            "https://www.twitch.tv/foo",
+            {
+                "enabled": True,
+                "browser_path": "chrome",
+                "app_mode": True,
+                "new_window": False,
+                "user_data_dir": str(profile),
+                "per_channel_profile": False,
+            },
+            manage=True,
+        )
+        assert ok is True
+        assert launched, "ordinary browser launch must still happen"
+        assert "--remote-debugging-port=0" not in launched[0]
+        assert started == [("https://www.twitch.tv/foo", 35555)]
+    finally:
+        notifier.configure_viewer_engagement(None)
+        stop_all_page_assist()
+
+
+def test_open_busy_profile_without_cdp_skips_page_assist_promptly(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    """Busy profile without a usable CDP endpoint fails fast and skips worker."""
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    import stream_monitor.cdp_client as cdp_client
+    import time as time_mod
+
+    profile = tmp_path / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "SingletonLock").write_text("busy", encoding="utf-8")
+
+    started: list[tuple[str, int]] = []
+    _patch_open_browser_common(monkeypatch)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *a, **k: object())
+    monkeypatch.setattr(
+        cdp_client, "probe_cdp_endpoint", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(cdp_client, "BUSY_CDP_ATTACH_TIMEOUT_S", 0.4)
+    monkeypatch.setattr(time_mod, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        notifier,
+        "start_page_assist",
+        lambda url, port, settings: started.append((url, port)) or True,
+    )
+
+    notifier.configure_viewer_engagement(
+        ViewerEngagementSettings(
+            enabled=True,
+            page_assist_enabled=True,
+            keep_system_awake=False,
+        )
+    )
+    try:
+        with caplog.at_level("WARNING"):
+            t0 = time_mod.perf_counter()
+            ok = notifier._open_with_browser_settings(
+                "https://www.twitch.tv/foo",
+                {
+                    "enabled": True,
+                    "browser_path": "chrome",
+                    "app_mode": True,
+                    "new_window": False,
+                    "user_data_dir": str(profile),
+                    "per_channel_profile": False,
+                },
+                manage=True,
+            )
+            elapsed = time_mod.perf_counter() - t0
+        assert ok is True
+        assert started == []
+        assert elapsed < 2.0
+        assert any(
+            "profile_busy" in rec.message and "CDP attach failed" in rec.message
+            for rec in caplog.records
+        )
+    finally:
+        notifier.configure_viewer_engagement(None)
+        stop_all_page_assist()
+
+
+def test_open_fresh_profile_devtools_timeout_skips_page_assist(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    """Fresh profile whose DevToolsActivePort never appears times out boundedly."""
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    import stream_monitor.cdp_client as cdp_client
+    import time as time_mod
+
+    profile = tmp_path / "profile"
+    started: list[tuple[str, int]] = []
+    _patch_open_browser_common(monkeypatch)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *a, **k: object())
+    monkeypatch.setattr(cdp_client, "profile_looks_busy", lambda _p: False)
+    monkeypatch.setattr(
+        cdp_client, "probe_cdp_endpoint", lambda *_a, **_k: False
+    )
+    monkeypatch.setattr(cdp_client, "DEFAULT_CDP_ATTACH_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(time_mod, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        notifier,
+        "start_page_assist",
+        lambda url, port, settings: started.append((url, port)) or True,
+    )
+
+    notifier.configure_viewer_engagement(
+        ViewerEngagementSettings(
+            enabled=True,
+            page_assist_enabled=True,
+            keep_system_awake=False,
+        )
+    )
+    try:
+        with caplog.at_level("WARNING"):
+            t0 = time_mod.perf_counter()
+            ok = notifier._open_with_browser_settings(
+                "https://www.twitch.tv/foo",
+                {
+                    "enabled": True,
+                    "browser_path": "chrome",
+                    "app_mode": True,
+                    "new_window": False,
+                    "user_data_dir": str(profile),
+                    "per_channel_profile": False,
+                },
+                manage=True,
+            )
+            elapsed = time_mod.perf_counter() - t0
+        assert ok is True
+        assert started == []
+        assert elapsed < 2.5
+        assert any(
+            "reason=timeout" in rec.message and "CDP attach failed" in rec.message
+            for rec in caplog.records
+        )
     finally:
         notifier.configure_viewer_engagement(None)
         stop_all_page_assist()
