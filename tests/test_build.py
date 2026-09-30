@@ -157,6 +157,35 @@ def test_release_workflow_statically_wires_gates() -> None:
     assert "--system-site-packages" in text
 
 
+def test_readme_release_assets_match_workflow_naming() -> None:
+    """README download names/policy must track release.yml tag-driven artifacts."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    workflow = RELEASE_YML.read_text(encoding="utf-8")
+
+    windows_pattern = "HelloStreamer-${{ github.ref_name }}-windows-x64.zip"
+    linux_pattern = (
+        "HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz"
+    )
+    assert windows_pattern in workflow
+    assert linux_pattern in workflow
+    assert "artifact: linux-x64" in workflow
+    assert "artifact: linux-arm64" in workflow
+
+    assert "HelloStreamer-v1.2.1-windows-x64.zip" in readme
+    assert "HelloStreamer-v1.2.1-linux-x64.tar.gz" in readme
+    assert "HelloStreamer-v1.2.1-linux-arm64.tar.gz" in readme
+    assert "HelloStreamer-${tag}-windows-x64.zip" in readme
+    assert "HelloStreamer-${tag}-linux-x64.tar.gz" in readme
+    assert "HelloStreamer-${tag}-linux-arm64.tar.gz" in readme
+    assert (
+        "https://github.com/skymiku39/hello_streamer/releases/latest" in readme
+    )
+    assert "_internal" in readme
+    assert "整包解壓" in readme
+    assert "可執行檔已自 GitHub 移除" in readme
+    assert "僅保留版本說明與 tag 供查閱" in readme
+
+
 def test_release_workflow_linux_matrix_validates_before_package_and_upload() -> None:
     """Both linux/amd64 and linux/arm64 must smoke-check before packaging/upload."""
     text = RELEASE_YML.read_text(encoding="utf-8")
