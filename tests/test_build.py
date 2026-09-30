@@ -118,6 +118,14 @@ def test_release_workflow_statically_wires_gates() -> None:
     assert "--validate-windows-onedir" in text
     assert "dist/HelloStreamer" in text
     assert "HelloStreamer.exe --self-check" in text
+    # Issue #9: Windows + Linux share the same pinned uv and locked sync.
+    assert 'UV_VERSION: "0.12.20"' in text
+    assert "version: ${{ env.UV_VERSION }}" in text
+    assert "astral.sh/uv/${UV_VERSION}/install.sh" in text
+    assert text.count("uv sync --locked --extra dev") >= 2
+    assert text.count("uv tree --locked --extra dev --depth 2") == 2
+    assert "pip install -e" not in text
+    assert "--system-site-packages" in text
 
 
 def test_app_exposes_frozen_self_check_path() -> None:
