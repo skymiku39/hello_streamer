@@ -20,9 +20,41 @@ from stream_monitor.monitor.types import (
 
 logger = logging.getLogger(__name__)
 
+# Soft failures while LIVE: keep status, do not accumulate offline strikes.
+_YOUTUBE_SOFT_UNAVAILABLE_REASONS = frozenset(
+    {
+        "http backoff",
+        "rate limited",
+        "ytInitialData parse failure",
+        "http 403",
+        "http 408",
+        "http 5xx",
+        "request error",
+        "request timeout",
+    }
+)
+
 
 class OfflineEnqueueMixin:
     """Drives the offline commit path: prepare, build, finalize, enqueue."""
+
+    def _youtube_soft_unavailable_hold(
+        self,
+        entry: ChannelEntry,
+        *,
+        label: str,
+        reason: str,
+    ) -> bool:
+        """True when a YouTube unavailability is not proof of being offline."""
+        if not label.startswith("YouTube"):
+            return False
+        if reason in _YOUTUBE_SOFT_UNAVAILABLE_REASONS:
+            return True
+        try:
+            fetcher = _monitor_deps.get_fetcher(entry.platform)
+        except Exception:
+            return False
+        return bool(getattr(fetcher, "http_backoff_active", lambda: False)())
 
     def _offline_payload_for(
         self, entry: ChannelEntry, live_key: str, prev: Any
@@ -173,6 +205,19 @@ class OfflineEnqueueMixin:
             prev = self._last_status.get(entry.key)
             prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
             strikes_before = self._offline_strikes.get(live_key, 0)
+
+            if prev_status is True and self._youtube_soft_unavailable_hold(
+                entry, label=label, reason=reason
+            ):
+                logger.warning(
+                    "%s %s: %s (rate-limit/backoff), keeping prev_status=True "
+                    "strikes=%s unchanged",
+                    label,
+                    entry.key,
+                    reason,
+                    strikes_before,
+                )
+                return []
 
             if prev_status is True:
                 miss = self._record_offline_miss(

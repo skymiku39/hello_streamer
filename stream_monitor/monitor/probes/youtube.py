@@ -49,8 +49,13 @@ class YouTubePlatformProbe:
             )
 
         if items is None:
+            reason = getattr(fetcher, "last_unavailable_reason", "") or (
+                "http backoff"
+                if getattr(fetcher, "http_backoff_active", lambda: False)()
+                else "fetch returned None"
+            )
             return facade.handle_fetch_unavailable(
-                entry, label="YouTube", snap=snap
+                entry, label="YouTube", snap=snap, reason=reason
             )
 
         snap.fetcher = fetcher
@@ -175,7 +180,9 @@ class YouTubePlatformProbe:
         snap.youtube_pending_seen = pending_seen
         with session.lock:
             session.probe_snapshots[entry.key] = snap
-        if facade.wake_verify_mode:
+            prev = session.last_status.get(entry.key)
+            prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
+        if facade.wake_verify_mode and prev_status is True:
             return []
         return new_events
 
@@ -416,11 +423,21 @@ class YouTubePlatformProbe:
             info = fetcher.get_stream_info(entry.name)
         except Exception:
             logger.exception("Error fetching fallback status for %s", entry.key)
-            return []
+            return facade.handle_fetch_unavailable(
+                entry,
+                label="YouTube fallback",
+                snap=snap,
+                reason="fallback exception",
+            )
 
         if info is None:
+            reason = (
+                "http backoff"
+                if getattr(fetcher, "http_backoff_active", lambda: False)()
+                else "fetch returned None"
+            )
             return facade.handle_fetch_unavailable(
-                entry, label="YouTube fallback"
+                entry, label="YouTube fallback", snap=snap, reason=reason
             )
 
         live_key = _live_cache_key(entry.key)
@@ -472,7 +489,7 @@ class YouTubePlatformProbe:
 
         snap.youtube_fallback_info = info
 
-        if facade.wake_verify_mode:
+        if facade.wake_verify_mode and prev_status is True:
             return []
 
         went_live = info.is_live and prev_status is not True

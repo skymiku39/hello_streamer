@@ -1661,6 +1661,35 @@ def test_startup_refresh_runs_once_after_seeded_first_poll(
     db.close()
 
 
+def test_startup_refresh_dispatches_live_edges_to_event_bus(
+    monkeypatch, tmp_path,
+) -> None:
+    """A live edge found by startup refresh must reach trigger consumers."""
+    db = SeenVideoDB(tmp_path / "test.db")
+    bus = MonitorEventBus()
+    entry = ChannelEntry(platform="twitch", name="hello")
+    info = StreamInfo(
+        channel="hello",
+        platform="twitch",
+        is_live=True,
+        title="Live now",
+        url="https://www.twitch.tv/hello",
+        display_name="Hello Channel",
+    )
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hello"}],
+        db=db,
+        event_bus=bus,
+    )
+    monkeypatch.setattr(monitor, "_probe_live", lambda _entry: [(entry, info)])
+    monkeypatch.setattr(monitor, "_refresh_details", lambda _entry: lambda: None)
+
+    monitor._run_startup_refresh([entry], time.monotonic())
+
+    assert any(isinstance(event, ChannelWentLive) for event in bus.drain())
+    db.close()
+
+
 def test_youtube_cold_offline_rejects_merge_confirmed_from_future_vod(
     tmp_path,
 ) -> None:

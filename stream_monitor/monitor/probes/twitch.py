@@ -105,7 +105,7 @@ class TwitchPlatformProbe:
         snap.twitch_info = info
         snap.fetcher = fetcher
 
-        if facade.wake_verify_mode:
+        if facade.wake_verify_mode and prev_status is True:
             return []
 
         went_live = info.is_live and prev_status is not True

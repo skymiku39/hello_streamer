@@ -35,6 +35,9 @@ class _FakeSink:
     def iter_channel_rows(self) -> list:
         return []
 
+    def is_channel_active(self, entry: ChannelEntry) -> bool:
+        return True
+
     def set_poll_waiting(self) -> None:
         pass
 

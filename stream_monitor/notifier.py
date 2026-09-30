@@ -29,6 +29,8 @@ from stream_monitor.action_executor import (
 from stream_monitor.action_plan import ActionPlan
 from stream_monitor.browser_settings_model import (
     BrowserSettings,
+    DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH,
     coerce_browser_settings,
 )
 from stream_monitor.chrome_prefs import merge_tab_discarding_exceptions
@@ -123,6 +125,12 @@ from stream_monitor.browser_win32 import (  # noqa: E402, F401
     set_system_keep_awake,
     tracked_hwnds_for_url,
 )
+from stream_monitor.twitch_page_assist import (  # noqa: E402
+    should_start_page_assist,
+    start_page_assist,
+    stop_all_page_assist,
+    stop_page_assist,
+)
 from stream_monitor.viewer_engagement_model import (  # noqa: E402
     ViewerEngagementSettings,
     coerce_viewer_engagement,
@@ -180,12 +188,14 @@ _prune_off_topic_tracked_windows_impl = prune_off_topic_tracked_windows
 def close_browser_window_for_url(
     url: str, *, title_keywords: list[str] | None = None
 ) -> int:
+    stop_page_assist(url)
     closed = _close_browser_window_for_url_impl(url, title_keywords=title_keywords)
     _release_engagement_keep_awake(url)
     return closed
 
 
 def close_all_tracked_windows() -> int:
+    stop_all_page_assist()
     closed = _close_all_tracked_windows_impl()
     with _ENGAGEMENT_AWAKE_LOCK:
         _ENGAGEMENT_AWAKE_URLS.clear()
@@ -210,6 +220,7 @@ def prune_off_topic_tracked_windows(*, min_age_s: float = 6.0) -> int:
             now - since >= max(min_age_s, 0.0)
             and not tracked_hwnds_for_url(url)
         ):
+            stop_page_assist(url)
             _release_engagement_keep_awake(url)
     return closed
 
@@ -487,7 +498,7 @@ def _wants_geometry_flags(
         return False
     if x or y:
         return True
-    if width != 1280 or height != 720:
+    if width != DEFAULT_WINDOW_WIDTH or height != DEFAULT_WINDOW_HEIGHT:
         return True
     return False
 
@@ -506,8 +517,10 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
     new_window = bool(settings.get("new_window", True))
     app_mode = bool(settings.get("app_mode", False))
     apply_geometry = bool(settings.get("apply_geometry", True))
-    width = int(settings.get("width", 1280) or 1280)
-    height = int(settings.get("height", 720) or 720)
+    width = int(settings.get("width", DEFAULT_WINDOW_WIDTH) or DEFAULT_WINDOW_WIDTH)
+    height = int(
+        settings.get("height", DEFAULT_WINDOW_HEIGHT) or DEFAULT_WINDOW_HEIGHT
+    )
     x = int(settings.get("x", 0) or 0)
     y = int(settings.get("y", 0) or 0)
     user_data_dir = (settings.get("user_data_dir") or "").strip()
@@ -529,7 +542,7 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
             dropped.append("window position")
         if (
             apply_geometry
-            and (width != 1280 or height != 720)
+            and (width != DEFAULT_WINDOW_WIDTH or height != DEFAULT_WINDOW_HEIGHT)
             and not can_apply_geometry_after_launch
         ):
             dropped.append("window size")
@@ -581,6 +594,12 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
             "Set browser_settings.user_data_dir to a folder path if you "
             "need the CLI flags to take effect at startup."
         )
+
+    cdp_port = settings.get("_cdp_debugging_port")
+    if isinstance(cdp_port, int) and cdp_port > 0:
+        args.append(f"--remote-debugging-port={cdp_port}")
+        # Chrome 111+ rejects CDP websocket origins unless allow-listed.
+        args.append("--remote-allow-origins=*")
 
     # Viewer-engagement assist: keep the Twitch tab unthrottled so it stays
     # "counted" while backgrounded. Applies to every Chromium open style (tab,
@@ -728,6 +747,26 @@ def _open_with_browser_settings(
         manage=manage,
     )
 
+    family = detect_browser_family(
+        _resolve_browser_executable(
+            (effective_settings.get("browser_path") or "chrome").strip() or "chrome"
+        )
+    )
+    isolation_available = bool(effective_user_data_dir)
+    cdp_port: int | None = None
+    engagement_for_assist = _active_viewer_engagement()
+    if should_start_page_assist(
+        url,
+        engagement_for_assist,
+        managed=manage,
+        isolated_profile=isolation_available,
+        chromium_family=family in {"chromium", "unknown"},
+    ):
+        from stream_monitor.cdp_client import allocate_debugging_port
+
+        cdp_port = allocate_debugging_port()
+        effective_settings["_cdp_debugging_port"] = cdp_port
+
     args = _build_browser_args(url, effective_settings)
     family = detect_browser_family(args[0])
 
@@ -743,6 +782,7 @@ def _open_with_browser_settings(
             logger.exception(
                 "Could not create browser user_data_dir: %s", effective_user_data_dir
             )
+            return False
 
     want_minimize = bool(effective_settings.get("minimized")) and _is_windows()
     new_window_expected = bool(settings.get("app_mode")) or bool(
@@ -872,6 +912,12 @@ def _open_with_browser_settings(
 
     if keep_awake_after_launch:
         _register_engagement_keep_awake(url)
+
+    if cdp_port and manage and engagement_for_assist is not None:
+        try:
+            start_page_assist(url, cdp_port, engagement_for_assist)
+        except Exception:
+            logger.exception("Failed to start Twitch page assist for %s", url)
 
     if class_name:
         if want_window_management:
@@ -1051,6 +1097,7 @@ def open_browser_for_signin(
         logger.exception(
             "Could not create sign-in user_data_dir: %s", cleaned
         )
+        return False
 
     try:
         subprocess.Popen(

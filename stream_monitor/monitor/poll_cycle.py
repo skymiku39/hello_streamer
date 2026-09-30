@@ -183,9 +183,16 @@ class PollCycleMixin:
 
         if run_wake_verify and enabled_entries:
             elapsed = self._run_wake_verification(enabled_entries, poll_started)
-            return self._maybe_run_startup_refresh(
+            elapsed = self._maybe_run_startup_refresh(
                 enabled_entries, poll_started, elapsed
             )
+            if not self._stop_event.is_set():
+                # Wake verification and startup refresh are one logical cycle.
+                # Emit exactly one completion boundary after both have finished
+                # so one-shot consumers cannot stop the monitor in between.
+                self._emit_poll_complete()
+                self._run_maintenance()
+            return elapsed
 
         with self._lock:
             self._pending_offline_events.clear()

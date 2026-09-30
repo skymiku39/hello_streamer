@@ -43,8 +43,20 @@ from stream_monitor.notifier import (
     open_url,
 )
 from stream_monitor.url_parser import parse_channel_url
+from stream_monitor.viewer_engagement_model import page_assist_runtime_allowed
 
 logger = logging.getLogger(__name__)
+
+
+def _is_portable_default_profile(path: str) -> bool:
+    """Return whether *path* names this copy's app-owned profile folder."""
+    default_path = default_browser_profile_dir()
+    if not path or not default_path:
+        return False
+    try:
+        return Path(path).expanduser().resolve() == Path(default_path).resolve()
+    except (OSError, RuntimeError):
+        return False
 
 
 def _browser_card(parent: ctk.CTkBaseClass, *, pady: tuple[int, int] = (0, 10)) -> ctk.CTkFrame:
@@ -587,6 +599,29 @@ _VIEWER_ENGAGEMENT_TOGGLES: tuple[tuple[str, str, str], ...] = (
     ),
 )
 
+_PAGE_ASSIST_FEATURE_TOGGLES: tuple[tuple[str, str, str], ...] = (
+    (
+        "accept_content_gate",
+        "engagement.toggle.accept_gate",
+        "engagement.toggle.accept_gate.hint",
+    ),
+    (
+        "claim_channel_points",
+        "engagement.toggle.claim_points",
+        "engagement.toggle.claim_points.hint",
+    ),
+    (
+        "theater_mode",
+        "engagement.toggle.theater",
+        "engagement.toggle.theater.hint",
+    ),
+    (
+        "auto_refresh",
+        "engagement.toggle.auto_refresh",
+        "engagement.toggle.auto_refresh.hint",
+    ),
+)
+
 
 class BrowserSettingsDialog(ctk.CTkToplevel):
     """Modal dialog for configuring how stream pages are opened in the browser."""
@@ -673,6 +708,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         default_profile_dir = default_browser_profile_dir()
         saved_profile_dir = (settings.get("user_data_dir") or "").strip()
+        if settings.get("user_data_dir_is_portable_default") and default_profile_dir:
+            saved_profile_dir = default_profile_dir
         ui_launch = bsm.infer_launch_mode(settings)
         ui_identity = bsm.infer_identity_mode(settings)
         ui_placement = bsm.infer_placement_mode(settings)
@@ -882,12 +919,16 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         self._w_label = ctk.CTkLabel(pos_frame, text=tr("browser.geometry.width"), font=_font(12))
         self._w_label.grid(row=2, column=0, padx=(14, 4), pady=(4, 10), sticky="e")
-        self.w_entry = _make_int_entry(pos_frame, int(settings.get("width", 1280)))
+        self.w_entry = _make_int_entry(
+            pos_frame, int(settings.get("width", bsm.DEFAULT_WINDOW_WIDTH))
+        )
         self.w_entry.grid(row=2, column=1, padx=(0, 14), pady=(4, 10), sticky="w")
 
         self._h_label = ctk.CTkLabel(pos_frame, text=tr("browser.geometry.height"), font=_font(12))
         self._h_label.grid(row=2, column=2, padx=(14, 4), pady=(4, 10), sticky="e")
-        self.h_entry = _make_int_entry(pos_frame, int(settings.get("height", 720)))
+        self.h_entry = _make_int_entry(
+            pos_frame, int(settings.get("height", bsm.DEFAULT_WINDOW_HEIGHT))
+        )
         self.h_entry.grid(row=2, column=3, padx=(0, 14), pady=(4, 0), sticky="w")
 
         self._login_card = _browser_card(
@@ -1192,6 +1233,74 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             )
             hint.pack(padx=12, pady=(0, 4), anchor="w")
             self._engagement_sub_hints.append(hint)
+
+        self._page_assist_section_label = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.page_assist.section"),
+            font=_font(12, "bold"),
+            anchor="w",
+        )
+        self._page_assist_section_label.pack(padx=12, pady=(10, 4), anchor="w")
+        self._page_assist_frozen_note = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.page_assist.frozen"),
+            font=_font(10),
+            text_color="#ef9a9a",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        )
+        self._page_assist_runtime_ok = page_assist_runtime_allowed()
+        if not self._page_assist_runtime_ok:
+            self._page_assist_frozen_note.pack(padx=12, pady=(0, 6), anchor="w")
+        self.page_assist_enabled_var = ctk.BooleanVar(
+            value=bool(ve_settings.get("page_assist_enabled"))
+            and self._page_assist_runtime_ok
+        )
+        self._page_assist_enabled_switch = ctk.CTkSwitch(
+            engagement_card,
+            text=tr("engagement.toggle.page_assist"),
+            variable=self.page_assist_enabled_var,
+            command=self._sync_engagement_enabled_state,
+            font=_font(12),
+        )
+        self._page_assist_enabled_switch.pack(padx=12, pady=(0, 2), anchor="w")
+        self._page_assist_enabled_hint = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.toggle.page_assist.hint"),
+            font=_font(10),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=470,
+            justify="left",
+        )
+        self._page_assist_enabled_hint.pack(padx=12, pady=(0, 4), anchor="w")
+        self._page_assist_feature_vars: dict[str, ctk.BooleanVar] = {}
+        self._page_assist_feature_switches: list[ctk.CTkSwitch] = []
+        self._page_assist_feature_hints: list[ctk.CTkLabel] = []
+        for key, label_key, hint_key in _PAGE_ASSIST_FEATURE_TOGGLES:
+            var = ctk.BooleanVar(value=bool(ve_settings.get(key)))
+            self._page_assist_feature_vars[key] = var
+            switch = ctk.CTkSwitch(
+                engagement_card,
+                text=tr(label_key),
+                variable=var,
+                font=_font(12),
+            )
+            switch.pack(padx=12, pady=(6, 2), anchor="w")
+            self._page_assist_feature_switches.append(switch)
+            hint = ctk.CTkLabel(
+                engagement_card,
+                text=tr(hint_key),
+                font=_font(10),
+                text_color="#9aa0b4",
+                anchor="w",
+                wraplength=470,
+                justify="left",
+            )
+            hint.pack(padx=12, pady=(0, 4), anchor="w")
+            self._page_assist_feature_hints.append(hint)
+
         self._engagement_tips = ctk.CTkLabel(
             engagement_card,
             text=tr("engagement.tips"),
@@ -1480,6 +1589,26 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         ):
             switch.configure(text=tr(label_key))
             hint.configure(text=tr(hint_key))
+        self._page_assist_section_label.configure(
+            text=tr("engagement.page_assist.section")
+        )
+        self._page_assist_frozen_note.configure(
+            text=tr("engagement.page_assist.frozen")
+        )
+        self._page_assist_enabled_switch.configure(
+            text=tr("engagement.toggle.page_assist")
+        )
+        self._page_assist_enabled_hint.configure(
+            text=tr("engagement.toggle.page_assist.hint")
+        )
+        for switch, (key, label_key, hint_key), hint in zip(
+            self._page_assist_feature_switches,
+            _PAGE_ASSIST_FEATURE_TOGGLES,
+            self._page_assist_feature_hints,
+            strict=True,
+        ):
+            switch.configure(text=tr(label_key))
+            hint.configure(text=tr(hint_key))
         self._engagement_tips.configure(text=tr("engagement.tips"))
         self._profile_title.configure(text=tr("browser.profile.per_channel"))
         self.per_channel_profile_cb.configure(text=tr("browser.profile.per_channel"))
@@ -1723,8 +1852,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         defaults = {
             self.x_entry: 0,
             self.y_entry: 0,
-            self.w_entry: 1280,
-            self.h_entry: 720,
+            self.w_entry: bsm.DEFAULT_WINDOW_WIDTH,
+            self.h_entry: bsm.DEFAULT_WINDOW_HEIGHT,
         }
         for entry, value in defaults.items():
             current_state = entry.cget("state")
@@ -1804,9 +1933,24 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self._refresh_win32_management_state()
 
     def _sync_engagement_enabled_state(self) -> None:
-        state = "normal" if self.engagement_enabled_var.get() else "disabled"
+        master_on = bool(self.engagement_enabled_var.get())
+        state = "normal" if master_on else "disabled"
         for switch in self._engagement_sub_switches:
             self._set_widget_state(switch, state)
+        page_assist_master = (
+            "normal"
+            if master_on and self._page_assist_runtime_ok
+            else "disabled"
+        )
+        self._set_widget_state(self._page_assist_enabled_switch, page_assist_master)
+        features_on = (
+            master_on
+            and self._page_assist_runtime_ok
+            and bool(self.page_assist_enabled_var.get())
+        )
+        feature_state = "normal" if features_on else "disabled"
+        for switch in self._page_assist_feature_switches:
+            self._set_widget_state(switch, feature_state)
 
     def _collect_viewer_engagement(self) -> dict[str, Any]:
         # Start from the incoming (normalized) settings so any field without a
@@ -1816,6 +1960,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         data["enabled"] = self.engagement_enabled_var.get()
         for key, _label, _hint in _VIEWER_ENGAGEMENT_TOGGLES:
             data[key] = self._engagement_toggle_vars[key].get()
+        data["page_assist_enabled"] = bool(
+            self.page_assist_enabled_var.get()
+        ) and self._page_assist_runtime_ok
+        for key, _label, _hint in _PAGE_ASSIST_FEATURE_TOGGLES:
+            data[key] = self._page_assist_feature_vars[key].get()
         return data
 
     def _snapshot_viewer_engagement(self) -> dict[str, Any]:
@@ -1835,7 +1984,12 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
                 return None
             # When apply_geometry is off the fields aren't used, so silently
             # fall back to defaults so the user can save without filling them.
-            x, y, width, height = 0, 0, 1280, 720
+            x, y, width, height = (
+                0,
+                0,
+                bsm.DEFAULT_WINDOW_WIDTH,
+                bsm.DEFAULT_WINDOW_HEIGHT,
+            )
 
         if apply_geometry and (width < 100 or height < 100):
             self._set_message("browser.msg.min_size", color="#ef5350")
@@ -1853,7 +2007,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             if self.use_custom_var.get()
             else bsm.LAUNCH_SYSTEM
         )
-        return bsm.apply_ui_dimensions(
+        result = bsm.apply_ui_dimensions(
             launch=launch,
             identity=self.identity_var.get(),
             placement=self.placement_var.get(),
@@ -1871,6 +2025,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             close_off_topic_pages=bool(self.close_off_topic_var.get()),
             hide_from_taskbar=bool(self.hide_from_taskbar_var.get()),
         )
+        result["user_data_dir_is_portable_default"] = (
+            dedicated and _is_portable_default_profile(user_data_dir)
+        )
+        return result
 
     def _snapshot_browser_settings(self) -> dict[str, Any]:
         return {

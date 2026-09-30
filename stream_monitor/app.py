@@ -6,6 +6,7 @@ import json
 import logging
 import logging.handlers
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,7 @@ from stream_monitor.channel_policy import (
     WATCH_ONCE_MODE,
     base_monitor_mode,
     is_one_shot_monitor_mode,
+    mode_for_silent_start,
 )
 from stream_monitor.channel_reorder import apply_list_move
 from stream_monitor.channel_reorder_ui import ChannelReorderMode
@@ -158,9 +160,16 @@ class App(ctk.CTk):
         # first monitor start (a long gap there means a stale cache that should
         # be wake-verified); later restarts seed from live row state instead.
         self._status_cache_consumed = False
-        # Keep Run key / XDG Exec pointing at this build (versioned .exe names).
-        if self.config.get("run_on_startup") and getattr(sys, "frozen", False):
-            heal_startup_command_if_enabled()
+        # Keep Run key / XDG Exec pointing at this build (versioned .exe names)
+        # and reconcile the persisted switch with the actual OS entry.
+        startup_config_needs_save = False
+        if getattr(sys, "frozen", False):
+            startup_enabled = is_startup_enabled()
+            if startup_enabled:
+                heal_startup_command_if_enabled()
+            if self.config.get("run_on_startup") != startup_enabled:
+                self.config["run_on_startup"] = startup_enabled
+                startup_config_needs_save = True
         self._reorder_mode: ChannelReorderMode | None = None
         self._preview_pack_order: list[int] | None = None
         self._pending_preview_order: list[int] | None = None
@@ -214,17 +223,45 @@ class App(ctk.CTk):
         )
         self._tray.start()
 
+        if startup_config_needs_save:
+            self._save_config()
+
         if silent:
             self.withdraw()
             channels = self.config.get("channels", [])
             if channels:
                 saved_mode = self.config.get("monitor_mode", TRIGGER_MODE)
+                if not isinstance(saved_mode, str):
+                    saved_mode = TRIGGER_MODE
+                recovered_mode = mode_for_silent_start(saved_mode)
+                if recovered_mode != saved_mode:
+                    # A one-shot mode can survive a crash before its completion
+                    # callback persists the reusable mode. Do not replay it on
+                    # every silent launch; recover to the reusable mode once.
+                    self.config["monitor_mode"] = recovered_mode
+                    self._save_config()
+                    saved_mode = recovered_mode
                 starter = {
                     WATCH_MODE: self._on_watch,
                     TRIGGER_ONCE_MODE: self._on_start_once,
                     WATCH_ONCE_MODE: self._on_watch_once,
                 }.get(saved_mode, self._on_start)
                 self.after(500, starter)
+
+    def report_callback_exception(self, exc, value, tb) -> None:
+        """Keep Tk callback failures in the application log.
+
+        Tk normally prints callback exceptions to stderr only. A windowed
+        build has no visible stderr, which can make a callback failure look
+        like a spontaneous close or a frozen tray app.
+        """
+        if exc is KeyboardInterrupt:
+            logger.info("Application interrupted by user")
+            return
+        logger.critical(
+            "Unhandled Tk callback exception",
+            exc_info=(exc, value, tb),
+        )
 
     # ------------------------------------------------------------------
     # Window visibility
@@ -308,6 +345,25 @@ class App(ctk.CTk):
 
     def iter_channel_rows(self) -> list[CanvasChannelRowAdapter]:
         return self._channel_rows
+
+    def is_channel_active(self, entry: ChannelEntry) -> bool:
+        """Return whether a queued monitor event still targets a live row.
+
+        A background poll may finish after the user removes or disables a
+        channel.  The event bridge checks this on the UI thread immediately
+        before dispatching browser/notification side effects, so an in-flight
+        stale probe cannot act on a channel that is no longer configured.
+        """
+        for channel in self.config.get("channels", []):
+            if not isinstance(channel, dict):
+                continue
+            try:
+                same_key = channel_key(channel["platform"], channel["name"]) == entry.key
+            except (KeyError, TypeError):
+                continue
+            if same_key:
+                return bool(channel.get("enabled", True))
+        return False
 
     # ------------------------------------------------------------------
     # UI construction
@@ -863,6 +919,9 @@ class App(ctk.CTk):
     def save_status_cache(self) -> None:
         """AppEventSink hook: refresh in-memory cache after each poll cycle."""
         self._save_status_cache()
+        # Keep abnormal termination from discarding the newest completed poll.
+        # The existing coalescer limits this to one atomic write per burst.
+        self._schedule_config_save(delay_ms=500)
 
     def _monitor_seed_args(self) -> tuple[dict[str, Any], float]:
         """Build (initial_statuses, last_activity_epoch) for a monitor start.
@@ -1562,7 +1621,10 @@ class App(ctk.CTk):
         """Restart the background monitor if its thread died unexpectedly."""
         if self._truly_quitting:
             return
-        self.maybe_restart_dead_monitor()
+        try:
+            self.maybe_restart_dead_monitor()
+        except Exception:
+            logger.exception("Monitor health check failed; continuing")
         self.after(10_000, self._monitor_health_check)
 
     def maybe_restart_dead_monitor(self) -> None:
@@ -1587,7 +1649,10 @@ class App(ctk.CTk):
         if self._truly_quitting:
             return
         self.after(80, self._poll_events)
-        self._controller.tick()
+        try:
+            self._controller.tick()
+        except Exception:
+            logger.exception("UI event bridge tick failed; continuing")
 
     def handle_channel_offline(
         self, entry: ChannelEntry, offline_info: Any
@@ -1698,7 +1763,13 @@ class App(ctk.CTk):
             self.config["window_geometry"] = self.geometry()
         except Exception:
             pass
-        self.config = config_manager.save(self.config)
+        try:
+            self.config = config_manager.save(self.config)
+        except OSError:
+            # A transient Windows file lock must not terminate a Tk callback
+            # or leave the application half-closed. The atomic temp file is
+            # retained for recovery on the next launch.
+            logger.exception("Config save failed; keeping application alive")
 
     def _on_close(self) -> None:
         # Legacy entry point kept for callers outside the WM_DELETE_WINDOW
@@ -1745,11 +1816,50 @@ def _check_writable(directory: Path) -> None:
         sys.exit(1)
 
 
+def _run_frozen_self_check() -> None:
+    """Import platform-specific frozen dependencies without opening the UI."""
+    if not getattr(sys, "frozen", False):
+        return
+    if sys.platform == "win32":
+        # These imports are intentionally lazy in normal runtime paths.  The
+        # release smoke command makes missing PyInstaller hidden imports fail
+        # at build time instead of on the first toast/tray action.
+        __import__("pystray._win32")
+        __import__("winotify")
+
+
 def main() -> None:
+    if "--self-check" in sys.argv:
+        _run_frozen_self_check()
+        return
+
     if getattr(sys, "frozen", False) and sys.platform != "win32":
         _fix_linux_frozen_env()
 
     log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+    # Install logging before config preload. A corrupt config or interrupted
+    # atomic save must be diagnosable in a windowed build as well.
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    if not root_logger.handlers:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(logging.Formatter(log_fmt))
+        root_logger.addHandler(stream_handler)
+
+    data_dir = portable_paths().root
+    log_dir = portable_paths().logs_dir
+    log_file = portable_paths().application_log
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8",
+        )
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter(log_fmt))
+        root_logger.addHandler(file_handler)
+    except OSError:
+        root_logger.exception("Failed to initialize application file logging")
 
     # Apply the saved language as early as possible so the writable-check
     # error dialog (and any boot-time messages) also respect the user choice.
@@ -1762,24 +1872,21 @@ def main() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("Failed to preload language; falling back to default")
 
-    data_dir = portable_paths().root
     _check_writable(data_dir)
 
-    log_dir = portable_paths().logs_dir
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = portable_paths().application_log
+    previous_thread_excepthook = threading.excepthook
 
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8",
-    )
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter(log_fmt))
+    def _log_thread_exception(args: threading.ExceptHookArgs) -> None:
+        if args.exc_type is KeyboardInterrupt:
+            previous_thread_excepthook(args)
+            return
+        logger.critical(
+            "Unhandled exception in thread %s",
+            args.thread.name if args.thread is not None else "<unknown>",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format=log_fmt,
-        handlers=[logging.StreamHandler(), file_handler],
-    )
+    threading.excepthook = _log_thread_exception
 
     silent = "--silent" in sys.argv
 
@@ -1797,10 +1904,14 @@ def main() -> None:
         logger.info("Another instance is already running — activating it")
         sys.exit(0)
 
-    app = App(silent=silent)
-
     try:
+        app = App(silent=silent)
         app.mainloop()
+    except KeyboardInterrupt:
+        logger.info("Application interrupted by user")
+    except Exception:
+        logger.critical("Fatal application exception", exc_info=True)
+        raise
     finally:
         lock.release()
 

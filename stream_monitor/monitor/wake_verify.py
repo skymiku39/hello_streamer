@@ -142,7 +142,7 @@ class WakeVerifyMixin:
                         cached,
                     )
                     continue
-                if observed != cached:
+                if observed != cached and observed != "live":
                     deferred += 1
                     logger.info(
                         "wake_verify_deferred %s: mismatch cached=%s "
@@ -153,6 +153,13 @@ class WakeVerifyMixin:
                     )
                     continue
 
+                if observed == "live" and cached != "live":
+                    logger.info(
+                        "wake_verify_live_edge %s: cached=%s observed=live",
+                        entry.key,
+                        cached,
+                    )
+
                 confirmed += 1
                 logger.info(
                     "wake_verify_confirmed %s: cached=%s observed=%s",
@@ -161,7 +168,9 @@ class WakeVerifyMixin:
                     observed,
                 )
                 try:
-                    self._probe_live(entry)
+                    events = self._probe_live(entry)
+                    if observed == "live" and cached != "live":
+                        self._dispatch_went_live_events(events)
                     commit = self._refresh_details(entry)
                     commit()
                 except Exception:
@@ -169,7 +178,6 @@ class WakeVerifyMixin:
                         "wake_verify refresh failed for %s", entry.key
                     )
 
-            self._emit_poll_complete()
         finally:
             self._wake_verify_mode = False
             self._wake_verify_active = False
@@ -222,27 +230,36 @@ class StartupRefreshMixin:
         )
         self._force_offline_vod_refresh = True
         refresh_started = time.monotonic()
+        went_live_count = 0
         try:
             with self._lock:
                 self._pending_offline_events.clear()
 
-            def refresh_one(entry: ChannelEntry) -> None:
+            def refresh_one(entry: ChannelEntry) -> int:
                 # Re-probe so tier-2 has a fresh snapshot (same as wake verify).
-                self._probe_live(entry)
+                events = self._probe_live(entry)
+                went_live_count = 0
+                if not self._stop_event.is_set():
+                    # Startup refresh runs after the opening tier-1 pass.  A
+                    # live edge found here is still a real edge and must reach
+                    # the action bridge; otherwise cold-start live channels
+                    # become marked-live without notification/open actions.
+                    went_live_count = self._dispatch_went_live_events(events)
                 commit = self._refresh_details(entry)
                 commit()
+                return went_live_count
 
-            self._run_priority_pool(
+            results = self._run_priority_pool(
                 enabled_entries, refresh_one, pool_tag="startup_refresh"
             )
-            if not self._stop_event.is_set():
-                self._emit_poll_complete()
+            went_live_count = sum(results)
         finally:
             self._force_offline_vod_refresh = False
         extra = time.monotonic() - refresh_started
         logger.info(
-            "Startup refresh complete: channels=%d extra=%.2fs total=%.2fs",
+            "Startup refresh complete: channels=%d went_live=%d extra=%.2fs total=%.2fs",
             len(enabled_entries),
+            went_live_count,
             extra,
             time.monotonic() - poll_started,
         )

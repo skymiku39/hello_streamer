@@ -151,11 +151,17 @@ class MonitorEventBridge:
         other_events: list[MonitorEvent] = []
         for event in buffered:
             if isinstance(event, PollActivity):
-                latest_poll_activity = (
-                    event.entry,
-                    event.phase,
-                    event.display_name,
-                )
+                if sink.is_channel_active(event.entry):
+                    latest_poll_activity = (
+                        event.entry,
+                        event.phase,
+                        event.display_name,
+                    )
+                else:
+                    logger.debug(
+                        "Ignoring stale poll activity for removed/disabled channel %s",
+                        event.entry.key,
+                    )
             else:
                 other_events.append(event)
 
@@ -165,9 +171,21 @@ class MonitorEventBridge:
                 break
             events_processed += 1
             if isinstance(event, ChannelWentLive):
-                live_events.append((event.entry, event.info))
+                if sink.is_channel_active(event.entry):
+                    live_events.append((event.entry, event.info))
+                else:
+                    logger.info(
+                        "Ignoring stale live event for removed/disabled channel %s",
+                        event.entry.key,
+                    )
             elif isinstance(event, ChannelWentOffline):
-                offline_events.append((event.entry, event.offline_info))
+                if sink.is_channel_active(event.entry):
+                    offline_events.append((event.entry, event.offline_info))
+                else:
+                    logger.info(
+                        "Ignoring stale offline event for removed/disabled channel %s",
+                        event.entry.key,
+                    )
             elif isinstance(event, PollWaiting):
                 sink.set_poll_waiting()
             elif isinstance(event, PartialStatusUpdate):

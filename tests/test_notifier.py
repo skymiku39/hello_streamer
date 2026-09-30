@@ -285,8 +285,8 @@ def test_build_browser_args_app_mode_replaces_url() -> None:
             "app_mode": True,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
         },
     )
     assert "--new-window" not in args
@@ -317,8 +317,8 @@ def test_build_browser_args_resolves_windows_chrome_alias(
             "app_mode": False,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
         },
     )
 
@@ -341,8 +341,8 @@ def test_build_browser_args_strips_quoted_explicit_browser_path(
             "app_mode": False,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
         },
     )
 
@@ -500,14 +500,14 @@ def test_build_browser_args_app_mode_drops_redundant_new_window(monkeypatch) -> 
             "app_mode": True,
             "x": 100,
             "y": 50,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
         },
     )
     assert "--new-window" not in args
     assert "--app=https://example.com" in args
     assert "--window-position=100,50" in args
-    assert "--window-size=1280,720" in args
+    assert "--window-size=190,500" in args
 
 
 def test_build_browser_args_chromium_minimized_does_not_emit_cli_flag(
@@ -524,8 +524,8 @@ def test_build_browser_args_chromium_minimized_does_not_emit_cli_flag(
             "minimized": True,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
         },
     )
     assert "--start-minimized" not in args
@@ -543,8 +543,8 @@ def test_build_browser_args_app_mode_minimized_no_cli_flag(monkeypatch) -> None:
             "minimized": True,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
         },
     )
     assert "--start-minimized" not in args
@@ -612,8 +612,8 @@ def test_build_browser_args_firefox_default_geometry_no_warning(
                 "minimized": False,
                 "x": 0,
                 "y": 0,
-                "width": 1280,
-                "height": 720,
+                "width": 190,
+                "height": 500,
             },
         )
     assert args == ["firefox", "--new-window", "https://example.com"]
@@ -631,8 +631,8 @@ def test_build_browser_args_firefox_without_new_window(monkeypatch) -> None:
             "minimized": False,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
         },
     )
     assert args == ["firefox", "https://example.com"]
@@ -715,8 +715,8 @@ def test_open_with_browser_settings_uses_firefox_class(monkeypatch) -> None:
         "minimized": True,
         "x": 0,
         "y": 0,
-        "width": 1280,
-        "height": 720,
+        "width": 190,
+        "height": 500,
     }
 
     assert notifier._open_with_browser_settings("https://example.com", settings) is True
@@ -752,8 +752,8 @@ def test_open_with_browser_settings_applies_geometry_when_minimize_disabled(
         "minimized": False,
         "x": 0,
         "y": 0,
-        "width": 1280,
-        "height": 720,
+        "width": 190,
+        "height": 500,
     }
 
     assert notifier._open_with_browser_settings("https://example.com", settings) is True
@@ -781,8 +781,8 @@ def test_open_with_browser_settings_skips_minimize_on_non_windows(monkeypatch) -
         "minimized": True,
         "x": 0,
         "y": 0,
-        "width": 1280,
-        "height": 720,
+        "width": 190,
+        "height": 500,
     }
 
     assert notifier._open_with_browser_settings("https://example.com", settings) is True
@@ -981,8 +981,8 @@ def test_build_browser_args_chromium_user_data_dir_injected(monkeypatch) -> None
             "minimized": False,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
             "user_data_dir": r"C:\my\profile",
         },
     )
@@ -994,7 +994,7 @@ def test_build_browser_args_chromium_user_data_dir_injected(monkeypatch) -> None
         "--no-default-browser-check",
         "--new-window",
         "--window-position=0,0",
-        "--window-size=1280,720",
+        "--window-size=190,500",
         "https://example.com",
     ]
 
@@ -1032,8 +1032,8 @@ def test_build_browser_args_firefox_user_data_dir_uses_profile(monkeypatch) -> N
             "minimized": False,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
             "user_data_dir": "/home/me/ff_profile",
         },
     )
@@ -1069,8 +1069,8 @@ def test_build_browser_args_chromium_logs_when_geometry_set_but_no_user_data_dir
                 "minimized": False,
                 "x": 200,
                 "y": 200,
-                "width": 1280,
-                "height": 720,
+                "width": 190,
+                "height": 500,
                 "user_data_dir": "",
             },
         )
@@ -1099,8 +1099,8 @@ def test_build_browser_args_chromium_no_warning_when_user_data_dir_provided(
                 "minimized": False,
                 "x": 200,
                 "y": 200,
-                "width": 1280,
-                "height": 720,
+                "width": 190,
+                "height": 500,
                 "user_data_dir": "/tmp/profile",
             },
         )
@@ -1127,8 +1127,8 @@ def test_open_with_browser_settings_creates_user_data_dir(monkeypatch, tmp_path)
         "minimized": False,
         "x": 0,
         "y": 0,
-        "width": 1280,
-        "height": 720,
+        "width": 190,
+        "height": 500,
         "user_data_dir": str(profile_dir),
     }
 
@@ -1149,8 +1149,8 @@ def test_build_browser_args_apply_geometry_false_omits_window_flags(monkeypatch)
             "minimized": False,
             "x": 100,
             "y": 50,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
         },
     )
     assert args == ["chrome", "--new-window", "https://example.com"]
@@ -1330,8 +1330,8 @@ def test_open_with_browser_settings_uses_per_channel_subdir(
             "apply_geometry": True,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
             "minimized": False,
             "user_data_dir": str(base),
             "per_channel_profile": True,
@@ -1389,8 +1389,8 @@ def test_build_browser_args_chromium_no_first_run_flags(monkeypatch) -> None:
             "apply_geometry": True,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
             "user_data_dir": "/tmp/p",
         },
     )
@@ -1411,8 +1411,8 @@ def test_build_browser_args_chromium_no_first_run_only_with_profile(monkeypatch)
             "apply_geometry": True,
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
             "user_data_dir": "",
         },
     )
@@ -1714,8 +1714,8 @@ def test_apply_new_browser_window_settings_async_hides_from_taskbar(
         settings={
             "x": 0,
             "y": 0,
-            "width": 1280,
-            "height": 720,
+            "width": 190,
+            "height": 500,
             "minimized": False,
             "hide_from_taskbar": True,
         },
@@ -1847,7 +1847,7 @@ def test_apply_new_browser_window_settings_async_registers_tracked_url(
     thread = notifier._apply_new_browser_window_settings_async(
         "Chrome_WidgetWin_1",
         baseline=set(),
-        settings={"x": 0, "y": 0, "width": 1280, "height": 720, "minimized": False},
+        settings={"x": 0, "y": 0, "width": 190, "height": 500, "minimized": False},
         apply_geometry=True,
         deadline_s=1.0,
         track_for_url="https://x",
@@ -1870,7 +1870,7 @@ def test_browser_popup_or_tool_window_filter_detects_owned_and_tool_windows() ->
     class FakeUser32:
         owner = 0
         ex_style = 0
-        rect = (0, 0, 1280, 720)
+        rect = (0, 0, 190, 500)
 
         def GetWindow(self, _hwnd, _cmd):
             return self.owner
@@ -1938,7 +1938,7 @@ def test_window_manager_ignores_popup_then_manages_real_window(monkeypatch) -> N
     thread = notifier._apply_new_browser_window_settings_async(
         "Chrome_WidgetWin_1",
         baseline=set(),
-        settings={"x": 0, "y": 0, "width": 1280, "height": 720},
+        settings={"x": 0, "y": 0, "width": 190, "height": 500},
         deadline_s=1.0,
         track_for_url="https://x",
         track_keywords=("Live Stream",),
@@ -2631,6 +2631,28 @@ def test_open_browser_for_signin_handles_popen_failure(monkeypatch, tmp_path) ->
         )
         is False
     )
+
+
+def test_open_browser_for_signin_fails_closed_when_profile_creation_fails(
+    monkeypatch, tmp_path
+) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+
+    def fail_mkdir(*_args, **_kwargs):
+        raise PermissionError("profile denied")
+
+    monkeypatch.setattr(notifier.Path, "mkdir", fail_mkdir)
+    popen_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        notifier.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: popen_calls.append((_args, _kwargs)) or object(),
+    )
+
+    assert notifier.open_browser_for_signin(
+        str(tmp_path / "profile"), browser_path="chrome"
+    ) is False
+    assert popen_calls == []
 
 
 def test_open_browser_for_signin_creates_profile_dir(monkeypatch, tmp_path) -> None:

@@ -9,12 +9,13 @@ taskbar is, from Twitch's perspective, a backgrounded tab that may not count.
 
 These settings let the user opt in to launch-time mitigations the desktop app
 *can* control (window visibility, system-sleep suppression, Chrome performance
-whitelist). It cannot forge the in-page visibility/focus signals — that needs a
-browser extension — so this is best-effort and documented as such in the UI.
+whitelist). Optional CDP page-assist (content gate, theater mode, channel-point
+claim, auto-refresh) is source-run only and hard-disabled in frozen builds.
 """
 
 from __future__ import annotations
 
+import sys
 from dataclasses import asdict, dataclass, fields
 from typing import Any
 
@@ -42,6 +43,21 @@ class ViewerEngagementSettings:
     # reports the page as actively watched.
     foreground_hold_seconds: int = 15
 
+    # --- CDP page assist (source / non-frozen only) ---
+    page_assist_enabled: bool = False
+    accept_content_gate: bool = True
+    claim_channel_points: bool = False
+    claim_delay_seconds_min: int = 2
+    claim_delay_seconds_max: int = 12
+    claim_click_offset_px: int = 10
+    claim_poll_seconds_min: int = 45
+    claim_poll_seconds_max: int = 90
+    theater_mode: bool = False
+    theater_delay_seconds: int = 8
+    auto_refresh: bool = False
+    refresh_minutes_min: int = 45
+    refresh_minutes_max: int = 75
+
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> ViewerEngagementSettings:
         if not raw:
@@ -55,6 +71,19 @@ class ViewerEngagementSettings:
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)
+
+    def page_assist_active(self) -> bool:
+        """True when CDP page assist should run for a qualifying launch."""
+        return (
+            self.enabled
+            and self.page_assist_enabled
+            and page_assist_runtime_allowed()
+        )
+
+
+def page_assist_runtime_allowed() -> bool:
+    """Page assist is never available inside a packaged (frozen) executable."""
+    return not bool(getattr(sys, "frozen", False))
 
 
 def coerce_viewer_engagement(

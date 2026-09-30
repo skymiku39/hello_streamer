@@ -1,4 +1,5 @@
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
 
@@ -37,6 +38,24 @@ def test_load_bad_json_uses_defaults(tmp_path, monkeypatch) -> None:
     assert config_manager.load() == _migrated_defaults()
     assert path.exists()
     assert (tmp_path / "config.json.corrupt").read_text(encoding="utf-8") == "{"
+
+
+def test_load_recovers_newer_atomic_temp_file(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "config.json"
+    temp_path = tmp_path / ".config.json.tmp"
+    path.write_text(json.dumps({"minimize_to_tray": True}), encoding="utf-8")
+    temp_path.write_text(
+        json.dumps({"minimize_to_tray": False}), encoding="utf-8"
+    )
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(temp_path, ns=(2_000_000_000, 2_000_000_000))
+    _use_config_path(monkeypatch, path)
+
+    config = config_manager.load()
+
+    assert config["minimize_to_tray"] is False
+    assert not temp_path.exists()
+    assert json.loads(path.read_text(encoding="utf-8"))["minimize_to_tray"] is False
 
 
 def test_load_validates_config_values(tmp_path, monkeypatch) -> None:
@@ -488,6 +507,67 @@ def test_migrate_preserves_user_supplied_path() -> None:
     config_manager._migrate_browser_settings(settings)
 
     assert settings["user_data_dir"] == "C:/custom/profile"
+
+
+def test_normalize_marks_current_portable_profile(monkeypatch, tmp_path) -> None:
+    profile = tmp_path / "browser_profile"
+    profile.mkdir()
+    monkeypatch.setattr(
+        config_manager, "default_browser_profile_dir", lambda: str(profile)
+    )
+
+    normalized = config_manager._normalize_browser_settings(
+        {
+            "enabled": True,
+            "per_channel_profile": True,
+            "user_data_dir": str(profile),
+        }
+    )
+
+    assert normalized["user_data_dir"] == str(profile)
+    assert normalized["user_data_dir_is_portable_default"] is True
+
+
+def test_normalize_relocates_missing_legacy_portable_profile(
+    monkeypatch, tmp_path
+) -> None:
+    current = tmp_path / "new-copy" / "browser_profile"
+    current.mkdir(parents=True)
+    old = tmp_path / "old-copy" / "browser_profile"
+    monkeypatch.setattr(
+        config_manager, "default_browser_profile_dir", lambda: str(current)
+    )
+
+    normalized = config_manager._normalize_browser_settings(
+        {
+            "enabled": True,
+            "per_channel_profile": True,
+            "user_data_dir": str(old),
+        }
+    )
+
+    assert normalized["user_data_dir"] == str(current)
+    assert normalized["user_data_dir_is_portable_default"] is True
+
+
+def test_normalize_preserves_missing_custom_profile(monkeypatch, tmp_path) -> None:
+    current = tmp_path / "browser_profile"
+    current.mkdir()
+    custom = tmp_path / "external" / "profile"
+    monkeypatch.setattr(
+        config_manager, "default_browser_profile_dir", lambda: str(current)
+    )
+
+    normalized = config_manager._normalize_browser_settings(
+        {
+            "enabled": True,
+            "per_channel_profile": True,
+            "user_data_dir": str(custom),
+        }
+    )
+
+    assert normalized["user_data_dir"] == str(custom)
+    assert normalized["user_data_dir_is_portable_default"] is False
 
 
 # ---------------------------------------------------------------------------

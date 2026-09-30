@@ -1,6 +1,6 @@
 # 狀態機、設定連動與各狀態 UI 呈現
 
-- 版本：stream-monitor 1.2.0
+- 版本：stream-monitor 1.2.1
 - 範圍：主視窗（頻道清單／控制列）與瀏覽器設定對話框
 - 目的：說明專案有哪些狀態機、設定之間的連動（前置／互斥／解鎖）關係，以及「每一種狀態在 UI 上如何被呈現」，並標註對應的驗證測試。
 
@@ -14,7 +14,7 @@
 
 | 層級 | 狀態機 | 擁有者 | 值域 | 說明 |
 |------|--------|--------|------|------|
-| 控制 | 監看模式 | `MonitorController.mode` | `idle` / `trigger` / `watch` / `trigger_once` / `watch_once` | 全域運行狀態，決定控制列四種啟動按鈕與停止按鈕的可用性。 |
+| 控制 | 監看模式 | `MonitorController.mode` | `idle` / `trigger` / `watch` / `trigger_once` / `watch_once` | 全域運行狀態，決定控制列四種持續／一次性啟動按鈕與停止按鈕的可用性。 |
 | 資料 | 頻道即時狀態 | `ChannelStatus`（`frozen`） | live / upcoming / offline / unknown | 由輪詢引擎產生，以 `state` 或 `is_live/is_upcoming/is_offline/is_unknown` 判讀，不再用魔術 `__eq__`。 |
 | 資料 | 直播狀態預覽層級 | `monitor/preview.py`（tier-1 / tier-2） | — | 結構性不變式：tier-1 不得把已快取的 LIVE 降級為 offline（`_tier1_may_overwrite_cached`）。 |
 | 動作 | 每頻道副作用決策 | `channel_policy.py`（純函式） | `LiveActionDecision` / `ActionPlan` | 集中「全域模式 × 頻道模式 × 觸發設定 × 直播狀態」的判斷，供 `event_bridge` 使用。 |
@@ -64,7 +64,7 @@
 | `trigger_once` | 監聽＋觸發一次 | 完成一個完整 `PollStatusUpdate` 輪詢週期後停止；本輪仍依設定執行副作用。 |
 | `watch_once` | 僅監聽一次 | 完成一個完整 `PollStatusUpdate` 輪詢週期後停止；本輪不通知、不開啟瀏覽器。 |
 
-一次性模式的消費點是「按下按鈕後的下一個 `cycle_id` 對應的 `PollStatusUpdate`」，不會把按鈕按下前已在佇列中的輪詢當成這一次；且在本輪 LIVE／離線事件都派送完成後才停止，避免漏掉本輪事件。若程式在本輪完成前關閉，設定會保留一次性模式，下一次以靜默啟動時會繼續執行一次；完成後則保存為對應的持續模式，避免每次啟動重複執行。
+一次性模式的消費點是「按下按鈕後的下一個 `cycle_id` 對應的 `PollStatusUpdate`」，不會把按鈕按下前已在佇列中的輪詢當成這一次；且在本輪 LIVE／離線事件都派送完成後才停止，避免漏掉本輪事件。若程式在本輪完成前關閉，靜默啟動會把殘留的一次性設定恢復為對應的持續模式，避免崩潰後每次開機重複執行未完成的一次性輪詢；正常完成後也會保存為對應的持續模式。
 
 ### 1.4 狀態與「未知」
 
@@ -87,7 +87,7 @@
 | C 呈現方式 | `PLACEMENT_TAB` / `PLACEMENT_WINDOW` / `PLACEMENT_PLAYER` | 分頁 / 新視窗 / 純播放器（app mode） | 決定視窗是否可被追蹤／幾何是否有意義。 |
 | D 自動管理 | `close_on_offline` / `close_on_stop` / `close_off_topic_pages` / `minimized` / `hide_from_taskbar` | 各自布林 | 需要「可被辨識並管理的獨立視窗」。 |
 
-另有 **X 幾何**（`apply_geometry` + `x/y/width/height`）以及與上述完全獨立的 **觀看強化（Viewer Engagement）** 群組（自帶總開關）。
+另有 **X 幾何**（`apply_geometry` + `x/y/width/height`）以及與上述完全獨立的 **觀看強化（Viewer Engagement）** 群組（自帶總開關）。觀看強化可再掛 **頁內輔助（CDP）**：內容確認、領寶箱、劇院模式、定時刷新；僅非 frozen 原始碼執行、且 A＝自訂 + B＝專用 + 受管 Twitch 視窗時生效。
 
 ---
 
@@ -104,6 +104,7 @@
 | A＝自訂程式 **且** C∈{新視窗, 播放器} | 幾何欄位（X）出現 | `geometry_placement_available(launch, placement)` |
 | A＝自訂程式 **且** B＝專用 **且** C∈{新視窗, 播放器} | 自動管理各項可勾選（D 生效） | `window_management_available(launch, identity, placement)` |
 | 幾何出現 **且** 為 Chromium **且** 勾選套用幾何 | X/Y/W/H 可編輯 | `_refresh_geometry_state` |
+| 非 frozen **且** 觀看認定啟用 **且** `page_assist_enabled` **且** 專用 Profile 受管 Twitch | CDP 頁內輔助 | `ViewerEngagementSettings.page_assist_active` + `should_start_page_assist` |
 
 ### 3.2 互斥／強制關閉（有 A 就不能有 B）
 
@@ -143,8 +144,14 @@
 | `idle` | 可用 | 可用 | 停用 |
 | `trigger` | 停用（目前模式） | 可用 | 可用 |
 | `watch` | 可用 | 停用（目前模式） | 可用 |
+| `trigger_once` | 可用 | 可用 | 可用 |
+| `watch_once` | 可用 | 可用 | 可用 |
 
-**測試佐證**：`tests/test_app_ui.py::test_monitor_mode_buttons_*`。
+一次性模式的按鈕仍可讓使用者切換到另一個模式或停止；它們只在完成本輪
+`PollStatusUpdate` 後由 controller 回到 `idle`，不會被誤當成持續模式。
+
+**測試佐證**：`tests/test_app_ui.py::test_monitor_mode_buttons_*`、
+`tests/test_event_bridge.py::test_completed_poll_consumes_global_one_shot_mode`。
 
 ### 4.2 頻道列狀態徽章
 

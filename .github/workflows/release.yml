@@ -37,16 +37,20 @@ jobs:
       - name: Pytest
         run: uv run pytest -q
 
+      - name: Verify release tag matches package version
+        run: uv run python build.py --check-release-tag "${{ github.ref_name }}"
+
       - name: Build Executable
         run: uv run python build.py
+
+      - name: Frozen Windows smoke check
+        run: .\dist\HelloStreamer\HelloStreamer.exe --self-check
 
       - name: Package Windows onedir zip
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release
-          if (-not (Test-Path -LiteralPath "dist/HelloStreamer/HelloStreamer.exe")) {
-            throw "Expected onedir exe at dist/HelloStreamer/HelloStreamer.exe"
-          }
+          uv run python build.py --validate-windows-onedir dist/HelloStreamer
           Compress-Archive -Path "dist/HelloStreamer" -DestinationPath "release/HelloStreamer-${{ github.ref_name }}-windows-x64.zip"
 
       - name: Upload Release Artifact
@@ -83,6 +87,7 @@ jobs:
           docker run --rm --platform "${{ matrix.platform }}" \
             -v "${{ github.workspace }}:/src" \
             -w /src \
+            -e RELEASE_TAG="${{ github.ref_name }}" \
             debian:bookworm \
             bash -c '
               set -euo pipefail
@@ -112,6 +117,7 @@ jobs:
               python -m ruff check .
               python -m compileall -f stream_monitor build.py
               python -m pytest -q
+              python build.py --check-release-tag "$RELEASE_TAG"
               python build.py
               echo "=== Build output ==="
               test -x dist/HelloStreamer/HelloStreamer
