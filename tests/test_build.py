@@ -13,6 +13,7 @@ from build import (
     build_pyinstaller_command,
     normalize_release_tag,
     require_tag_matches_package_version,
+    validate_linux_onedir_bundle,
     validate_windows_onedir_bundle,
 )
 
@@ -84,6 +85,32 @@ def test_validate_windows_onedir_bundle_requires_exe_and_internal(
     validate_windows_onedir_bundle(bundle)
 
 
+def test_validate_linux_onedir_bundle_requires_nonempty_exe_and_internal(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "HelloStreamer"
+    bundle.mkdir()
+    with pytest.raises(FileNotFoundError, match="missing executable: .*HelloStreamer"):
+        validate_linux_onedir_bundle(bundle)
+
+    exe = bundle / "HelloStreamer"
+    exe.write_bytes(b"")
+    with pytest.raises(FileNotFoundError, match="empty executable: .*HelloStreamer"):
+        validate_linux_onedir_bundle(bundle)
+
+    exe.write_bytes(b"\x7fELF")
+    with pytest.raises(FileNotFoundError, match="missing _internal:"):
+        validate_linux_onedir_bundle(bundle)
+
+    internal = bundle / "_internal"
+    internal.mkdir()
+    with pytest.raises(FileNotFoundError, match="empty _internal:"):
+        validate_linux_onedir_bundle(bundle)
+
+    (internal / "base_library.zip").write_bytes(b"pk")
+    validate_linux_onedir_bundle(bundle)
+
+
 def test_windows_pyinstaller_command_hides_winotify(tmp_path: Path) -> None:
     assert "winotify" in WINDOWS_HIDDEN_IMPORTS
     cmd = build_pyinstaller_command(
@@ -116,8 +143,10 @@ def test_release_workflow_statically_wires_gates() -> None:
     text = RELEASE_YML.read_text(encoding="utf-8")
     assert "--check-release-tag" in text
     assert "--validate-windows-onedir" in text
+    assert "--validate-linux-onedir" in text
     assert "dist/HelloStreamer" in text
     assert "HelloStreamer.exe --self-check" in text
+    assert "dist/HelloStreamer/HelloStreamer --self-check" in text
     # Issue #9: Windows + Linux share the same pinned uv and locked sync.
     assert 'UV_VERSION: "0.12.20"' in text
     assert "version: ${{ env.UV_VERSION }}" in text
@@ -126,6 +155,31 @@ def test_release_workflow_statically_wires_gates() -> None:
     assert text.count("uv tree --locked --extra dev --depth 2") == 2
     assert "pip install -e" not in text
     assert "--system-site-packages" in text
+
+
+def test_release_workflow_linux_matrix_validates_before_package_and_upload() -> None:
+    """Both linux/amd64 and linux/arm64 must smoke-check before packaging/upload."""
+    text = RELEASE_YML.read_text(encoding="utf-8")
+    assert "artifact: linux-x64" in text
+    assert "platform: linux/amd64" in text
+    assert "artifact: linux-arm64" in text
+    assert "platform: linux/arm64" in text
+
+    build_idx = text.index("Build Linux executable in Debian Bookworm")
+    validate_idx = text.index("--validate-linux-onedir dist/HelloStreamer", build_idx)
+    shell_exec_idx = text.index("test -x dist/HelloStreamer/HelloStreamer", validate_idx)
+    self_check_idx = text.index(
+        "dist/HelloStreamer/HelloStreamer --self-check",
+        shell_exec_idx,
+    )
+    package_idx = text.index("Package Linux executable", self_check_idx)
+    upload_idx = text.index("name: release-${{ matrix.artifact }}", package_idx)
+    assert validate_idx < shell_exec_idx < self_check_idx < package_idx < upload_idx
+    # Host-side layout gate remains immediately before tar packaging.
+    package_block = text[package_idx:upload_idx]
+    assert "missing or empty executable" in package_block
+    assert "empty _internal" in package_block
+    assert "tar -czf" in package_block
 
 
 def test_app_exposes_frozen_self_check_path() -> None:

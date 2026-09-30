@@ -134,9 +134,13 @@ jobs:
               python build.py --check-release-tag "$RELEASE_TAG"
               python build.py
               echo "=== Build output ==="
+              python build.py --validate-linux-onedir dist/HelloStreamer
               test -x dist/HelloStreamer/HelloStreamer
+              test -s dist/HelloStreamer/HelloStreamer
               file dist/HelloStreamer/HelloStreamer
               ls -la dist/HelloStreamer
+              echo "=== Frozen Linux smoke check ==="
+              dist/HelloStreamer/HelloStreamer --self-check
             '
 
       - name: Fix file ownership
@@ -144,6 +148,26 @@ jobs:
 
       - name: Package Linux executable
         run: |
+          set -euo pipefail
+          bundle="dist/HelloStreamer"
+          exe="${bundle}/HelloStreamer"
+          internal="${bundle}/_internal"
+          if [[ ! -f "$exe" || ! -s "$exe" ]]; then
+            echo "Linux onedir bundle incomplete; missing or empty executable: $exe" >&2
+            exit 1
+          fi
+          if [[ ! -x "$exe" ]]; then
+            echo "Linux onedir bundle incomplete; not executable: $exe" >&2
+            exit 1
+          fi
+          if [[ ! -d "$internal" ]]; then
+            echo "Linux onedir bundle incomplete; missing _internal: $internal" >&2
+            exit 1
+          fi
+          if [[ -z "$(ls -A "$internal")" ]]; then
+            echo "Linux onedir bundle incomplete; empty _internal: $internal" >&2
+            exit 1
+          fi
           mkdir -p release
           tar -czf "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C dist HelloStreamer
 
