@@ -82,6 +82,20 @@ DEFAULT_VIEWER_ENGAGEMENT: dict[str, Any] = {
     "whitelist_performance": True,
     "bring_to_front": True,
     "foreground_hold_seconds": 15,
+    # CDP page assist (source-run only; frozen builds hard-disable at runtime).
+    "page_assist_enabled": False,
+    "accept_content_gate": True,
+    "claim_channel_points": False,
+    "claim_delay_seconds_min": 2,
+    "claim_delay_seconds_max": 12,
+    "claim_click_offset_px": 10,
+    "claim_poll_seconds_min": 45,
+    "claim_poll_seconds_max": 90,
+    "theater_mode": False,
+    "theater_delay_seconds": 8,
+    "auto_refresh": False,
+    "refresh_minutes_min": 45,
+    "refresh_minutes_max": 75,
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -304,7 +318,31 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
     return normalized
 
 
-_VIEWER_ENGAGEMENT_INT_KEYS = ("foreground_hold_seconds",)
+_VIEWER_ENGAGEMENT_INT_KEYS = frozenset(
+    {
+        "foreground_hold_seconds",
+        "claim_delay_seconds_min",
+        "claim_delay_seconds_max",
+        "claim_click_offset_px",
+        "claim_poll_seconds_min",
+        "claim_poll_seconds_max",
+        "theater_delay_seconds",
+        "refresh_minutes_min",
+        "refresh_minutes_max",
+    }
+)
+
+_VIEWER_ENGAGEMENT_MIN_BOUNDS: dict[str, int] = {
+    "foreground_hold_seconds": 0,
+    "claim_delay_seconds_min": 0,
+    "claim_delay_seconds_max": 1,
+    "claim_click_offset_px": 0,
+    "claim_poll_seconds_min": 5,
+    "claim_poll_seconds_max": 10,
+    "theater_delay_seconds": 0,
+    "refresh_minutes_min": 5,
+    "refresh_minutes_max": 5,
+}
 
 
 def _normalize_viewer_engagement(value: Any) -> dict[str, Any]:
@@ -314,9 +352,19 @@ def _normalize_viewer_engagement(value: Any) -> dict[str, Any]:
             if key not in value:
                 continue
             if key in _VIEWER_ENGAGEMENT_INT_KEYS:
-                normalized[key] = _coerce_int(value[key], normalized[key])
+                floor = _VIEWER_ENGAGEMENT_MIN_BOUNDS.get(key, 0)
+                normalized[key] = max(
+                    floor, _coerce_int(value[key], normalized[key])
+                )
             else:
                 normalized[key] = _coerce_bool(value[key], normalized[key])
+    # Keep fuzzy ranges ordered so callers can sample without clamping again.
+    if normalized["claim_delay_seconds_max"] < normalized["claim_delay_seconds_min"]:
+        normalized["claim_delay_seconds_max"] = normalized["claim_delay_seconds_min"]
+    if normalized["claim_poll_seconds_max"] < normalized["claim_poll_seconds_min"]:
+        normalized["claim_poll_seconds_max"] = normalized["claim_poll_seconds_min"]
+    if normalized["refresh_minutes_max"] < normalized["refresh_minutes_min"]:
+        normalized["refresh_minutes_max"] = normalized["refresh_minutes_min"]
     return normalized
 
 

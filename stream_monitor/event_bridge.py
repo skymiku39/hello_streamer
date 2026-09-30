@@ -234,15 +234,32 @@ class MonitorEventBridge:
                         )
                 except Exception:
                     logger.exception("blank-tab prune failed")
-            elif (
-                mode in ("trigger", "trigger_once")
-                and close_off_topic
-                and not tracking_available
-            ):
-                logger.debug(
-                    "Skipped blank-tab prune: HWND window tracking unavailable "
-                    "(need dedicated profile and app mode or separate window)"
-                )
+            else:
+                # Keep-awake release must not depend on blank-tab cleanup.
+                # When prune is skipped (cleanup off / non-trigger mode), still
+                # sync engagement URLs against surviving tracked HWNDs.
+                if tracking_available or mode in ("trigger", "trigger_once"):
+                    try:
+                        released = (
+                            sink.platform_services.window.release_keep_awake_for_closed()
+                        )
+                        if released:
+                            logger.info(
+                                "keep-awake released for %d closed Twitch "
+                                "window(s)",
+                                released,
+                            )
+                    except Exception:
+                        logger.exception("keep-awake closed-window sync failed")
+                if (
+                    mode in ("trigger", "trigger_once")
+                    and close_off_topic
+                    and not tracking_available
+                ):
+                    logger.debug(
+                        "Skipped blank-tab prune: HWND window tracking unavailable "
+                        "(need dedicated profile and app mode or separate window)"
+                    )
 
 
         configured_action = sink.config.get("action", "open_and_stop")

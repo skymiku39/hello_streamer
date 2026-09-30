@@ -1,0 +1,416 @@
+"""Tests for CDP Twitch page assist (source-only)."""
+
+from __future__ import annotations
+
+import json
+import sys
+from typing import Any
+
+import pytest
+
+from stream_monitor import config_manager, notifier
+from stream_monitor.cdp_client import CdpClient, allocate_debugging_port
+from stream_monitor.twitch_page_assist import (
+    fuzzy_uniform,
+    should_start_page_assist,
+    start_page_assist,
+    stop_all_page_assist,
+    stop_page_assist,
+)
+from stream_monitor.viewer_engagement_model import (
+    ViewerEngagementSettings,
+    page_assist_runtime_allowed,
+)
+
+
+def test_page_assist_defaults_are_opt_in() -> None:
+    settings = ViewerEngagementSettings()
+    assert settings.page_assist_enabled is False
+    assert settings.accept_content_gate is True
+    assert settings.claim_channel_points is False
+    assert settings.theater_mode is False
+    assert settings.auto_refresh is False
+
+
+def test_page_assist_runtime_blocked_when_frozen(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert page_assist_runtime_allowed() is False
+    settings = ViewerEngagementSettings(
+        enabled=True, page_assist_enabled=True
+    )
+    assert settings.page_assist_active() is False
+
+
+def test_page_assist_runtime_allowed_when_source(monkeypatch) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    assert page_assist_runtime_allowed() is True
+    settings = ViewerEngagementSettings(
+        enabled=True, page_assist_enabled=True
+    )
+    assert settings.page_assist_active() is True
+
+
+def test_normalize_viewer_engagement_page_assist_ints() -> None:
+    normalized = config_manager._normalize_viewer_engagement(
+        {
+            "page_assist_enabled": True,
+            "claim_delay_seconds_min": 5,
+            "claim_delay_seconds_max": 3,  # should be ordered up
+            "refresh_minutes_min": 10,
+            "refresh_minutes_max": 8,
+        }
+    )
+    assert normalized["page_assist_enabled"] is True
+    assert normalized["claim_delay_seconds_min"] == 5
+    assert normalized["claim_delay_seconds_max"] == 5
+    assert normalized["refresh_minutes_min"] == 10
+    assert normalized["refresh_minutes_max"] == 10
+
+
+def test_fuzzy_uniform_orders_bounds() -> None:
+    for _ in range(20):
+        value = fuzzy_uniform(12, 2)
+        assert 2 <= value <= 12
+    assert fuzzy_uniform(7, 7) == 7
+
+
+def test_should_start_page_assist_requires_all_gates(monkeypatch) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    settings = ViewerEngagementSettings(
+        enabled=True, page_assist_enabled=True
+    )
+    assert (
+        should_start_page_assist(
+            "https://www.twitch.tv/foo",
+            settings,
+            managed=True,
+            isolated_profile=True,
+            chromium_family=True,
+            standalone_window=True,
+        )
+        is True
+    )
+    assert (
+        should_start_page_assist(
+            "https://www.youtube.com/@foo",
+            settings,
+            managed=True,
+            isolated_profile=True,
+            chromium_family=True,
+            standalone_window=True,
+        )
+        is False
+    )
+    assert (
+        should_start_page_assist(
+            "https://www.twitch.tv/foo",
+            settings,
+            managed=False,
+            isolated_profile=True,
+            chromium_family=True,
+            standalone_window=True,
+        )
+        is False
+    )
+
+
+def test_page_assist_standalone_window_gate_matches_ui_docs(monkeypatch) -> None:
+    """Standalone managed window yes; regular tab / unmanaged no."""
+    from stream_monitor.twitch_page_assist import is_standalone_managed_window
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    settings = ViewerEngagementSettings(
+        enabled=True, page_assist_enabled=True
+    )
+
+    assert is_standalone_managed_window(
+        managed=True, app_mode=True, new_window=False
+    )
+    assert is_standalone_managed_window(
+        managed=True, app_mode=False, new_window=True
+    )
+    assert not is_standalone_managed_window(
+        managed=True, app_mode=False, new_window=False
+    )
+    assert not is_standalone_managed_window(
+        managed=False, app_mode=True, new_window=True
+    )
+
+    assert (
+        should_start_page_assist(
+            "https://www.twitch.tv/foo",
+            settings,
+            managed=True,
+            isolated_profile=True,
+            chromium_family=True,
+            standalone_window=True,
+        )
+        is True
+    )
+    assert (
+        should_start_page_assist(
+            "https://www.twitch.tv/foo",
+            settings,
+            managed=True,
+            isolated_profile=True,
+            chromium_family=True,
+            standalone_window=False,
+        )
+        is False
+    )
+    assert (
+        should_start_page_assist(
+            "https://www.twitch.tv/foo",
+            settings,
+            managed=False,
+            isolated_profile=True,
+            chromium_family=True,
+            standalone_window=True,
+        )
+        is False
+    )
+
+
+def test_open_page_assist_skipped_for_regular_tab(monkeypatch, tmp_path) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    started: list[tuple[str, int]] = []
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *a, **k: object())
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        notifier,
+        "start_page_assist",
+        lambda url, port, settings: started.append((url, port)) or True,
+    )
+    notifier.configure_viewer_engagement(
+        ViewerEngagementSettings(
+            enabled=True,
+            page_assist_enabled=True,
+            keep_system_awake=False,
+        )
+    )
+    try:
+        ok = notifier._open_with_browser_settings(
+            "https://www.twitch.tv/foo",
+            {
+                "enabled": True,
+                "browser_path": "chrome",
+                "app_mode": False,
+                "new_window": False,
+                "user_data_dir": str(tmp_path / "profile"),
+                "per_channel_profile": False,
+            },
+            manage=True,
+        )
+        assert ok is True
+        assert started == []
+    finally:
+        notifier.configure_viewer_engagement(None)
+        stop_all_page_assist()
+
+
+def test_allocate_debugging_port_is_bindable() -> None:
+    port = allocate_debugging_port()
+    assert isinstance(port, int)
+    assert 0 < port < 65536
+
+
+def test_cdp_fresh_profile_resolves_preferred_port_without_browser() -> None:
+    from stream_monitor.cdp_client import resolve_cdp_attach
+
+    result = resolve_cdp_attach(
+        "",
+        preferred_port=9333,
+        profile_was_busy=False,
+        timeout=0.6,
+        clock=lambda: 0.0,
+        sleep=lambda _s: None,
+        endpoint_probe=lambda port, timeout=1.0: port == 9333,
+    )
+    assert result.ok is True
+    assert result.port == 9333
+    assert result.reason == "preferred_port"
+
+
+def test_cdp_existing_profile_busy_fails_timely_without_browser(tmp_path) -> None:
+    from stream_monitor.cdp_client import profile_looks_busy, resolve_cdp_attach
+
+    (tmp_path / "SingletonLock").write_text("busy", encoding="utf-8")
+    assert profile_looks_busy(str(tmp_path)) is True
+
+    times = iter([0.0, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
+
+    result = resolve_cdp_attach(
+        str(tmp_path),
+        preferred_port=9444,
+        profile_was_busy=True,
+        timeout=2.0,
+        clock=lambda: next(times),
+        sleep=lambda _s: None,
+        endpoint_probe=lambda *_a, **_k: False,
+    )
+    assert result.ok is False
+    assert result.reason == "profile_busy"
+    assert "Existing browser/profile" in result.message
+
+
+def test_build_browser_args_includes_cdp_port() -> None:
+    args = notifier._build_browser_args(
+        "https://www.twitch.tv/foo",
+        {
+            "browser_path": "chrome",
+            "user_data_dir": "C:/tmp/profile",
+            "app_mode": True,
+            "apply_geometry": False,
+            "_cdp_debugging_port": 19222,
+        },
+    )
+    assert "--remote-debugging-port=19222" in args
+    assert "--remote-allow-origins=*" in args
+
+
+def test_open_with_browser_settings_starts_page_assist(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    started: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *a, **k: object())
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    import stream_monitor.cdp_client as cdp_client
+
+    class _Lease:
+        port = 18888
+
+        def release(self) -> int:
+            return self.port
+
+    monkeypatch.setattr(cdp_client, "lease_debugging_port", lambda: _Lease())
+    monkeypatch.setattr(cdp_client, "profile_looks_busy", lambda _p: False)
+    monkeypatch.setattr(
+        notifier,
+        "start_page_assist",
+        lambda url, port, settings: started.append((url, port)) or True,
+    )
+    monkeypatch.setattr(
+        notifier,
+        "_apply_new_browser_window_settings_async",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(notifier, "_enum_browser_hwnds", lambda *_a, **_k: set())
+
+    notifier.configure_viewer_engagement(
+        ViewerEngagementSettings(
+            enabled=True,
+            page_assist_enabled=True,
+            keep_system_awake=False,
+        )
+    )
+    try:
+        ok = notifier._open_with_browser_settings(
+            "https://www.twitch.tv/foo",
+            {
+                "enabled": True,
+                "browser_path": "chrome",
+                "app_mode": True,
+                "new_window": False,
+                "user_data_dir": str(tmp_path / "profile"),
+                "per_channel_profile": False,
+            },
+            manage=True,
+        )
+        assert ok is True
+        assert started == [("https://www.twitch.tv/foo", 18888)]
+    finally:
+        notifier.configure_viewer_engagement(None)
+        stop_all_page_assist()
+
+
+def test_close_browser_window_stops_page_assist(monkeypatch) -> None:
+    stopped: list[str] = []
+    monkeypatch.setattr(
+        notifier, "stop_page_assist", lambda url: stopped.append(url)
+    )
+    monkeypatch.setattr(
+        notifier, "_close_browser_window_for_url_impl", lambda *a, **k: 0
+    )
+    monkeypatch.setattr(notifier, "_release_engagement_keep_awake", lambda *_a: None)
+    assert notifier.close_browser_window_for_url("https://www.twitch.tv/foo") == 0
+    assert stopped == ["https://www.twitch.tv/foo"]
+
+
+def test_cdp_evaluate_and_click(monkeypatch) -> None:
+    client = CdpClient()
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    def fake_call(method: str, params: dict[str, Any] | None = None, **_k):
+        calls.append((method, params))
+        if method == "Runtime.evaluate":
+            return {
+                "result": {
+                    "type": "object",
+                    "value": {"found": True, "x": 10, "y": 20},
+                }
+            }
+        return {}
+
+    client._ws = object()  # mark as connected
+    monkeypatch.setattr(client, "call", fake_call)
+    value = client.evaluate("1+1")
+    assert value == {"found": True, "x": 10, "y": 20}
+    client.click_at(11, 22)
+    assert calls[0][0] == "Runtime.evaluate"
+    assert calls[1][0] == "Input.dispatchMouseEvent"
+    assert calls[1][1]["type"] == "mousePressed"
+    assert calls[2][1]["type"] == "mouseReleased"
+
+
+def test_gate_js_finds_start_watching_in_fake_dom() -> None:
+    """Sanity-check the gate finder expression against a tiny fake document."""
+    from stream_monitor.twitch_page_assist import _FIND_GATE_JS
+
+    harness = f"""
+class HTMLElement {{}}
+globalThis.HTMLElement = HTMLElement;
+const button = {{
+  innerText: "Start Watching",
+  textContent: "Start Watching",
+  getAttribute: () => "",
+  getBoundingClientRect: () => ({{ left: 100, top: 200, width: 80, height: 40 }}),
+}};
+Object.setPrototypeOf(button, HTMLElement.prototype);
+globalThis.document = {{
+  querySelector: () => null,
+  querySelectorAll: () => [button],
+}};
+const result = {_FIND_GATE_JS};
+console.log(JSON.stringify(result));
+"""
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node not available")
+    proc = subprocess.run(
+        ["node", "-e", harness],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout.strip())
+    assert data["found"] is True
+    assert data["x"] == 140
+    assert data["y"] == 220
+
+
+def test_start_page_assist_rejected_when_frozen(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert (
+        start_page_assist(
+            "https://www.twitch.tv/foo",
+            9222,
+            ViewerEngagementSettings(enabled=True, page_assist_enabled=True),
+        )
+        is False
+    )
+    stop_page_assist("https://www.twitch.tv/foo")

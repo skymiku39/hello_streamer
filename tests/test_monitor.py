@@ -16,6 +16,7 @@ from stream_monitor.monitor import ChannelEntry, ChannelStatus, Monitor
 from stream_monitor.monitor import deps as monitor_deps
 from stream_monitor.monitor import types as monitor_types
 from stream_monitor.monitor.probes import get_platform_probe
+from stream_monitor.monitor.types import OfflineInfo
 
 
 def _check_and_commit(monitor: Monitor, entry: ChannelEntry):
@@ -2052,10 +2053,10 @@ def test_twitch_strike_resets_when_channel_returns_live(monkeypatch, tmp_path) -
     db.close()
 
 
-def test_twitch_fetch_none_increments_offline_strike_when_was_live(
+def test_twitch_fetch_none_keeps_live_without_strike(
     monkeypatch, tmp_path,
 ) -> None:
-    """A failed fetch while LIVE counts toward the offline strike threshold."""
+    """Primary get_stream_info None while LIVE is unavailable — no strike/offline."""
     fetcher = FakeTwitchFetcherReadings([True, None, None])
     monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
@@ -2069,20 +2070,21 @@ def test_twitch_fetch_none_increments_offline_strike_when_was_live(
     _check_and_commit(monitor, entry)
     with monitor._lock:
         assert monitor._last_status["twitch:hello"].status is True
-        assert monitor._offline_strikes.get("twitch:hello|_") == 1
+        assert monitor._offline_strikes.get("twitch:hello|_") in (None, 0)
         assert monitor._pending_offline_events == []
 
     _check_and_commit(monitor, entry)
     with monitor._lock:
-        assert monitor._last_status["twitch:hello"].status is False
-        assert len(monitor._pending_offline_events) == 1
+        assert monitor._last_status["twitch:hello"].status is True
+        assert monitor._offline_strikes.get("twitch:hello|_") in (None, 0)
+        assert monitor._pending_offline_events == []
     db.close()
 
 
-def test_twitch_live_after_fetch_none_commit_fires_went_live(
+def test_twitch_live_after_fetch_none_does_not_re_fire_went_live(
     monkeypatch, tmp_path,
 ) -> None:
-    """After fetch failures clear a stale LIVE state, a new stream triggers went_live."""
+    """None does not clear LIVE, so a later True does not re-fire went_live."""
     fetcher = FakeTwitchFetcherReadings([True, None, None, True])
     monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
@@ -2095,8 +2097,59 @@ def test_twitch_live_after_fetch_none_commit_fires_went_live(
         for evt_entry, info in results:
             went_live.append((evt_entry.key, info.title))
 
-    assert went_live == [("twitch:hello", "Live now"), ("twitch:hello", "Live now")]
+    assert went_live == [("twitch:hello", "Live now")]
+    with monitor._lock:
+        assert monitor._last_status["twitch:hello"].status is True
     db.close()
+
+
+def test_twitch_confirm_retry_none_keeps_live_without_strike(monkeypatch) -> None:
+    """Non-LIVE sample + confirm retry None is unavailable — keep LIVE, no strike."""
+
+    class OfflineThenNoneFetcher:
+        platform = "twitch"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_stream_info(self, channel_name: str) -> StreamInfo | None:
+            self.calls += 1
+            if self.calls == 1:
+                return StreamInfo(
+                    channel=channel_name,
+                    platform="twitch",
+                    is_live=False,
+                    url=f"https://www.twitch.tv/{channel_name}",
+                )
+            return None
+
+        def get_latest_finished_vod(self, channel_name: str, *, items=None):
+            return None
+
+    fetcher = OfflineThenNoneFetcher()
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}])
+    entry = ChannelEntry(platform="twitch", name="hello")
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(
+            status=True,
+            url="https://www.twitch.tv/hello",
+            title="Still live",
+        )
+        monitor._live_payload["twitch:hello|_"] = OfflineInfo(
+            url="https://www.twitch.tv/hello",
+            title="Still live",
+            platform="twitch",
+            name="hello",
+        )
+
+    events = monitor._probe_live(entry)
+    assert events == []
+    assert fetcher.calls == 2
+    with monitor._lock:
+        assert monitor._last_status[entry.key].status is True
+        assert monitor._offline_strikes.get("twitch:hello|_") in (None, 0)
+        assert monitor._pending_offline_events == []
 
 
 def test_twitch_went_live_suppressed_emits_log(
@@ -2957,9 +3010,10 @@ def test_youtube_upcoming_plus_default_vod_url(monkeypatch, tmp_path) -> None:
     db.close()
 
 
-def test_twitch_fetch_none_offline_commits_in_tier2(
+def test_twitch_fetch_none_preserves_live_through_tier2(
     monkeypatch, tmp_path
 ) -> None:
+    """None through tier-1 and tier-2 must not commit OFFLINE or clear LIVE."""
     fetcher = FakeTwitchFetcherReadings([None, None])
     monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
     db = SeenVideoDB(tmp_path / "test.db")
@@ -2976,18 +3030,40 @@ def test_twitch_fetch_none_offline_commits_in_tier2(
     monitor._probe_live(entry)
     with monitor._lock:
         assert monitor._last_status[entry.key].status is True
+        assert monitor._offline_strikes.get("twitch:hello|_") in (None, 0)
         assert monitor._pending_offline_events == []
 
     monitor._probe_live(entry)
     with monitor._lock:
         assert monitor._last_status[entry.key].status is True
+        assert monitor._offline_strikes.get("twitch:hello|_") in (None, 0)
         assert monitor._pending_offline_events == []
 
     commit = monitor._refresh_details(entry)
     commit()
     with monitor._lock:
-        assert monitor._last_status[entry.key].status is False
-        assert len(monitor._pending_offline_events) == 1
+        assert monitor._last_status[entry.key].status is True
+        assert monitor._offline_strikes.get("twitch:hello|_") in (None, 0)
+        assert monitor._pending_offline_events == []
+    db.close()
+
+
+def test_twitch_fetch_none_no_prior_status_leaves_cache_untouched(
+    monkeypatch, tmp_path
+) -> None:
+    """None with no prior status must not create OFFLINE or publish offline."""
+    fetcher = FakeTwitchFetcherReadings([None])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    entry = ChannelEntry(platform="twitch", name="hello")
+
+    events = _check_and_commit(monitor, entry)
+    assert events == []
+    with monitor._lock:
+        assert entry.key not in monitor._last_status
+        assert monitor._offline_strikes.get("twitch:hello|_") in (None, 0)
+        assert monitor._pending_offline_events == []
     db.close()
 
 

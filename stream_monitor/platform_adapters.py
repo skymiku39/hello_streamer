@@ -42,6 +42,7 @@ class WindowManagerAdapter:
     close_url: Callable[..., int]
     close_everything: Callable[[], int]
     prune: Callable[[], int]
+    release_keep_awake: Callable[[], int] = lambda: 0
 
     def tracking_available(
         self,
@@ -60,6 +61,9 @@ class WindowManagerAdapter:
 
     def prune_off_topic(self) -> int:
         return self.prune()
+
+    def release_keep_awake_for_closed(self) -> int:
+        return self.release_keep_awake()
 
 
 @dataclass(frozen=True)

@@ -96,6 +96,7 @@ class Monitor(
         self._last_poll_planned_rest: float = 0.0
         self._wake_verify_mode = False
         self._wake_verify_active = False
+        self._wake_deferred_keys: set[str] = set()
         self._startup_refresh_pending = False
         self._force_offline_vod_refresh = False
         self._last_maintenance_wall: float = 0.0
