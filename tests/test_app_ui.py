@@ -4,6 +4,10 @@ from stream_monitor import i18n
 from stream_monitor.app_ui import (
     _clamp_tooltip_position,
     _format_minutes_delta,
+    compact_control_button_states,
+    compact_run_button_key,
+    compose_monitor_mode,
+    decompose_monitor_mode,
     monitor_mode_button_states,
 )
 
@@ -120,3 +124,46 @@ def test_monitor_mode_buttons_watch_once_disables_only_watch_once() -> None:
 
 def test_monitor_mode_buttons_unknown_mode_falls_back_to_idle() -> None:
     assert monitor_mode_button_states("bogus") == monitor_mode_button_states("idle")
+
+
+def test_compose_and_decompose_monitor_mode_round_trip() -> None:
+    assert compose_monitor_mode("trigger", once=False) == "trigger"
+    assert compose_monitor_mode("trigger", once=True) == "trigger_once"
+    assert compose_monitor_mode("watch", once=False) == "watch"
+    assert compose_monitor_mode("watch", once=True) == "watch_once"
+    assert decompose_monitor_mode("trigger_once") == ("trigger", True)
+    assert decompose_monitor_mode("watch") == ("watch", False)
+    assert decompose_monitor_mode("idle") == ("trigger", False)
+    assert decompose_monitor_mode("bogus") == ("trigger", False)
+
+
+def test_compact_run_button_key_matches_legacy_states() -> None:
+    assert compact_run_button_key("trigger", once=False) == "start"
+    assert compact_run_button_key("watch", once=True) == "watch_once"
+
+
+def test_compact_control_button_states_follow_selected_composition() -> None:
+    idle = compact_control_button_states("idle", kind="trigger", once=False)
+    assert idle == {"start": "normal", "stop": "disabled"}
+
+    running = compact_control_button_states("trigger", kind="trigger", once=False)
+    assert running == {"start": "disabled", "stop": "normal"}
+
+    switchable = compact_control_button_states("trigger", kind="watch", once=False)
+    assert switchable == {"start": "normal", "stop": "normal"}
+
+    once = compact_control_button_states(
+        "watch_once", kind="watch", once=True
+    )
+    assert once == {"start": "disabled", "stop": "normal"}
+
+
+def test_layout_flow_rows_wraps_like_flex() -> None:
+    from stream_monitor.app_ui import layout_flow_rows
+
+    assert layout_flow_rows([100, 100, 100], avail=250, hgap=10) == [
+        [0, 1],
+        [2],
+    ]
+    assert layout_flow_rows([300], avail=200, hgap=10) == [[0]]
+    assert layout_flow_rows([40, 40, 40], avail=200, hgap=10) == [[0, 1, 2]]
