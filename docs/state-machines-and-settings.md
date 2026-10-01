@@ -55,14 +55,16 @@
 
 ### 1.3 全域一次性輪詢模式
 
-最下方控制列提供四種全域操作：
+最下方精簡控制列以「開始／停止」搭配模式與方式分段選擇器，組合成四種全域操作（對應 `compose_monitor_mode`）：
 
-| 值 | UI 名稱 | 行為 |
-|------|------|------|
-| `trigger` | 監聽＋觸發 | 持續輪詢；LIVE 依通知／開啟／開啟後設定執行。 |
-| `watch` | 僅監聽 | 持續輪詢；不通知、不開啟瀏覽器。 |
-| `trigger_once` | 監聽＋觸發一次 | 完成一個完整 `PollStatusUpdate` 輪詢週期後停止；本輪仍依設定執行副作用。 |
-| `watch_once` | 僅監聽一次 | 完成一個完整 `PollStatusUpdate` 輪詢週期後停止；本輪不通知、不開啟瀏覽器。 |
+| 模式 × 方式 | 值 | UI 名稱 | 行為 |
+|------|------|------|------|
+| 監聽＋觸發 × 持續 | `trigger` | 監聽＋觸發 / 持續 | 持續輪詢；LIVE 依通知／開啟／開啟後設定執行。 |
+| 只監測 × 持續 | `watch` | 只監測 / 持續 | 持續輪詢；不通知、不開啟瀏覽器。 |
+| 監聽＋觸發 × 一次 | `trigger_once` | 監聽＋觸發 / 一次 | 完成一個完整 `PollStatusUpdate` 輪詢週期後停止；本輪仍依設定執行副作用。 |
+| 只監測 × 一次 | `watch_once` | 只監測 / 一次 | 完成一個完整 `PollStatusUpdate` 輪詢週期後停止；本輪不通知、不開啟瀏覽器。 |
+
+按下「開始」會依目前分段選擇啟動對應模式；監聽中變更分段會切換至新組合（等同舊版直接按另一顆啟動鈕）。觸發設定列改為「通知」與「開啟」兩組開關，語意與 `TriggerSettings` 相同。
 
 一次性模式的消費點是「按下按鈕後的下一個 `cycle_id` 對應的 `PollStatusUpdate`」，不會把按鈕按下前已在佇列中的輪詢當成這一次；且在本輪 LIVE／離線事件都派送完成後才停止，避免漏掉本輪事件。若程式在本輪完成前關閉，設定會保留一次性模式，下一次以靜默啟動時會繼續執行一次；完成後則保存為對應的持續模式，避免每次啟動重複執行。
 
@@ -136,15 +138,16 @@
 
 ### 4.1 控制列（監看模式）
 
-`monitor_mode_button_states(mode)` 為純決策，`App._apply_monitor_mode_buttons` 只負責套用。
+`monitor_mode_button_states(mode)` 與 `compact_control_button_states(mode, kind, once)` 為純決策；`App._apply_monitor_mode_buttons` 只負責套用到精簡控制列的「開始／停止」。
 
-| 模式 | 開始 | 觀看 | 停止 |
+| 模式 | 選定組合 | 開始 | 停止 |
 |------|------|------|------|
-| `idle` | 可用 | 可用 | 停用 |
-| `trigger` | 停用（目前模式） | 可用 | 可用 |
-| `watch` | 可用 | 停用（目前模式） | 可用 |
+| `idle` | 任意 | 可用 | 停用 |
+| `trigger` | 監聽＋觸發 × 持續 | 停用（目前模式） | 可用 |
+| `trigger` | 其他組合 | 可用（可切換） | 可用 |
+| `watch` / `*_once` | 同理：與目前模式相同則開始停用 | — | 可用 |
 
-**測試佐證**：`tests/test_app_ui.py::test_monitor_mode_buttons_*`。
+**測試佐證**：`tests/test_app_ui.py::test_monitor_mode_buttons_*`、`test_compose_and_decompose_monitor_mode_round_trip`、`test_compact_control_button_states_follow_selected_composition`。
 
 ### 4.2 頻道列狀態徽章
 

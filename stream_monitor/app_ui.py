@@ -193,17 +193,41 @@ def _format_minutes_delta(total_seconds: float) -> str:
     return f"{mins}m"
 
 
+def compose_monitor_mode(kind: str, *, once: bool) -> str:
+    """Compose a global monitor mode from compact kind × duration selectors."""
+    if kind == "watch":
+        return "watch_once" if once else "watch"
+    return "trigger_once" if once else "trigger"
+
+
+def decompose_monitor_mode(mode: str) -> tuple[str, bool]:
+    """Split a monitor mode into ``(kind, once)`` for compact selectors.
+
+    Unknown / idle modes fall back to continuous trigger so the segments
+    always show a valid selection before the user presses Start.
+    """
+    if mode in ("watch", "watch_once"):
+        return "watch", mode.endswith("_once")
+    if mode in ("trigger", "trigger_once"):
+        return "trigger", mode.endswith("_once")
+    return "trigger", False
+
+
 def monitor_mode_button_states(mode: str) -> dict[str, str]:
-    """Map a monitor mode to the state of the four start and stop buttons.
+    """Map a monitor mode to logical start/stop enablement.
 
     Pure decision separated from the Tk side-effect in
-    :meth:`App._apply_monitor_mode_buttons`, so the "which button is enabled
+    :meth:`App._apply_monitor_mode_buttons`, so the "which action is enabled
     in which run state" contract is unit-testable without a display.
+
+    Keys keep the historical names (``start`` / ``watch`` / ``start_once`` /
+    ``watch_once`` / ``stop``) so callers can resolve the compact Start
+    button from the currently selected kind×duration composition.
 
     - ``trigger`` / ``watch``: the selected continuous mode is disabled.
     - ``trigger_once`` / ``watch_once``: the selected one-cycle mode is
       disabled while that cycle is running.
-    - ``idle``: all start buttons are available and Stop is disabled.
+    - ``idle``: all start actions are available and Stop is disabled.
     """
     states = {
         "start": "normal",
@@ -222,6 +246,25 @@ def monitor_mode_button_states(mode: str) -> dict[str, str]:
         states[selected] = "disabled"
         states["stop"] = "normal"
     return states
+
+
+def compact_run_button_key(kind: str, *, once: bool) -> str:
+    """Map compact selectors to a :func:`monitor_mode_button_states` key."""
+    return {
+        ("trigger", False): "start",
+        ("watch", False): "watch",
+        ("trigger", True): "start_once",
+        ("watch", True): "watch_once",
+    }[(kind, once)]
+
+
+def compact_control_button_states(
+    mode: str, *, kind: str, once: bool
+) -> dict[str, str]:
+    """Enablement for the compact Start / Stop pair given current selectors."""
+    states = monitor_mode_button_states(mode)
+    run_key = compact_run_button_key(kind, once=once)
+    return {"start": states[run_key], "stop": states["stop"]}
 
 
 def _format_countdown(target: str) -> str:
@@ -304,10 +347,22 @@ _CLR_CARD_DISABLED = "#0e1528"
 _CLR_TEXT_DISABLED = "#3a3a4a"
 _CLR_LINK = "#2196F3"
 _CLR_LINK_HOVER = "#1769aa"
+# Compact control-panel accents (dark adaptation of the v5 HTML mock).
+_CLR_PANEL_BORDER = "#3a3a55"
+_CLR_SEG_BORDER = "#4a4a66"
+_CLR_TEXT_SECONDARY = "#9aa0b4"
+_CLR_TEXT_MUTED = "#7f8499"
+_CLR_STATUS_DOT_IDLE = "#6d6b67"
 
 _MIN_WINDOW_WIDTH = 920
 _MIN_WINDOW_HEIGHT = 560
 _DEFAULT_WINDOW_GEOMETRY = f"{_MIN_WINDOW_WIDTH}x580"
+_COMPACT_CTRL_PAD_X = 16
+_COMPACT_CTRL_PAD_Y = 12
+_COMPACT_LINE_GAP = 10
+_COMPACT_ACT_BTN_HEIGHT = 34
+_COMPACT_SEG_HEIGHT = 26
+_COMPACT_FIELD_HEIGHT = 30
 
 
 # ---------------------------------------------------------------------------
