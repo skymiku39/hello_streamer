@@ -156,3 +156,14 @@ def test_compact_control_button_states_follow_selected_composition() -> None:
         "watch_once", kind="watch", once=True
     )
     assert once == {"start": "disabled", "stop": "normal"}
+
+
+def test_layout_flow_rows_wraps_like_flex() -> None:
+    from stream_monitor.app_ui import layout_flow_rows
+
+    assert layout_flow_rows([100, 100, 100], avail=250, hgap=10) == [
+        [0, 1],
+        [2],
+    ]
+    assert layout_flow_rows([300], avail=200, hgap=10) == [[0]]
+    assert layout_flow_rows([40, 40, 40], avail=200, hgap=10) == [[0, 1, 2]]

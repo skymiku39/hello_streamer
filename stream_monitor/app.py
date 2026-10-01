@@ -48,10 +48,12 @@ from stream_monitor.app_ui import (
     _COMPACT_CTRL_PAD_X,
     _COMPACT_CTRL_PAD_Y,
     _COMPACT_FIELD_HEIGHT,
+    _COMPACT_FLOW_HGAP,
     _COMPACT_LINE_GAP,
     _COMPACT_SEG_HEIGHT,
     _MIN_WINDOW_HEIGHT,
     _MIN_WINDOW_WIDTH,
+    CompactFlowFrame,
     _button_width,
     _clamped_window_geometry,
     _fit_button,
@@ -481,17 +483,17 @@ class App(ctk.CTk):
             text_color="#555566",
         )
 
-        # ── Compact bottom control panel (v5 HTML arrangement) ──
-        ctrl = ctk.CTkFrame(
+        # ── Compact bottom control panel (v5 HTML arrangement + flex-wrap) ──
+        self._compact_ctrl = ctk.CTkFrame(
             outer,
             corner_radius=12,
             fg_color=_CLR_CARD,
             border_width=1,
             border_color=_CLR_PANEL_BORDER,
         )
-        ctrl.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self._compact_ctrl.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
-        panel = ctk.CTkFrame(ctrl, fg_color="transparent")
+        panel = ctk.CTkFrame(self._compact_ctrl, fg_color="transparent")
         panel.pack(
             fill="x",
             padx=_COMPACT_CTRL_PAD_X,
@@ -503,11 +505,13 @@ class App(ctk.CTk):
         self._monitor_kind = kind
         self._monitor_once = once
 
-        line1 = ctk.CTkFrame(panel, fg_color="transparent")
-        line1.pack(fill="x")
+        self._run_flow = CompactFlowFrame(
+            panel, hgap=_COMPACT_FLOW_HGAP, vgap=_COMPACT_LINE_GAP
+        )
+        self._run_flow.pack(fill="x")
 
-        acts = ctk.CTkFrame(line1, fg_color="transparent")
-        acts.pack(side="left", padx=(0, 10))
+        acts = ctk.CTkFrame(self._run_flow, fg_color="transparent")
+        self._run_flow.add(acts)
 
         self.start_btn = ctk.CTkButton(
             acts,
@@ -578,13 +582,8 @@ class App(ctk.CTk):
         self._status_subline_kwargs: dict[str, str] = {}
         self._render_status_text()
 
-        self._vr1 = ctk.CTkFrame(
-            line1, width=1, height=34, fg_color=_CLR_SEG_BORDER
-        )
-        self._vr1.pack(side="left", padx=(4, 14), fill="y")
-
-        mode_fld = ctk.CTkFrame(line1, fg_color="transparent")
-        mode_fld.pack(side="left", padx=(0, 16))
+        mode_fld = ctk.CTkFrame(self._run_flow, fg_color="transparent")
+        self._run_flow.add(mode_fld)
         self._mode_caption = ctk.CTkLabel(
             mode_fld,
             text=tr("toolbar.mode"),
@@ -607,8 +606,8 @@ class App(ctk.CTk):
         self.mode_seg.pack(side="left")
         self.mode_seg.set(self._mode_segment_label(self._monitor_kind))
 
-        duration_fld = ctk.CTkFrame(line1, fg_color="transparent")
-        duration_fld.pack(side="left", padx=(0, 16))
+        duration_fld = ctk.CTkFrame(self._run_flow, fg_color="transparent")
+        self._run_flow.add(duration_fld)
         self._duration_caption = ctk.CTkLabel(
             duration_fld,
             text=tr("toolbar.duration"),
@@ -631,8 +630,8 @@ class App(ctk.CTk):
         self.duration_seg.pack(side="left")
         self.duration_seg.set(self._duration_segment_label(self._monitor_once))
 
-        interval_fld = ctk.CTkFrame(line1, fg_color="transparent")
-        interval_fld.pack(side="left")
+        interval_fld = ctk.CTkFrame(self._run_flow, fg_color="transparent")
+        self._run_flow.add(interval_fld)
         self._interval_caption = ctk.CTkLabel(
             interval_fld,
             text=tr("toolbar.interval_short"),
@@ -661,30 +660,37 @@ class App(ctk.CTk):
         )
         self._interval_unit.pack(side="left", padx=(8, 0))
 
-        line2 = ctk.CTkFrame(panel, fg_color="transparent")
-        line2.pack(fill="x", pady=(_COMPACT_LINE_GAP, 0))
-        line2_rule = ctk.CTkFrame(line2, height=1, fg_color=_CLR_PANEL_BORDER)
+        settings_block = ctk.CTkFrame(panel, fg_color="transparent")
+        settings_block.pack(fill="x", pady=(_COMPACT_LINE_GAP, 0))
+        line2_rule = ctk.CTkFrame(
+            settings_block, height=1, fg_color=_CLR_PANEL_BORDER
+        )
         line2_rule.pack(fill="x", pady=(0, _COMPACT_LINE_GAP))
+
+        self._settings_flow = CompactFlowFrame(
+            settings_block, hgap=_COMPACT_FLOW_HGAP, vgap=_COMPACT_LINE_GAP
+        )
+        self._settings_flow.pack(fill="x")
 
         trigger_settings = TriggerSettings.from_mapping(
             self.config.get("trigger_settings")
         )
 
-        notify_grp = ctk.CTkFrame(line2, fg_color="transparent")
-        notify_grp.pack(side="left", padx=(0, 14))
+        # Atomic wrap units so long locales reflow instead of clipping the
+        # trailing info button / option menu (HTML flex-wrap behaviour).
         self._notify_group_label = ctk.CTkLabel(
-            notify_grp,
+            self._settings_flow,
             text=tr("toolbar.group.notify"),
             font=_font(13),
             text_color=_CLR_TEXT_SECONDARY,
         )
-        self._notify_group_label.pack(side="left", padx=(0, 12))
+        self._settings_flow.add(self._notify_group_label)
 
         self.notify_on_live_var = ctk.BooleanVar(
             value=trigger_settings.notify_on_live
         )
         self.notify_on_live_switch = ctk.CTkSwitch(
-            notify_grp,
+            self._settings_flow,
             text=tr("toolbar.notify_on_live"),
             variable=self.notify_on_live_var,
             command=self._persist_trigger_settings,
@@ -692,14 +698,14 @@ class App(ctk.CTk):
             switch_width=32,
             switch_height=18,
         )
-        self.notify_on_live_switch.pack(side="left", padx=(0, 16))
+        self._settings_flow.add(self.notify_on_live_switch)
         _tooltip_tr(self.notify_on_live_switch, "tooltip.notify_on_live")
 
         self.notify_on_upcoming_var = ctk.BooleanVar(
             value=trigger_settings.notify_on_upcoming
         )
         self.notify_on_upcoming_switch = ctk.CTkSwitch(
-            notify_grp,
+            self._settings_flow,
             text=tr("toolbar.notify_on_upcoming"),
             variable=self.notify_on_upcoming_var,
             command=self._persist_trigger_settings,
@@ -707,7 +713,7 @@ class App(ctk.CTk):
             switch_width=32,
             switch_height=18,
         )
-        self.notify_on_upcoming_switch.pack(side="left", padx=(0, 16))
+        self._settings_flow.add(self.notify_on_upcoming_switch)
         _tooltip_tr(
             self.notify_on_upcoming_switch, "tooltip.notify_on_upcoming"
         )
@@ -716,7 +722,7 @@ class App(ctk.CTk):
             value=trigger_settings.notify_on_open_failure
         )
         self.notify_on_open_failure_switch = ctk.CTkSwitch(
-            notify_grp,
+            self._settings_flow,
             text=tr("toolbar.notify_on_open_failure"),
             variable=self.notify_on_open_failure_var,
             command=self._persist_trigger_settings,
@@ -724,29 +730,22 @@ class App(ctk.CTk):
             switch_width=32,
             switch_height=18,
         )
-        self.notify_on_open_failure_switch.pack(side="left")
+        self._settings_flow.add(self.notify_on_open_failure_switch)
         _tooltip_tr(
             self.notify_on_open_failure_switch, "tooltip.notify_on_open_failure"
         )
 
-        self._vr2 = ctk.CTkFrame(
-            line2, width=1, height=28, fg_color=_CLR_SEG_BORDER
-        )
-        self._vr2.pack(side="left", padx=(6, 14), fill="y")
-
-        open_grp = ctk.CTkFrame(line2, fg_color="transparent")
-        open_grp.pack(side="left")
         self._open_group_label = ctk.CTkLabel(
-            open_grp,
+            self._settings_flow,
             text=tr("toolbar.group.open"),
             font=_font(13),
             text_color=_CLR_TEXT_SECONDARY,
         )
-        self._open_group_label.pack(side="left", padx=(0, 12))
+        self._settings_flow.add(self._open_group_label)
 
         self.open_on_live_var = ctk.BooleanVar(value=trigger_settings.open_on_live)
         self.open_on_live_switch = ctk.CTkSwitch(
-            open_grp,
+            self._settings_flow,
             text=tr("toolbar.open_on_live"),
             variable=self.open_on_live_var,
             command=self._persist_trigger_settings,
@@ -754,14 +753,14 @@ class App(ctk.CTk):
             switch_width=32,
             switch_height=18,
         )
-        self.open_on_live_switch.pack(side="left", padx=(0, 16))
+        self._settings_flow.add(self.open_on_live_switch)
         _tooltip_tr(self.open_on_live_switch, "tooltip.open_on_live")
 
         self.open_on_upcoming_var = ctk.BooleanVar(
             value=trigger_settings.open_on_upcoming
         )
         self.open_on_upcoming_switch = ctk.CTkSwitch(
-            open_grp,
+            self._settings_flow,
             text=tr("toolbar.open_on_upcoming"),
             variable=self.open_on_upcoming_var,
             command=self._persist_trigger_settings,
@@ -769,11 +768,11 @@ class App(ctk.CTk):
             switch_width=32,
             switch_height=18,
         )
-        self.open_on_upcoming_switch.pack(side="left", padx=(0, 16))
+        self._settings_flow.add(self.open_on_upcoming_switch)
         _tooltip_tr(self.open_on_upcoming_switch, "tooltip.open_on_upcoming")
 
-        after_fld = ctk.CTkFrame(open_grp, fg_color="transparent")
-        after_fld.pack(side="left")
+        after_fld = ctk.CTkFrame(self._settings_flow, fg_color="transparent")
+        self._settings_flow.add(after_fld)
         self._after_open_caption = ctk.CTkLabel(
             after_fld,
             text=tr("toolbar.after_open"),
@@ -815,8 +814,13 @@ class App(ctk.CTk):
         )
         self._trigger_hint_btn.pack(side="left", padx=(6, 0))
         _tooltip_tr(self._trigger_hint_btn, "toolbar.trigger_hint")
+
+        self._compact_ctrl.bind(
+            "<Configure>", self._on_compact_ctrl_configure, add="+"
+        )
         self._refresh_trigger_controls()
         self._apply_monitor_mode_buttons()
+        self._reflow_compact_panel()
 
 
     def _mode_segment_values(self) -> list[str]:
@@ -886,6 +890,17 @@ class App(ctk.CTk):
             WATCH_ONCE_MODE: self._on_watch_once,
         }[mode]()
 
+    def _on_compact_ctrl_configure(self, _event: Any = None) -> None:
+        self._reflow_compact_panel()
+
+    def _reflow_compact_panel(self) -> None:
+        """Reflow compact wrap rows after resize / i18n text width changes."""
+        if not hasattr(self, "_run_flow"):
+            return
+        self.update_idletasks()
+        self._run_flow.reflow()
+        self._settings_flow.reflow()
+
     def _fit_main_toolbar_i18n(self) -> None:
         """Resize toolbar widgets so localized labels are not clipped."""
         _fit_button(
@@ -926,6 +941,7 @@ class App(ctk.CTk):
         self._sync_monitor_segments()
         self._render_status_text()
         self._refresh_trigger_controls()
+        self._reflow_compact_panel()
 
     # ------------------------------------------------------------------
     # Channel list operations

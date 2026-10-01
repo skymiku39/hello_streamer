@@ -363,6 +363,121 @@ _COMPACT_LINE_GAP = 10
 _COMPACT_ACT_BTN_HEIGHT = 34
 _COMPACT_SEG_HEIGHT = 26
 _COMPACT_FIELD_HEIGHT = 30
+_COMPACT_FLOW_HGAP = 14
+_COMPACT_FLOW_VGAP = 8
+
+
+def layout_flow_rows(
+    widths: list[int],
+    *,
+    avail: int,
+    hgap: int = _COMPACT_FLOW_HGAP,
+) -> list[list[int]]:
+    """Compute CSS flex-wrap style row membership for item widths.
+
+    Returns a list of rows; each row is a list of item indices. An item wider
+    than ``avail`` still occupies its own row (never clipped by packing).
+    """
+    if avail < 1:
+        avail = 1
+    rows: list[list[int]] = []
+    row: list[int] = []
+    used = 0
+    for idx, width in enumerate(widths):
+        w = max(int(width), 1)
+        need = w if not row else used + hgap + w
+        if row and need > avail:
+            rows.append(row)
+            row = [idx]
+            used = w
+        else:
+            row.append(idx)
+            used = need if row[:-1] else w
+    if row:
+        rows.append(row)
+    return rows
+
+
+class CompactFlowFrame(ctk.CTkFrame):
+    """Left-to-right wrapping container (Tk analogue of CSS ``flex-wrap``)."""
+
+    def __init__(
+        self,
+        master: Any,
+        *,
+        hgap: int = _COMPACT_FLOW_HGAP,
+        vgap: int = _COMPACT_FLOW_VGAP,
+        **kwargs: Any,
+    ) -> None:
+        kwargs.setdefault("fg_color", "transparent")
+        kwargs.setdefault("height", 1)
+        super().__init__(master, **kwargs)
+        self._hgap = hgap
+        self._vgap = vgap
+        self._items: list[Any] = []
+        self._reflowing = False
+        self._last_key: tuple[int, tuple[int, ...], int] | None = None
+        self.pack_propagate(False)
+        self.bind("<Configure>", self._on_configure, add="+")
+
+    def add(self, widget: Any) -> None:
+        """Register ``widget`` as a wrap unit (caller must not pack it)."""
+        self._items.append(widget)
+
+    def _on_configure(self, event: Any = None) -> None:
+        if event is not None and getattr(event, "widget", None) is not self:
+            return
+        self.reflow()
+
+    def reflow(self) -> None:
+        """Place children into wrapping rows for the current width."""
+        if self._reflowing or not self._items:
+            return
+        self._reflowing = True
+        try:
+            self.update_idletasks()
+            avail = int(self.winfo_width())
+            if avail <= 2:
+                # Not mapped / not sized yet — wait for the next Configure.
+                return
+            sizes: list[tuple[int, int]] = []
+            for widget in self._items:
+                widget.update_idletasks()
+                sizes.append(
+                    (
+                        max(int(widget.winfo_reqwidth()), 1),
+                        max(int(widget.winfo_reqheight()), 1),
+                    )
+                )
+            widths = [w for w, _h in sizes]
+            key = (avail, tuple(widths), self._hgap)
+            rows = layout_flow_rows(widths, avail=avail, hgap=self._hgap)
+            y = 0
+            total_h = 0
+            for row_i, row in enumerate(rows):
+                x = 0
+                row_h = 0
+                for idx in row:
+                    ww, hh = sizes[idx]
+                    widget = self._items[idx]
+                    # CTk forbids width/height in place(); size via configure when
+                    # the widget supports it, otherwise rely on natural req size.
+                    try:
+                        widget.configure(width=ww, height=hh)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    widget.place(x=x, y=y)
+                    x += ww + self._hgap
+                    row_h = max(row_h, hh)
+                total_h = y + row_h
+                y += row_h + self._vgap
+            if total_h < 1:
+                total_h = 1
+            if key != self._last_key or int(self.cget("height") or 0) != total_h:
+                self._last_key = key
+                self.configure(height=total_h)
+        finally:
+            self._reflowing = False
 
 
 # ---------------------------------------------------------------------------
