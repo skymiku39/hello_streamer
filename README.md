@@ -282,6 +282,44 @@ uv run python -m compileall -f stream_monitor build.py
 uv run pytest -q
 ```
 
+單元／回歸選取可用測試 CLI（預設 `all`；可從 checkout 內任意工作目錄執行）。
+
+先決條件：Python ≥3.11、[uv](https://github.com/astral-sh/uv)，並安裝 dev extras：
+
+```bash
+uv sync --extra dev
+```
+
+可直接複製執行的範例：
+
+```bash
+# unit：排除 integration / e2e / smoke 具名檔
+uv run --extra dev stream-monitor-test unit -- -q
+
+# regression：完整 tests/
+uv run --extra dev stream-monitor-test regression -- -q
+
+# all（預設）：完整 tests/，可加 pytest 篩選
+uv run --extra dev stream-monitor-test all -- -k notifier -q
+
+# 省略模式時預設 all；下列兩種等價
+uv run --extra dev stream-monitor-test -- -q
+uv run --extra dev stream-monitor-test -q
+
+# 模組入口（未安裝 script 時的後備）
+uv run --extra dev python -m stream_monitor.test_cli unit -- -q
+
+# 其他工作目錄：以 --project 指向專案根（將 ABS_PATH 換成絕對路徑）
+uv run --project ABS_PATH --extra dev stream-monitor-test unit -- -q
+```
+
+| 模式 | 行為 |
+| --- | --- |
+| `unit` | 跑 `tests/`，但排除僅依檔名清楚標示的套件：`test_channel_reorder_integration.py`、`test_channel_reorder_pack_e2e.py`、`test_smoke.py` |
+| `regression` / `all` | 跑完整既有 `tests/` |
+
+檔名約定採保守策略：只排除明確含 integration／e2e／smoke 的檔案；名稱像 boundary 的回歸測試仍留在 `unit`。CLI 以 `sys.executable -m pytest` 子行程、專案根為 cwd，不載入 GUI。結束碼沿用 pytest：`0` 全過、`1` 測試失敗、`2` 中斷或 CLI 誤用（含無效 mode）、`3` 內部錯誤、`4` pytest 用法錯誤、`5` 沒有收集到測試。
+
 目前 CI 也會在 GitHub Actions 中執行檢查。
 
 ## 打包
