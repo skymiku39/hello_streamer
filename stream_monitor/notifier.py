@@ -771,8 +771,10 @@ def _open_with_browser_settings(
         )
     )
     isolation_available = bool(effective_user_data_dir)
-    want_cdp_attach = False
-    profile_was_busy = False
+    cdp_port: int | None = None
+    cdp_lease = None
+    cdp_attach_reason = ""
+    cdp_attach_message = ""
     engagement_for_assist = _active_viewer_engagement()
     standalone_window = is_standalone_managed_window(
         managed=manage,
@@ -787,14 +789,29 @@ def _open_with_browser_settings(
         chromium_family=family in {"chromium", "unknown"},
         standalone_window=standalone_window,
     ):
-        from stream_monitor.cdp_client import profile_looks_busy
+        from stream_monitor.cdp_client import acquire_cdp_debugging_port
 
-        profile_was_busy = profile_looks_busy(effective_user_data_dir)
-        want_cdp_attach = True
-        if not profile_was_busy:
-            # Race-free cold start: Chromium picks an ephemeral port and writes
-            # DevToolsActivePort; we resolve + validate after Popen.
-            effective_settings["_cdp_debugging_port"] = 0
+        attach = acquire_cdp_debugging_port(effective_user_data_dir)
+        cdp_attach_reason = attach.reason
+        cdp_attach_message = attach.message
+        if attach.ok and isinstance(attach.port, int) and attach.port > 0:
+            cdp_port = attach.port
+            cdp_lease = attach.lease
+            if attach.pass_debugging_flag:
+                effective_settings["_cdp_debugging_port"] = cdp_port
+            logger.info(
+                "Twitch page assist CDP port %s for %s (reason=%s)",
+                cdp_port,
+                url,
+                attach.reason,
+            )
+        else:
+            logger.warning(
+                "Twitch page assist CDP unavailable for %s: reason=%s%s",
+                url,
+                attach.reason,
+                f" ({attach.message})" if attach.message else "",
+            )
 
     args = _build_browser_args(url, effective_settings)
     family = detect_browser_family(args[0])
@@ -811,6 +828,8 @@ def _open_with_browser_settings(
             logger.exception(
                 "Could not create browser user_data_dir: %s", effective_user_data_dir
             )
+            if cdp_lease is not None:
+                cdp_lease.release()
             return False
 
     want_minimize = bool(effective_settings.get("minimized")) and _is_windows()
@@ -923,6 +942,10 @@ def _open_with_browser_settings(
             startupinfo = None
 
     try:
+        if cdp_lease is not None:
+            # Release immediately before spawn so Chrome can bind the port.
+            cdp_lease.release()
+            cdp_lease = None
         subprocess.Popen(
             args,
             startupinfo=startupinfo,
@@ -934,37 +957,37 @@ def _open_with_browser_settings(
             "Browser executable not found: %s — falling back to default browser",
             args[0],
         )
+        if cdp_lease is not None:
+            cdp_lease.release()
         return False
     except OSError:
         logger.exception("Failed to spawn browser with custom settings: %s", args)
+        if cdp_lease is not None:
+            cdp_lease.release()
         return False
 
     if keep_awake_after_launch:
         _register_engagement_keep_awake(url)
 
-    if want_cdp_attach and manage and engagement_for_assist is not None:
-        from stream_monitor.cdp_client import (
-            DEFAULT_CDP_ATTACH_TIMEOUT_S,
-            resolve_cdp_attach,
+    if cdp_port and manage and engagement_for_assist is not None:
+        try:
+            start_page_assist(url, cdp_port, engagement_for_assist)
+        except Exception:
+            logger.exception("Failed to start Twitch page assist for %s", url)
+    elif (
+        manage
+        and engagement_for_assist is not None
+        and engagement_for_assist.page_assist_active()
+        and standalone_window
+        and isolation_available
+        and not cdp_port
+    ):
+        logger.warning(
+            "Twitch page assist CDP attach failed for %s: reason=%s%s",
+            url,
+            cdp_attach_reason or "unavailable",
+            f" ({cdp_attach_message})" if cdp_attach_message else "",
         )
-
-        attach = resolve_cdp_attach(
-            effective_user_data_dir,
-            profile_was_busy=profile_was_busy,
-            timeout=DEFAULT_CDP_ATTACH_TIMEOUT_S,
-        )
-        if attach.ok and attach.port:
-            try:
-                start_page_assist(url, attach.port, engagement_for_assist)
-            except Exception:
-                logger.exception("Failed to start Twitch page assist for %s", url)
-        else:
-            logger.warning(
-                "Twitch page assist CDP attach failed for %s: %s (reason=%s)",
-                url,
-                attach.message or "no usable CDP endpoint",
-                attach.reason or "unknown",
-            )
 
     if class_name:
         if want_window_management:
