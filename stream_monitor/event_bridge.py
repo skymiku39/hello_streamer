@@ -10,6 +10,7 @@ from stream_monitor.channel_policy import (
     resolve_live_action,
     should_close_on_offline,
     should_prune_blank_tabs,
+    with_close_on_offline_lifecycle,
 )
 from stream_monitor.domain import ChannelEntry, ChannelStatus
 from stream_monitor.event_sink import AppEventSink, ChannelRowView
@@ -265,6 +266,15 @@ class MonitorEventBridge:
         configured_action = sink.config.get("action", "open_and_stop")
         trigger_settings = sink.config.get("trigger_settings")
         browser_settings = sink.current_browser_settings()
+        close_on_offline = bool(
+            browser_settings is not None and browser_settings.close_on_offline
+        )
+        offline_tracking_available = bool(
+            browser_settings is not None
+            and sink.platform_services.window.tracking_available(
+                browser_settings
+            )
+        )
         generation = sink.monitor_generation
         for entry, info in live_events:
             if not poll_complete and not sink.defer_channel_row_repaints:
@@ -292,22 +302,23 @@ class MonitorEventBridge:
                 )
                 continue
 
+            # Persistent trigger + close_on_offline needs the monitor to stay
+            # alive until the offline edge; suppress stop/exit after open only
+            # in that case. trigger_once / watch / flag-off stay unchanged.
+            plan = with_close_on_offline_lifecycle(
+                decision.plan,
+                mode=mode,
+                close_on_offline=close_on_offline,
+                tracking_available=offline_tracking_available,
+            )
+
             # The bridge only submits the pure plan.  ActionCoordinator owns
             # worker lifetime and post-launch lifecycle transitions, keeping
             # the event drain independent from desktop side-effects.
             sink.execute_live_action(
-                decision.plan, info, browser_settings, generation
+                plan, info, browser_settings, generation
             )
 
-        close_on_offline = bool(
-            browser_settings is not None and browser_settings.close_on_offline
-        )
-        offline_tracking_available = bool(
-            browser_settings is not None
-            and sink.platform_services.window.tracking_available(
-                browser_settings
-            )
-        )
         for entry, offline_info in offline_events:
             if should_close_on_offline(
                 mode=mode,
