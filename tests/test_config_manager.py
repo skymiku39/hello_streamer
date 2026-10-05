@@ -965,3 +965,44 @@ def test_load_inserts_missing_legacy_keys(tmp_path, monkeypatch) -> None:
     assert config["language"] == config_manager.DEFAULT_CONFIG["language"]
     assert "close_off_topic_pages" in config["browser_settings"]
     assert "hide_from_taskbar" in config["browser_settings"]
+
+def test_normalize_marks_current_portable_profile(monkeypatch, tmp_path) -> None:
+    profile = tmp_path / "browser_profile"
+    profile.mkdir()
+    monkeypatch.setattr(
+        config_manager, "default_browser_profile_dir", lambda: str(profile)
+    )
+
+    normalized = config_manager._normalize_browser_settings(
+        {
+            "enabled": True,
+            "per_channel_profile": True,
+            "user_data_dir": str(profile),
+        }
+    )
+
+    assert normalized["user_data_dir"] == str(profile)
+    assert normalized["user_data_dir_is_portable_default"] is True
+
+def test_normalize_relocates_missing_legacy_portable_profile(
+    monkeypatch, tmp_path
+) -> None:
+    current = tmp_path / "new-copy" / "browser_profile"
+    current.mkdir(parents=True)
+    old = tmp_path / "old-copy" / "browser_profile"
+    monkeypatch.setattr(
+        config_manager, "default_browser_profile_dir", lambda: str(current)
+    )
+
+    normalized = config_manager._normalize_browser_settings(
+        {
+            "enabled": True,
+            "per_channel_profile": True,
+            "user_data_dir": str(old),
+        }
+    )
+
+    assert normalized["user_data_dir"] == str(current)
+    assert normalized["user_data_dir_is_portable_default"] is True
+
+

@@ -22,7 +22,7 @@ from stream_monitor.portable_storage import portable_paths
 # (or with a lower number) receive :func:`_migrate_iso_features_without_profile`
 # once on load.  Save never runs that migration so explicit UI choices such as
 # "local identity + app mode" are not overwritten.
-CONFIG_FORMAT_VERSION = 3
+CONFIG_FORMAT_VERSION = 4
 
 DEFAULT_TRIGGER_SETTINGS: dict[str, Any] = TriggerSettings().as_dict()
 
@@ -45,6 +45,10 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     # --window-position / --window-size / --app= work when the browser is
     # already running.
     "user_data_dir": "",
+    # Internal portability marker. A true value means the path above is the
+    # app-owned ``<portable root>/browser_profile`` rather than a user-chosen
+    # external folder; it is re-resolved after the portable folder moves.
+    "user_data_dir_is_portable_default": False,
     # When True (default) we append "<platform>_<channel>" to user_data_dir
     # so each channel gets its own browser master process. This is the only
     # reliable way to keep --app= working across multiple stream triggers,
@@ -249,6 +253,7 @@ def _heal_orphan_per_channel_profile(settings: dict[str, Any]) -> None:
         default_root = _default_browser_profile_path()
         if default_root:
             settings["user_data_dir"] = default_root
+            settings["user_data_dir_is_portable_default"] = True
 
 
 def _migrate_iso_features_without_profile(settings: dict[str, Any]) -> None:
@@ -265,6 +270,45 @@ def _migrate_iso_features_without_profile(settings: dict[str, Any]) -> None:
         if default_root:
             settings["user_data_dir"] = default_root
             settings["per_channel_profile"] = True
+            settings["user_data_dir_is_portable_default"] = True
+
+
+def _relocate_portable_default_profile(settings: dict[str, Any]) -> None:
+    """Resolve the app-owned browser profile against the current portable root.
+
+    New configs carry an explicit marker. For older configs, only perform a
+    conservative one-time inference when the old ``browser_profile`` path is
+    gone and the current portable profile already exists; arbitrary custom
+    profile paths are left untouched.
+    """
+    raw = (settings.get("user_data_dir") or "").strip()
+    default_root = _default_browser_profile_path()
+    if not default_root:
+        return
+
+    current = Path(default_root).resolve()
+    if settings.get("user_data_dir_is_portable_default") and raw:
+        settings["user_data_dir"] = str(current)
+        return
+    if not raw:
+        return
+
+    try:
+        configured = Path(os.path.expandvars(os.path.expanduser(raw))).resolve()
+    except (OSError, RuntimeError, TypeError):
+        return
+
+    if configured == current:
+        settings["user_data_dir_is_portable_default"] = True
+        return
+
+    if (
+        configured.name.casefold() == "browser_profile"
+        and not configured.exists()
+        and current.is_dir()
+    ):
+        settings["user_data_dir"] = str(current)
+        settings["user_data_dir_is_portable_default"] = True
 
 
 def _migrate_browser_settings(settings: dict[str, Any]) -> None:
@@ -292,6 +336,7 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
         "apply_geometry",
         "minimized",
         "per_channel_profile",
+        "user_data_dir_is_portable_default",
         "close_on_offline",
         "close_on_stop",
         "close_off_topic_pages",
@@ -314,6 +359,7 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
     normalized["width"] = max(100, normalized["width"])
     normalized["height"] = max(100, normalized["height"])
 
+    _relocate_portable_default_profile(normalized)
     _heal_orphan_per_channel_profile(normalized)
     return normalized
 
