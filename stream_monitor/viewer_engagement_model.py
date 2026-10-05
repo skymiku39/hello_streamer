@@ -1,11 +1,8 @@
 """Typed settings for the Twitch "viewer engagement" assist feature.
 
-Twitch only credits a view while the browser keeps sending its ~1/min
-heartbeat *and* the player keeps rendering frames. Modern browsers and the OS
-work against that: background tabs get throttled, Memory/Energy Saver freezes
-tabs, the Page Visibility API reports the tab as hidden, and system sleep cuts
-the connection entirely. A window the app opened minimised / hidden from the
-taskbar is, from Twitch's perspective, a backgrounded tab that may not count.
+Twitch's Viewer Count FAQ says muted players and unfocused tabs count while
+live video is playing. It does not specify a heartbeat interval or per-IP
+limit. System sleep or browser suspension can interrupt playback.
 
 These settings let the user opt in to launch-time mitigations the desktop app
 *can* control (window visibility, system-sleep suppression, Chrome performance
@@ -22,11 +19,11 @@ from typing import Any
 
 @dataclass
 class ViewerEngagementSettings:
-    """User preferences for keeping an opened Twitch stream "counted"."""
+    """Best-effort playback assistance; no guarantee of Twitch view credit."""
 
     enabled: bool = False
     # Skip the minimise / hide-from-taskbar window treatment for Twitch pages,
-    # since a hidden window reads as a backgrounded tab to Twitch.
+    # when the user prefers to keep managed playback windows visible.
     force_visible: bool = True
     # Hold a Windows execution-state request while a tracked Twitch window is
     # open so the machine does not sleep mid-stream.
@@ -38,9 +35,8 @@ class ViewerEngagementSettings:
     # Visibility API reports "visible" during player initialisation.
     bring_to_front: bool = True
     # How many seconds to keep reasserting foreground after the browser window
-    # is first detected. Twitch's player typically needs 10-15s to load and
-    # send its first heartbeat; holding foreground ensures that heartbeat
-    # reports the page as actively watched.
+    # is first detected. This is a playback-initialization preference, not
+    # a requirement for Twitch viewer counting.
     foreground_hold_seconds: int = 15
 
     # --- CDP page assist (source / non-frozen only) ---
