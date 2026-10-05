@@ -7,6 +7,9 @@
 - **關閉 UPX**：Windows／Linux 建置皆加 `--noupx`。
 - **PE 版本資訊**：Windows 執行檔嵌入產品名、版號與發行者字串，減少「無名匿名 exe」的可疑分數。
 - **Linux 同步**：Linux 產物同樣改為整包目錄的 tar.gz。
+- **監控穩定性**：YouTube 的 5xx／timeout／網路錯誤不再被誤算為下播；喚醒驗證也能正確派送 fallback 的離線→直播事件。
+- **事件與可攜性邊界**：頻道刪除／停用後會丟棄舊輪詢副作用事件，預設 browser profile 會隨可攜資料夾搬移重新定位。
+- **發佈驗證**：Windows release 會實際啟動 onedir EXE 執行 `--self-check`，檢查 tray／Toast 相關 frozen imports。
 
 ## 升級提醒
 
