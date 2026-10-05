@@ -100,47 +100,40 @@ class ChannelRow(ctk.CTkFrame):
         move_frame.pack(side="left", padx=(6, 0), pady=8)
         move_frame.pack_propagate(False)
 
-        self.up_btn = ctk.CTkButton(
-            move_frame,
-            text="▲",
-            width=30,
-            height=20,
-            corner_radius=4,
-            fg_color="transparent",
-            hover_color="#243052",
-            font=_font(10),
-            command=on_move_up,
-        )
-        self.up_btn.pack(anchor="n")
-
+        # Drag handle only — visible ▲/▼ arrow controls were removed; reorder
+        # still works via long-press drag (and any keyboard bindings on App).
         self.drag_handle = ctk.CTkButton(
             move_frame,
             text="⠿",
             width=30,
-            height=6,
-            corner_radius=2,
+            height=28,
+            corner_radius=4,
             fg_color="transparent",
             hover_color="#243052",
-            font=_font(8),
+            font=_font(14),
         )
-        self.drag_handle.pack()
+        self.drag_handle.pack(expand=True)
         _tooltip_tr(self.drag_handle, "tooltip.row.drag")
         self.drag_handle.bind("<Button-1>", self._on_drag_handle_press)
         self.drag_handle.bind("<B1-Motion>", self._on_drag_handle_motion)
         self.drag_handle.bind("<ButtonRelease-1>", self._on_drag_handle_release)
 
+        # Kept as no-op widgets for older tests / optional keyboard callers that
+        # still pass on_move_up / on_move_down; not packed into the layout.
+        self.up_btn = ctk.CTkButton(
+            move_frame,
+            text="",
+            width=1,
+            height=1,
+            command=on_move_up,
+        )
         self.down_btn = ctk.CTkButton(
             move_frame,
-            text="▼",
-            width=30,
-            height=20,
-            corner_radius=4,
-            fg_color="transparent",
-            hover_color="#243052",
-            font=_font(10),
+            text="",
+            width=1,
+            height=1,
             command=on_move_down,
         )
-        self.down_btn.pack(anchor="s", side="bottom")
 
         self.platform_label = ctk.CTkLabel(
             self,
@@ -171,7 +164,7 @@ class ChannelRow(ctk.CTkFrame):
             text="",
             anchor="w",
             font=_font(11),
-            text_color="#9aa0b4",
+            text_color="#c0c6d8",
         )
         self.id_label.pack(anchor="w", fill="x", pady=(1, 0))
         self._refresh_name_labels()
@@ -267,11 +260,11 @@ class ChannelRow(ctk.CTkFrame):
         self._link_tip = _tooltip(self.link_btn, tr("tooltip.row.link.default"))
         self._toggle_tip = _tooltip(self.toggle_btn, "")
         self._monitor_only_tip = _tooltip(self.monitor_only_btn, "")
-        _tooltip_tr(self.up_btn, "tooltip.row.up")
-        _tooltip_tr(self.down_btn, "tooltip.row.down")
+        _tooltip_tr(self.drag_handle, "tooltip.row.drag")
         _tooltip_tr(self.delete_btn, "tooltip.row.delete")
         self._platform_tip = _tooltip_tr(self.platform_label, "tooltip.row.link.default")
         self._status_tip = _tooltip(self.status_label, "")
+        self._name_tip = _tooltip(self.name_label, "")
 
         self._apply_enabled_visual()
 
@@ -458,6 +451,9 @@ class ChannelRow(ctk.CTkFrame):
         self._status_state = None
         self._status_countdown = ""
         self._status_elapsed = ""
+        self._status_timestamp = ""
+        self._status_scheduled_start = ""
+        self._verification_pending = False
         self.time_label.configure(text="")
 
     def clear_launch_status(self) -> None:
@@ -476,7 +472,7 @@ class ChannelRow(ctk.CTkFrame):
                 fg_color=self._platform_color, text_color="white"
             )
             self.name_label.configure(text_color=("gray10", "gray90"))
-            self.id_label.configure(text_color="#9aa0b4")
+            self.id_label.configure(text_color="#c0c6d8")
             if reset_status or self._status_state is None:
                 # No live data to preserve → fall back to the placeholder text.
                 self.status_label.configure(
@@ -823,9 +819,13 @@ class ChannelRow(ctk.CTkFrame):
         if display_name and display_name != channel_id:
             self.name_label.configure(text=display_name)
             self.id_label.configure(text=tr("channel.id.prefix", id=channel_id))
+            full_name = display_name
         else:
             self.name_label.configure(text=channel_id)
             self.id_label.configure(text="")
+            full_name = channel_id
+        if hasattr(self, "_name_tip"):
+            self._name_tip.set_text(full_name)
 
     def set_move_state(self, can_move_up: bool, can_move_down: bool) -> None:
         self.up_btn.configure(state="normal" if can_move_up else "disabled")

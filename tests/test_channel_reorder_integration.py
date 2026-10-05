@@ -320,7 +320,7 @@ def test_channel_row_motion_before_arm_cancels_long_press() -> None:
         host.destroy()
 
 
-def test_move_frame_button_heights_match_spec() -> None:
+def test_move_frame_keeps_drag_handle_without_arrow_controls() -> None:
     from stream_monitor.channel_row import ChannelRow
 
     root, host, _ = _make_channel_row_host()
@@ -335,8 +335,10 @@ def test_move_frame_button_heights_match_spec() -> None:
     try:
         row.pack()
         root.update_idletasks()
-        assert row.up_btn.cget("height") == 20
-        assert row.down_btn.cget("height") == 20
-        assert row.drag_handle.cget("height") == 6
+        assert row.drag_handle.winfo_manager() == "pack"
+        assert int(row.drag_handle.cget("height")) >= 20
+        # Arrow controls remain as unmapped compatibility stubs only.
+        assert row.up_btn.winfo_manager() == ""
+        assert row.down_btn.winfo_manager() == ""
     finally:
         host.destroy()
