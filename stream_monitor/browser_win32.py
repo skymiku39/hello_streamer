@@ -9,6 +9,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from stream_monitor.browser_settings_model import (
+    DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH,
+)
+
 logger = logging.getLogger(__name__)
 
 # Win32 window class names used by mainstream browsers.
@@ -502,8 +507,11 @@ def _apply_new_browser_window_settings_async(
 
     x = int(settings.get("x", 0) or 0)
     y = int(settings.get("y", 0) or 0)
-    width = max(100, int(settings.get("width", 1280) or 1280))
-    height = max(100, int(settings.get("height", 720) or 720))
+    width = max(100, int(settings.get("width", DEFAULT_WINDOW_WIDTH) or DEFAULT_WINDOW_WIDTH))
+    height = max(
+        100,
+        int(settings.get("height", DEFAULT_WINDOW_HEIGHT) or DEFAULT_WINDOW_HEIGHT),
+    )
     minimized = bool(settings.get("minimized"))
     hide_from_taskbar = bool(settings.get("hide_from_taskbar"))
     bring_to_front = bool(settings.get("bring_to_front"))

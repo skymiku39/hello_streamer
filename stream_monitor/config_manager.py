@@ -15,6 +15,10 @@ from stream_monitor.action_plan import (
     LifecycleEffect,
     TriggerSettings,
 )
+from stream_monitor.browser_settings_model import (
+    DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH,
+)
 from stream_monitor.channel_policy import CHANNEL_MODES, normalize_channel_mode
 from stream_monitor.portable_storage import portable_paths
 
@@ -36,8 +40,8 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     "apply_geometry": True,
     "x": 0,
     "y": 0,
-    "width": 1280,
-    "height": 720,
+    "width": DEFAULT_WINDOW_WIDTH,
+    "height": DEFAULT_WINDOW_HEIGHT,
     "minimized": False,
     # Empty = use browser's default profile (subject to Chrome master-process
     # restrictions). Set to a folder path to force a dedicated Chrome /
@@ -529,11 +533,13 @@ def load() -> dict[str, Any]:
 
     logger = logging.getLogger(__name__)
     path = _config_path()
+    temp_path = path.with_name(f".{path.name}.tmp")
     stored: dict[str, Any] = {}
     disk_existed = False
     corrupt = False
     corrupt_backed_up = False
     read_succeeded = False
+    temp_recovered = False
     if path.exists():
         disk_existed = True
         try:
@@ -586,6 +592,38 @@ def load() -> dict[str, Any]:
             "Skipping config self-heal because the invalid file was not backed up"
         )
 
+    # A previous process may have been terminated after fsyncing the atomic
+    # temporary file but before ``replace`` completed.  Prefer that complete,
+    # newer JSON over an older main file and let the normal save path promote
+    # it.  This preserves the user's last setting change after a crash or
+    # forced shutdown without ever accepting an invalid temp file.
+    if temp_path.exists():
+        try:
+            temp_is_newer = not path.exists() or (
+                temp_path.stat().st_mtime_ns > path.stat().st_mtime_ns
+            )
+            if temp_is_newer:
+                with temp_path.open("r", encoding="utf-8") as f:
+                    temp_raw = json.load(f)
+                if isinstance(temp_raw, dict):
+                    stored = temp_raw
+                    disk_existed = True
+                    read_succeeded = True
+                    corrupt = False
+                    temp_recovered = True
+                    logger.warning(
+                        "Recovered newer config from interrupted atomic save: %s",
+                        temp_path,
+                    )
+        except (json.JSONDecodeError, OSError):
+            # Keep the temp file for forensic recovery; the valid main config
+            # remains authoritative when the candidate cannot be read.
+            logger.warning(
+                "Could not recover temporary config candidate: %s",
+                temp_path,
+                exc_info=True,
+            )
+
     merged = deepcopy(DEFAULT_CONFIG)
     merged.update(stored)
     # ``merged`` contains the new default mapping, so explicitly substitute the
@@ -601,9 +639,9 @@ def load() -> dict[str, Any]:
         not corrupt or corrupt_backed_up
     )
     if (
-        (disk_existed or corrupt)
+        (disk_existed or corrupt or temp_recovered)
         and can_self_heal
-        and (corrupt or _needs_self_heal(stored, finalized))
+        and (temp_recovered or corrupt or _needs_self_heal(stored, finalized))
     ):
         try:
             save(finalized)

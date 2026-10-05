@@ -26,6 +26,10 @@ PLACEMENT_CHOICES: tuple[str, ...] = (
     PLACEMENT_PLAYER,
 )
 
+# Default browser-window geometry (also used by reset / fallbacks).
+DEFAULT_WINDOW_WIDTH = 190
+DEFAULT_WINDOW_HEIGHT = 500
+
 
 @dataclass
 class BrowserSettings:
@@ -38,8 +42,8 @@ class BrowserSettings:
     apply_geometry: bool = True
     x: int = 0
     y: int = 0
-    width: int = 1280
-    height: int = 720
+    width: int = DEFAULT_WINDOW_WIDTH
+    height: int = DEFAULT_WINDOW_HEIGHT
     minimized: bool = False
     user_data_dir: str = ""
     per_channel_profile: bool = True

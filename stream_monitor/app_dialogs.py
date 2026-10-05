@@ -48,6 +48,17 @@ from stream_monitor.viewer_engagement_model import page_assist_runtime_allowed
 logger = logging.getLogger(__name__)
 
 
+def _is_portable_default_profile(path: str) -> bool:
+    """Return whether *path* names this copy's app-owned profile folder."""
+    default_path = default_browser_profile_dir()
+    if not path or not default_path:
+        return False
+    try:
+        return Path(path).expanduser().resolve() == Path(default_path).resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
 def _browser_card(parent: ctk.CTkBaseClass, *, pady: tuple[int, int] = (0, 10)) -> ctk.CTkFrame:
     """Rounded section card for browser settings."""
     frame = ctk.CTkFrame(parent, fg_color=_CLR_CARD, corner_radius=10)
@@ -883,6 +894,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         default_profile_dir = default_browser_profile_dir()
         saved_profile_dir = (settings.get("user_data_dir") or "").strip()
+        if settings.get("user_data_dir_is_portable_default") and default_profile_dir:
+            saved_profile_dir = default_profile_dir
         ui_launch = bsm.infer_launch_mode(settings)
         ui_identity = bsm.infer_identity_mode(settings)
         ui_placement = bsm.infer_placement_mode(settings)
@@ -1092,12 +1105,16 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         self._w_label = ctk.CTkLabel(pos_frame, text=tr("browser.geometry.width"), font=_font(12))
         self._w_label.grid(row=2, column=0, padx=(14, 4), pady=(4, 10), sticky="e")
-        self.w_entry = _make_int_entry(pos_frame, int(settings.get("width", 1280)))
+        self.w_entry = _make_int_entry(
+            pos_frame, int(settings.get("width", bsm.DEFAULT_WINDOW_WIDTH))
+        )
         self.w_entry.grid(row=2, column=1, padx=(0, 14), pady=(4, 10), sticky="w")
 
         self._h_label = ctk.CTkLabel(pos_frame, text=tr("browser.geometry.height"), font=_font(12))
         self._h_label.grid(row=2, column=2, padx=(14, 4), pady=(4, 10), sticky="e")
-        self.h_entry = _make_int_entry(pos_frame, int(settings.get("height", 720)))
+        self.h_entry = _make_int_entry(
+            pos_frame, int(settings.get("height", bsm.DEFAULT_WINDOW_HEIGHT))
+        )
         self.h_entry.grid(row=2, column=3, padx=(0, 14), pady=(4, 0), sticky="w")
 
         self._login_card = _browser_card(
@@ -2021,8 +2038,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         defaults = {
             self.x_entry: 0,
             self.y_entry: 0,
-            self.w_entry: 1280,
-            self.h_entry: 720,
+            self.w_entry: bsm.DEFAULT_WINDOW_WIDTH,
+            self.h_entry: bsm.DEFAULT_WINDOW_HEIGHT,
         }
         for entry, value in defaults.items():
             current_state = entry.cget("state")
@@ -2153,7 +2170,12 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
                 return None
             # When apply_geometry is off the fields aren't used, so silently
             # fall back to defaults so the user can save without filling them.
-            x, y, width, height = 0, 0, 1280, 720
+            x, y, width, height = (
+                0,
+                0,
+                bsm.DEFAULT_WINDOW_WIDTH,
+                bsm.DEFAULT_WINDOW_HEIGHT,
+            )
 
         if apply_geometry and (width < 100 or height < 100):
             self._set_message("browser.msg.min_size", color="#ef5350")
@@ -2171,7 +2193,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             if self.use_custom_var.get()
             else bsm.LAUNCH_SYSTEM
         )
-        return bsm.apply_ui_dimensions(
+        result = bsm.apply_ui_dimensions(
             launch=launch,
             identity=self.identity_var.get(),
             placement=self.placement_var.get(),
@@ -2189,6 +2211,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             close_off_topic_pages=bool(self.close_off_topic_var.get()),
             hide_from_taskbar=bool(self.hide_from_taskbar_var.get()),
         )
+        result["user_data_dir_is_portable_default"] = (
+            dedicated and _is_portable_default_profile(user_data_dir)
+        )
+        return result
 
     def _snapshot_browser_settings(self) -> dict[str, Any]:
         return {

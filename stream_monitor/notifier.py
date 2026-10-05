@@ -28,6 +28,8 @@ from stream_monitor.action_executor import (
 )
 from stream_monitor.action_plan import ActionPlan
 from stream_monitor.browser_settings_model import (
+    DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH,
     BrowserSettings,
     coerce_browser_settings,
 )
@@ -516,7 +518,7 @@ def _wants_geometry_flags(
         return False
     if x or y:
         return True
-    if width != 1280 or height != 720:
+    if width != DEFAULT_WINDOW_WIDTH or height != DEFAULT_WINDOW_HEIGHT:
         return True
     return False
 
@@ -535,8 +537,10 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
     new_window = bool(settings.get("new_window", True))
     app_mode = bool(settings.get("app_mode", False))
     apply_geometry = bool(settings.get("apply_geometry", True))
-    width = int(settings.get("width", 1280) or 1280)
-    height = int(settings.get("height", 720) or 720)
+    width = int(settings.get("width", DEFAULT_WINDOW_WIDTH) or DEFAULT_WINDOW_WIDTH)
+    height = int(
+        settings.get("height", DEFAULT_WINDOW_HEIGHT) or DEFAULT_WINDOW_HEIGHT
+    )
     x = int(settings.get("x", 0) or 0)
     y = int(settings.get("y", 0) or 0)
     user_data_dir = (settings.get("user_data_dir") or "").strip()
@@ -558,7 +562,7 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
             dropped.append("window position")
         if (
             apply_geometry
-            and (width != 1280 or height != 720)
+            and (width != DEFAULT_WINDOW_WIDTH or height != DEFAULT_WINDOW_HEIGHT)
             and not can_apply_geometry_after_launch
         ):
             dropped.append("window size")
