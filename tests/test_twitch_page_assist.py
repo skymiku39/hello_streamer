@@ -257,29 +257,24 @@ def _patch_open_browser_common(monkeypatch) -> None:
 def test_open_fresh_profile_ephemeral_port_resolves_devtools(
     monkeypatch, tmp_path
 ) -> None:
-    """Production path: --remote-debugging-port=0 then DevToolsActivePort."""
+    """Cold start leases a bindable CDP port and passes it to Chrome + assist."""
     monkeypatch.delattr(sys, "frozen", raising=False)
     import stream_monitor.cdp_client as cdp_client
 
     profile = tmp_path / "profile"
     started: list[tuple[str, int]] = []
     launched: list[list[str]] = []
+    cdp_client.reset_cdp_port_registry()
 
     def fake_popen(args, **_k):
         launched.append(list(args))
-        profile.mkdir(parents=True, exist_ok=True)
-        (profile / "DevToolsActivePort").write_text(
-            "34567\n/devtools/browser/fake\n", encoding="utf-8"
-        )
         return object()
 
     _patch_open_browser_common(monkeypatch)
     monkeypatch.setattr(notifier.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(cdp_client, "profile_looks_busy", lambda _p: False)
     monkeypatch.setattr(
-        cdp_client,
-        "probe_cdp_endpoint",
-        lambda port, timeout=1.5: port == 34567,
+        cdp_client, "probe_cdp_endpoint", lambda *_a, **_k: False
     )
     monkeypatch.setattr(
         notifier,
@@ -309,11 +304,17 @@ def test_open_fresh_profile_ephemeral_port_resolves_devtools(
         )
         assert ok is True
         assert launched, "browser should still launch"
-        assert "--remote-debugging-port=0" in launched[0]
-        assert started == [("https://www.twitch.tv/foo", 34567)]
+        port_flags = [
+            a for a in launched[0] if a.startswith("--remote-debugging-port=")
+        ]
+        assert len(port_flags) == 1
+        leased = int(port_flags[0].split("=", 1)[1])
+        assert leased > 0
+        assert started == [("https://www.twitch.tv/foo", leased)]
     finally:
         notifier.configure_viewer_engagement(None)
         stop_all_page_assist()
+        cdp_client.reset_cdp_port_registry()
 
 
 def test_open_busy_profile_attaches_existing_usable_endpoint(
@@ -386,6 +387,7 @@ def test_open_busy_profile_without_cdp_skips_page_assist_promptly(
     monkeypatch.delattr(sys, "frozen", raising=False)
     import stream_monitor.cdp_client as cdp_client
     import time as time_mod
+    from stream_monitor.cdp_client import CdpAttachResult
 
     profile = tmp_path / "profile"
     profile.mkdir(parents=True, exist_ok=True)
@@ -394,11 +396,20 @@ def test_open_busy_profile_without_cdp_skips_page_assist_promptly(
     started: list[tuple[str, int]] = []
     _patch_open_browser_common(monkeypatch)
     monkeypatch.setattr(notifier.subprocess, "Popen", lambda *a, **k: object())
-    monkeypatch.setattr(
-        cdp_client, "probe_cdp_endpoint", lambda *_a, **_k: False
-    )
-    monkeypatch.setattr(cdp_client, "BUSY_CDP_ATTACH_TIMEOUT_S", 0.4)
+    monkeypatch.setattr(cdp_client, "DEFAULT_CDP_DISCOVERY_TIMEOUT_S", 0.4)
     monkeypatch.setattr(time_mod, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        cdp_client,
+        "acquire_cdp_debugging_port",
+        lambda *_a, **_k: CdpAttachResult(
+            ok=False,
+            reason="profile_nondebug",
+            message=(
+                "Existing browser/profile is running without a proven "
+                "remote-debugging endpoint for this user_data_dir"
+            ),
+        ),
+    )
     monkeypatch.setattr(
         notifier,
         "start_page_assist",
@@ -432,7 +443,8 @@ def test_open_busy_profile_without_cdp_skips_page_assist_promptly(
         assert started == []
         assert elapsed < 2.0
         assert any(
-            "profile_busy" in rec.message and "CDP attach failed" in rec.message
+            "profile_nondebug" in rec.message
+            and "CDP unavailable" in rec.message
             for rec in caplog.records
         )
     finally:
@@ -443,21 +455,26 @@ def test_open_busy_profile_without_cdp_skips_page_assist_promptly(
 def test_open_fresh_profile_devtools_timeout_skips_page_assist(
     monkeypatch, tmp_path, caplog
 ) -> None:
-    """Fresh profile whose DevToolsActivePort never appears times out boundedly."""
+    """When pre-launch CDP acquisition fails, page assist is skipped promptly."""
     monkeypatch.delattr(sys, "frozen", raising=False)
     import stream_monitor.cdp_client as cdp_client
     import time as time_mod
+    from stream_monitor.cdp_client import CdpAttachResult
 
     profile = tmp_path / "profile"
     started: list[tuple[str, int]] = []
     _patch_open_browser_common(monkeypatch)
     monkeypatch.setattr(notifier.subprocess, "Popen", lambda *a, **k: object())
-    monkeypatch.setattr(cdp_client, "profile_looks_busy", lambda _p: False)
-    monkeypatch.setattr(
-        cdp_client, "probe_cdp_endpoint", lambda *_a, **_k: False
-    )
-    monkeypatch.setattr(cdp_client, "DEFAULT_CDP_ATTACH_TIMEOUT_S", 0.5)
     monkeypatch.setattr(time_mod, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        cdp_client,
+        "acquire_cdp_debugging_port",
+        lambda *_a, **_k: CdpAttachResult(
+            ok=False,
+            reason="timeout",
+            message="CDP discovery timed out",
+        ),
+    )
     monkeypatch.setattr(
         notifier,
         "start_page_assist",
@@ -491,7 +508,7 @@ def test_open_fresh_profile_devtools_timeout_skips_page_assist(
         assert started == []
         assert elapsed < 2.5
         assert any(
-            "reason=timeout" in rec.message and "CDP attach failed" in rec.message
+            "reason=timeout" in rec.message and "CDP unavailable" in rec.message
             for rec in caplog.records
         )
     finally:
