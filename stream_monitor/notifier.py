@@ -36,6 +36,7 @@ from stream_monitor.browser_settings_model import (
 from stream_monitor.chrome_prefs import merge_tab_discarding_exceptions
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
+from stream_monitor.page_assist_status import publish_page_assist_status
 from stream_monitor.platform_adapters import (
     BrowserAdapter,
     NotificationAdapter,
@@ -190,6 +191,7 @@ def close_browser_window_for_url(
     url: str, *, title_keywords: list[str] | None = None
 ) -> int:
     stop_page_assist(url)
+    publish_page_assist_status(url, "")
     closed = _close_browser_window_for_url_impl(url, title_keywords=title_keywords)
     _release_engagement_keep_awake(url)
     return closed
@@ -197,6 +199,7 @@ def close_browser_window_for_url(
 
 def close_all_tracked_windows() -> int:
     stop_all_page_assist()
+    publish_page_assist_status("*", "")
     closed = _close_all_tracked_windows_impl()
     with _ENGAGEMENT_AWAKE_LOCK:
         _ENGAGEMENT_AWAKE_URLS.clear()
@@ -244,9 +247,8 @@ def release_keep_awake_for_closed_tracked_windows(*, min_age_s: float = 6.0) -> 
             set_system_keep_awake(False)
     return released
 
-# Chromium switches that stop a backgrounded / occluded Twitch tab from being
-# throttled or suspended, so its heartbeat keeps flowing and the view keeps
-# counting even when the window is not the foreground one. Only effective on a
+# Chromium switches that reduce background throttling or suspension to help
+# maintain playback. These do not guarantee Twitch view credit. Effective on a
 # cold master process (dedicated profile); harmless otherwise. Firefox has no
 # command-line equivalent, so these are Chromium-only.
 _ANTI_THROTTLE_FLAGS: tuple[str, ...] = (
@@ -810,6 +812,7 @@ def _open_with_browser_settings(
                 attach.reason,
             )
         else:
+            publish_page_assist_status(url, attach.reason or "unavailable")
             logger.warning(
                 "Twitch page assist CDP unavailable for %s: reason=%s%s",
                 url,
@@ -977,6 +980,7 @@ def _open_with_browser_settings(
         try:
             start_page_assist(url, cdp_port, engagement_for_assist)
         except Exception:
+            publish_page_assist_status(url, "unavailable")
             logger.exception("Failed to start Twitch page assist for %s", url)
     elif (
         manage

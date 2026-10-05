@@ -389,6 +389,9 @@ def test_open_busy_profile_without_cdp_skips_page_assist_promptly(
 
     import stream_monitor.cdp_client as cdp_client
     from stream_monitor.cdp_client import CdpAttachResult
+    from stream_monitor.page_assist_status import drain_page_assist_status
+
+    drain_page_assist_status()
 
     profile = tmp_path / "profile"
     profile.mkdir(parents=True, exist_ok=True)
@@ -442,6 +445,7 @@ def test_open_busy_profile_without_cdp_skips_page_assist_promptly(
             elapsed = time_mod.perf_counter() - t0
         assert ok is True
         assert started == []
+        assert ("https://www.twitch.tv/foo", "profile_nondebug") in drain_page_assist_status()
         assert elapsed < 2.0
         assert any(
             "profile_nondebug" in rec.message

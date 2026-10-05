@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from stream_monitor.cdp_client import DEFAULT_CDP_ATTACH_TIMEOUT_S, CdpClient
+from stream_monitor.page_assist_status import publish_page_assist_status
 from stream_monitor.viewer_engagement_model import (
     ViewerEngagementSettings,
     coerce_viewer_engagement,
@@ -676,6 +677,9 @@ class _PageAssistWorker:
         client = CdpClient()
         try:
             client.connect(self.port, self.url, timeout=DEFAULT_CDP_ATTACH_TIMEOUT_S)
+            if self._stop.is_set():
+                return
+            publish_page_assist_status(self.url, "")
             logger.info("Twitch page assist attached via CDP for %s", self.url)
             next_refresh_at = self._schedule_refresh()
             claim_deadline = time.monotonic()
@@ -692,6 +696,7 @@ class _PageAssistWorker:
                         try:
                             client.reload()
                         except Exception:
+                            publish_page_assist_status(self.url, "unavailable")
                             logger.exception("Page.reload failed for %s", self.url)
                             return
                         if not self._sleep(3.0):
@@ -718,6 +723,8 @@ class _PageAssistWorker:
                     if not self._sleep(wait_s):
                         return
         except Exception:
+            if not self._stop.is_set():
+                publish_page_assist_status(self.url, "unavailable")
             logger.exception("Twitch page assist stopped for %s", self.url)
         finally:
             client.close()

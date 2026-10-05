@@ -96,6 +96,7 @@ from stream_monitor.notifier import (
     execute_action_plan,
     platform_services,
 )
+from stream_monitor.page_assist_status import drain_page_assist_status
 from stream_monitor.platform_ports import PlatformServices
 from stream_monitor.portable_storage import portable_paths
 from stream_monitor.scroll_guard import ScrollRepaintGuard
@@ -749,6 +750,11 @@ class App(ctk.CTk):
             settings_block, hgap=_COMPACT_FLOW_HGAP, vgap=_COMPACT_LINE_GAP
         )
         self._settings_flow.pack(fill="x")
+        self._page_assist_failures: dict[str, str] = {}
+        self._page_assist_notice = ctk.CTkLabel(
+            settings_block, text="", font=_font(11), text_color="#ffb74d",
+            anchor="w", justify="left", wraplength=440,
+        )
 
         trigger_settings = TriggerSettings.from_mapping(
             self.config.get("trigger_settings")
@@ -1019,6 +1025,7 @@ class App(ctk.CTk):
         self._sync_monitor_segments()
         self._render_status_text()
         self._refresh_trigger_controls()
+        self._render_page_assist_notice()
         self._reflow_compact_panel()
 
     # ------------------------------------------------------------------
@@ -1890,6 +1897,41 @@ class App(ctk.CTk):
             self._controller.tick()
         except Exception:
             logger.exception("UI event bridge tick failed; continuing")
+        try:
+            self._poll_page_assist_status()
+        except Exception:
+            logger.exception("Page-assist status update failed; continuing")
+
+    def _poll_page_assist_status(self) -> None:
+        notices = drain_page_assist_status()
+        for url, reason in notices:
+            if url == "*" and not reason:
+                self._page_assist_failures.clear()
+                continue
+            if reason:
+                self._page_assist_failures.pop(url, None)
+                self._page_assist_failures[url] = reason
+                if len(self._page_assist_failures) > 32:
+                    self._page_assist_failures.pop(next(iter(self._page_assist_failures)))
+            else:
+                self._page_assist_failures.pop(url, None)
+        if notices:
+            self._render_page_assist_notice()
+
+    def _render_page_assist_notice(self) -> None:
+        if not self._page_assist_failures:
+            self._page_assist_notice.pack_forget()
+            return
+        url = next(reversed(self._page_assist_failures))
+        reason = self._page_assist_failures[url]
+        key = (
+            "engagement.page_assist.profile_busy"
+            if reason in {"profile_nondebug", "profile_busy"}
+            else "engagement.page_assist.failed"
+        )
+        self._page_assist_notice.configure(text=tr(key, url=url))
+        if not self._page_assist_notice.winfo_manager():
+            self._page_assist_notice.pack(fill="x", pady=(6, 0))
 
     def handle_channel_offline(
         self, entry: ChannelEntry, offline_info: Any
