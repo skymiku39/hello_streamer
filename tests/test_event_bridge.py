@@ -20,6 +20,7 @@ from stream_monitor.events import (
 )
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelEntry
+from stream_monitor.util import channel_key
 
 
 class _FakeRow:
@@ -74,6 +75,21 @@ class _RecordingSink:
 
     def iter_channel_rows(self) -> list[_FakeRow]:
         return self._channel_rows
+
+    def is_channel_active(self, entry: ChannelEntry) -> bool:
+        channels = self.config.get("channels")
+        if not isinstance(channels, list):
+            # Older lightweight sinks in integrations did not expose the
+            # channel list; retain their historical permissive behavior.
+            return True
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            if channel_key(
+                channel.get("platform", ""), channel.get("name", "")
+            ) == entry.key:
+                return bool(channel.get("enabled", True))
+        return False
 
     def set_poll_waiting(self) -> None:
         self.poll_waiting += 1
@@ -486,3 +502,20 @@ def test_poll_complete_uses_prune_path_when_blank_tab_cleanup_enabled() -> None:
     assert pruned == [1]
     # Keep-awake sync is owned by prune when cleanup is enabled.
     assert released == []
+
+
+def test_removed_channel_live_event_is_ignored_before_side_effects() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger", action="open_and_stop")
+    sink.config["channels"] = [
+        {"platform": "twitch", "name": "still-configured", "enabled": True}
+    ]
+    bridge = MonitorEventBridge(sink, bus)
+    removed = _entry("removed")
+    bus.publish(ChannelWentLive(entry=removed, info=_live_info("removed")))
+
+    bridge.tick()
+
+    assert sink.live_row_updates == []
+    assert sink.executed_actions == []
+
