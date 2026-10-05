@@ -51,6 +51,11 @@ def base_monitor_mode(mode: str) -> str:
         return WATCH_MODE
     return mode
 
+
+def mode_for_silent_start(mode: str) -> str:
+    """Recover a persisted one-shot mode as its reusable mode after a crash."""
+    return base_monitor_mode(mode) if is_one_shot_monitor_mode(mode) else mode
+
 # Per-channel side-effect modes. These are intentionally separate from the
 # global monitor mode above: a channel can be observed while either allowing
 # notifications or suppressing every side-effect.
