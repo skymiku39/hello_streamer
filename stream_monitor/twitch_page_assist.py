@@ -304,10 +304,16 @@ _FIND_CLAIM_JS = r"""
     "balance",
     "預測",
     "预测",
-    "prediction"
+    "prediction",
+    "drops",
+    "redeem",
+    "兌換",
+    "兑换"
   ];
   const roots = [];
-  const summary = document.querySelector('[data-a-target="community-points-summary"]');
+  const summary = document.querySelector(
+    '[data-a-target="community-points-summary"], [data-test-selector="community-points-summary"]'
+  );
   if (summary) roots.push(summary);
   const chat = document.querySelector(
     '[data-test-selector="chat-room-component-layout"], .chat-room, ' +
@@ -319,9 +325,14 @@ _FIND_CLAIM_JS = r"""
   const isBonusCue = (el) => {
     const label = labelOf(el);
     if (el.closest(".claimable-bonus") || el.querySelector(".claimable-bonus__icon") ||
-        el.classList.contains("claimable-bonus")) {
+        el.classList.contains("claimable-bonus") ||
+        el.closest('[data-test-selector="community-points-summary-claimable-bonus"]')) {
       return true;
     }
+    // Chat may contain extensions, Drops or other reward buttons. Localized
+    // reward text alone is only evidence inside the channel-points summary.
+    if (!el.closest('[data-a-target="community-points-summary"], ' +
+      '[data-test-selector="community-points-summary"], .community-points-summary')) return false;
     return (
       label.includes("bonus") ||
       label.includes("獎勵") ||
@@ -336,7 +347,7 @@ _FIND_CLAIM_JS = r"""
     // Require explicit bonus cues; never treat summary/menu openers as claim.
     if (!isBonusCue(el)) return;
     const label = labelOf(el);
-    if (excludeHints.some((h) => label === h)) return;
+    if (excludeHints.some((h) => label.includes(h))) return;
     const r = el.getBoundingClientRect();
     candidates.push({
       found: true,
@@ -390,9 +401,10 @@ _FIND_CLAIM_JS = r"""
   }
 
   if (!candidates.length) {
-    const pointsPresent = !!document.querySelector(
-      '[data-a-target="community-points-summary"], .community-points-summary'
-    );
+    const pointsPresent = [...document.querySelectorAll(
+      '[data-a-target="community-points-summary"], ' +
+      '[data-test-selector="community-points-summary"], .community-points-summary'
+    )].some(visible);
     return {found: false, pointsPresent};
   }
   // Prefer smallest hit target (actual bonus chest over large wrappers).
@@ -408,14 +420,10 @@ _THEATER_STATE_JS = r"""
   const enterHints = [
     "enter theatre",
     "enter theater",
-    "theatre mode",
-    "theater mode",
     "開啟劇院",
     "开启剧院",
     "進入劇院",
     "进入剧院",
-    "シアターモード",
-    "극장 모드"
   ];
   const exitHints = [
     "exit theatre",
@@ -456,7 +464,7 @@ _THEATER_STATE_JS = r"""
     const r = el.getBoundingClientRect();
     if (r.width <= 1 || r.height <= 1) return false;
     const st = window.getComputedStyle(el);
-    if (st.visibility === "hidden" || st.display === "none") return false;
+    if (st.visibility === "hidden" || st.display === "none" || Number(st.opacity) === 0) return false;
     return true;
   };
   const seen = new Set();
@@ -477,13 +485,22 @@ _THEATER_STATE_JS = r"""
   }
   const inferControlState = (el) => {
     const pressed = el.getAttribute("aria-pressed");
-    const expanded = el.getAttribute("aria-expanded");
     const label = labelOf(el);
-    if (pressed === "true" || expanded === "true") return "on";
-    if (pressed === "false" || expanded === "false") return "off";
+    if (pressed === "true") return "on";
+    if (pressed === "false") return "off";
     if (exitHints.some((h) => label.includes(h))) return "on";
     if (enterHints.some((h) => label.includes(h))) return "off";
-    // Generic "theatre/theater" without enter/exit or pressed → unknown.
+    // Current Twitch uses a bare mode label when OFF, including localized
+    // labels and an optional shortcut. Scope this evidence to player controls;
+    // aria-expanded describes a popup and is not theater state.
+    const modeLabel = label.replace(/\s*[（(]\s*alt\s*\+\s*t\s*[）)]\s*$/i, "").trim();
+    const defaultLabels = ["theatre mode", "theater mode", "劇院模式", "剧院模式",
+      "シアターモード", "극장 모드"];
+    if (defaultLabels.includes(modeLabel) && (
+      el.matches('[data-a-target="player-theatre-mode-button"], [data-a-target="player-theater-mode-button"]') ||
+      el.closest('[data-a-target="player-controls"], .player-controls')
+    )) return "off";
+    // Other generic labels are insufficient evidence to toggle.
     return "unknown";
   };
   let control = null;
@@ -535,7 +552,15 @@ _THEATER_STATE_JS = r"""
     state = "on";
   }
   // Only expose clickable control when we know it is OFF (safe to enable).
-  const safeControl = (control && controlState === "off" && state === "off")
+  const clickable = control && controls.some(el => {
+    const r = el.getBoundingClientRect();
+    if (r.left + r.width / 2 !== control.x || r.top + r.height / 2 !== control.y) return false;
+    if (el.hasAttribute("disabled") || el.getAttribute("aria-disabled") === "true") return false;
+    if (getComputedStyle(el).pointerEvents === "none") return false;
+    const top = document.elementFromPoint(control.x, control.y);
+    return !!top && (top === el || el.contains(top));
+  });
+  const safeControl = (clickable && controlState === "off" && state === "off")
     ? control
     : (control && controlState === "on" ? control : null);
   return {state, control: safeControl, controlState, theaterLayout: !!theaterLayout};
@@ -558,6 +583,21 @@ _FOCUS_PLAYER_JS = r"""
     return {focused: true, selector: sel};
   }
   return {focused: false};
+})()
+"""
+
+_PLAYER_HOVER_JS = r"""
+(() => {
+  for (const video of document.querySelectorAll("video")) {
+    const r = video.getBoundingClientRect();
+    if (r.width <= 1 || r.height <= 1) continue;
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
+    const top = document.elementFromPoint(x, y);
+    if (!top || !(top === video || top.closest('.video-player, [data-a-target="video-player"]'))) continue;
+    return {x, y};
+  }
+  return null;
 })()
 """
 
@@ -822,6 +862,17 @@ class _PageAssistWorker:
 
     def _ensure_theater(self, client: CdpClient) -> None:
         """Enable theater only when state is known off; never blind-toggle."""
+        if self._stop.is_set():
+            return
+        # Twitch hides its controls until the pointer enters the player.
+        try:
+            hover = client.evaluate(_PLAYER_HOVER_JS)
+            if isinstance(hover, dict):
+                client.call("Input.dispatchMouseEvent", {"type": "mouseMoved", **hover})
+                if not self._sleep(_THEATER_VERIFY_WAIT_S):
+                    return
+        except Exception:
+            logger.debug("Player hover failed for %s", self.url, exc_info=True)
         snap = self._theater_snapshot(client)
         state = str(snap["state"])
         if state == "on":
@@ -936,14 +987,14 @@ class _PageAssistWorker:
         """
         snap = self._chat_snapshot(client)
         status = str(snap.get("status") or "hidden")
-        if status == "visible":
-            return "visible"
-        if status == "not_logged_in":
+        if status == "not_logged_in" or snap.get("notLoggedIn"):
             logger.info(
                 "Twitch page assist chat/points unavailable (not logged in) for %s",
                 self.url,
             )
             return "not_logged_in"
+        if status == "visible":
+            return "visible"
         if status == "collapsed":
             control = snap.get("expandControl")
             if not isinstance(control, dict) or not control.get("found"):
@@ -960,6 +1011,8 @@ class _PageAssistWorker:
             if not self._sleep(_THEATER_VERIFY_WAIT_S):
                 return "hidden"
             snap = self._chat_snapshot(client)
+            if snap.get("notLoggedIn") or snap.get("status") == "not_logged_in":
+                return "not_logged_in"
             if snap.get("status") == "visible" or snap.get("chatVisible"):
                 logger.info("Twitch page assist chat expanded for %s", self.url)
                 return "visible"
@@ -1007,6 +1060,9 @@ class _PageAssistWorker:
         if hit.get("probeError"):
             return {"present": True, "verified": False}
         if not hit.get("found"):
+            if not hit.get("pointsPresent"):
+                # Loading/navigation or hidden points UI is not claim evidence.
+                return {"present": True, "verified": False}
             return {"present": False, "found": False, "same": False}
         return {
             "present": True,
