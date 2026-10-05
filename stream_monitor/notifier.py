@@ -1167,6 +1167,7 @@ def open_browser_for_signin(
         logger.exception(
             "Could not create sign-in user_data_dir: %s", cleaned
         )
+        return False
 
     try:
         subprocess.Popen(

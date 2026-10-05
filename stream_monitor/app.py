@@ -22,6 +22,7 @@ from stream_monitor.action_plan import (
 )
 from stream_monitor.app_dialogs import (
     AddChannelDialog,
+    AppSettingsDialog,
     BrowserSettingsDialog,
     LanguageDialog,
 )
@@ -84,6 +85,7 @@ from stream_monitor.channel_reorder_ui import ChannelReorderMode
 from stream_monitor.channel_row import ChannelRow
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
+from stream_monitor.launch_records import reset_launch_records
 from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelEntry, ChannelStatus
 from stream_monitor.monitor_controller import MonitorController
@@ -325,6 +327,25 @@ class App(ctk.CTk):
     def iter_channel_rows(self) -> list[CanvasChannelRowAdapter]:
         return self._channel_rows
 
+    def is_channel_active(self, entry: ChannelEntry) -> bool:
+        """Return whether a queued monitor event still targets a live row.
+
+        A background poll may finish after the user removes or disables a
+        channel.  The event bridge checks this on the UI thread immediately
+        before dispatching browser/notification side effects, so an in-flight
+        stale probe cannot act on a channel that is no longer configured.
+        """
+        for channel in self.config.get("channels", []):
+            if not isinstance(channel, dict):
+                continue
+            try:
+                same_key = channel_key(channel["platform"], channel["name"]) == entry.key
+            except (KeyError, TypeError):
+                continue
+            if same_key:
+                return bool(channel.get("enabled", True))
+        return False
+
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
@@ -412,6 +433,24 @@ class App(ctk.CTk):
         )
         self.browser_settings_btn.pack(side="right", padx=(0, 8))
         _tooltip_tr(self.browser_settings_btn, "tooltip.browser_settings")
+
+        self.settings_btn = ctk.CTkButton(
+            title_bar,
+            text=tr("toolbar.settings"),
+            width=_button_width(
+                tr("toolbar.settings"), min_width=88, size=13, weight="bold"
+            ),
+            height=36,
+            corner_radius=8,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#555566",
+            hover_color="#333344",
+            font=_font(13, "bold"),
+            command=self._on_app_settings,
+        )
+        self.settings_btn.pack(side="right", padx=(0, 8))
+        _tooltip_tr(self.settings_btn, "tooltip.settings.reset")
 
         self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
         self.startup_switch = ctk.CTkSwitch(
@@ -1008,6 +1047,9 @@ class App(ctk.CTk):
     def save_status_cache(self) -> None:
         """AppEventSink hook: refresh in-memory cache after each poll cycle."""
         self._save_status_cache()
+        # Keep abnormal termination from discarding the newest completed poll.
+        # The existing coalescer limits this to one atomic write per burst.
+        self._schedule_config_save(delay_ms=500)
 
     def _monitor_seed_args(self) -> tuple[dict[str, Any], float]:
         """Build (initial_statuses, last_activity_epoch) for a monitor start.
@@ -1632,6 +1674,62 @@ class App(ctk.CTk):
         self._monitor_kind = kind
         self._monitor_once = once
         self._sync_monitor_segments()
+
+    def _on_app_settings(self) -> None:
+        dialog = AppSettingsDialog(
+            self,
+            minimize_to_tray=bool(self.minimize_to_tray_var.get()),
+            run_on_startup=bool(self.startup_var.get()),
+            on_tray_changed=self._set_minimize_to_tray,
+            on_startup_changed=self._set_run_on_startup,
+            on_reset_launch_records=self._reset_launch_records_action,
+        )
+        self.wait_window(dialog)
+
+    def _set_minimize_to_tray(self, enabled: bool) -> None:
+        self.minimize_to_tray_var.set(enabled)
+        self._on_tray_switch_toggle()
+
+    def _set_run_on_startup(self, enabled: bool) -> bool:
+        self.startup_var.set(enabled)
+        self._on_startup_toggle()
+        return bool(self.startup_var.get()) == bool(enabled)
+
+    def _reset_launch_records_action(self) -> tuple[bool, str]:
+        """UI callback for Settings → reset launch records."""
+        # Cancel any coalesced save so a stale pre-reset callback cannot
+        # rewrite channel_status_cache after a successful clear.
+        self._cancel_scheduled_config_save()
+
+        def after_guard() -> None:
+            self._cancel_scheduled_config_save()
+            self._controller.purge_pending_for_reset()
+
+        def persist_config(config: dict[str, Any]) -> None:
+            # Must propagate OSError — never report success if disk still
+            # holds the old channel_status_cache.
+            try:
+                config["window_geometry"] = self.geometry()
+            except Exception:
+                pass
+            self.config = config_manager.save(config)
+
+        result = reset_launch_records(
+            db=self._db,
+            config=self.config,
+            paths=portable_paths(),
+            controller=self._controller,
+            coordinator=self._action_coordinator,
+            persist_config=persist_config,
+            after_guard=after_guard,
+        )
+        if not result.ok:
+            return False, result.error_key or "settings.reset.fail"
+        # Clear row snapshots only after durable persistence + DB clear.
+        for row in self._channel_rows:
+            row.raw.clear_launch_status()
+        self.scroll_frame.redraw_all()
+        return True, "settings.reset.ok"
 
     def _on_browser_settings(self) -> None:
         dialog = BrowserSettingsDialog(

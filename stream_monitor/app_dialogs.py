@@ -562,6 +562,192 @@ class LanguageDialog(ctk.CTkToplevel):
             self._unsub_i18n = None
 
 
+class AppSettingsDialog(ctk.CTkToplevel):
+    """Application preferences: tray/startup toggles and launch-records reset."""
+
+    def __init__(
+        self,
+        parent: ctk.CTk,
+        *,
+        minimize_to_tray: bool,
+        run_on_startup: bool,
+        on_tray_changed: Callable[[bool], None],
+        on_startup_changed: Callable[[bool], bool],
+        on_reset_launch_records: Callable[[], tuple[bool, str]],
+    ) -> None:
+        super().__init__(parent)
+        self.title(tr("settings.title"))
+        self.geometry("560x420")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self._on_tray_changed = on_tray_changed
+        self._on_startup_changed = on_startup_changed
+        self._on_reset_launch_records = on_reset_launch_records
+        self._message_after: str | None = None
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=18, pady=16)
+
+        self._heading = ctk.CTkLabel(
+            body,
+            text=tr("settings.section.app"),
+            font=_font(16, "bold"),
+            anchor="w",
+        )
+        self._heading.pack(anchor="w")
+
+        self._app_hint = ctk.CTkLabel(
+            body,
+            text=tr("settings.section.app.hint"),
+            font=_font(12),
+            text_color="#9aa0b4",
+            anchor="w",
+            justify="left",
+            wraplength=500,
+        )
+        self._app_hint.pack(anchor="w", pady=(4, 12))
+
+        card = ctk.CTkFrame(body, fg_color=_CLR_CARD, corner_radius=10)
+        card.pack(fill="x", pady=(0, 14))
+
+        self.minimize_to_tray_var = ctk.BooleanVar(value=minimize_to_tray)
+        self.tray_switch = ctk.CTkSwitch(
+            card,
+            text=tr("toolbar.minimize_to_tray"),
+            variable=self.minimize_to_tray_var,
+            command=self._on_tray_toggle,
+            font=_font(13),
+        )
+        self.tray_switch.pack(anchor="w", padx=14, pady=(12, 6))
+        _tooltip_tr(self.tray_switch, "tooltip.minimize_to_tray")
+
+        self.startup_var = ctk.BooleanVar(value=run_on_startup)
+        self.startup_switch = ctk.CTkSwitch(
+            card,
+            text=tr("toolbar.startup"),
+            variable=self.startup_var,
+            command=self._on_startup_toggle,
+            font=_font(13),
+        )
+        self.startup_switch.pack(anchor="w", padx=14, pady=(0, 12))
+        _tooltip_tr(self.startup_switch, "tooltip.startup")
+
+        self._reset_heading = ctk.CTkLabel(
+            body,
+            text=tr("settings.reset.title"),
+            font=_font(16, "bold"),
+            anchor="w",
+        )
+        self._reset_heading.pack(anchor="w", pady=(4, 0))
+
+        self._reset_body = ctk.CTkLabel(
+            body,
+            text=tr("settings.reset.body"),
+            font=_font(12),
+            text_color="#c5cad8",
+            anchor="w",
+            justify="left",
+            wraplength=500,
+        )
+        self._reset_body.pack(anchor="w", pady=(4, 10))
+
+        reset_row = ctk.CTkFrame(body, fg_color="transparent")
+        reset_row.pack(fill="x")
+        self.reset_btn = ctk.CTkButton(
+            reset_row,
+            text=tr("settings.reset.btn"),
+            width=_button_width(tr("settings.reset.btn"), min_width=140, size=13),
+            height=34,
+            corner_radius=8,
+            fg_color="#6d4c41",
+            hover_color="#5d4037",
+            font=_font(13, "bold"),
+            command=self._on_reset_clicked,
+        )
+        self.reset_btn.pack(side="left")
+        _tooltip_tr(self.reset_btn, "tooltip.settings.reset")
+
+        self._message = ctk.CTkLabel(
+            body,
+            text="",
+            font=_font(12),
+            text_color="#9aa0b4",
+            anchor="w",
+            justify="left",
+            wraplength=500,
+        )
+        self._message.pack(anchor="w", pady=(12, 0))
+
+        footer = ctk.CTkFrame(body, fg_color="transparent")
+        footer.pack(fill="x", side="bottom", pady=(16, 0))
+        self._close_btn = ctk.CTkButton(
+            footer,
+            text=tr("settings.btn.close"),
+            width=_button_width(tr("settings.btn.close"), min_width=88),
+            height=34,
+            corner_radius=8,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#555566",
+            hover_color="#333344",
+            command=self.destroy,
+        )
+        self._close_btn.pack(side="right")
+
+        self._unsub_i18n = i18n.subscribe(self._retranslate)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind("<Destroy>", self._on_destroy, add="+")
+
+    def _set_message(self, key: str, *, color: str = "#9aa0b4", **kwargs: Any) -> None:
+        self._message.configure(text=tr(key, **kwargs), text_color=color)
+
+    def _on_tray_toggle(self) -> None:
+        self._on_tray_changed(bool(self.minimize_to_tray_var.get()))
+
+    def _on_startup_toggle(self) -> None:
+        requested = bool(self.startup_var.get())
+        ok = self._on_startup_changed(requested)
+        if not ok:
+            self.startup_var.set(not requested)
+
+    def _on_reset_clicked(self) -> None:
+        from tkinter import messagebox
+
+        confirm = messagebox.askyesno(
+            tr("settings.reset.confirm.title"),
+            tr("settings.reset.confirm.body"),
+            parent=self,
+        )
+        if not confirm:
+            return
+        ok, detail_key = self._on_reset_launch_records()
+        if ok:
+            self._set_message(detail_key or "settings.reset.ok", color="#81c784")
+        else:
+            self._set_message(detail_key or "settings.reset.fail", color="#ef5350")
+
+    def _retranslate(self) -> None:
+        self.title(tr("settings.title"))
+        self._heading.configure(text=tr("settings.section.app"))
+        self._app_hint.configure(text=tr("settings.section.app.hint"))
+        self.tray_switch.configure(text=tr("toolbar.minimize_to_tray"))
+        self.startup_switch.configure(text=tr("toolbar.startup"))
+        self._reset_heading.configure(text=tr("settings.reset.title"))
+        self._reset_body.configure(text=tr("settings.reset.body"))
+        self.reset_btn.configure(text=tr("settings.reset.btn"))
+        _fit_button(self.reset_btn, tr("settings.reset.btn"), min_width=140)
+        self._close_btn.configure(text=tr("settings.btn.close"))
+        _fit_button(self._close_btn, tr("settings.btn.close"), min_width=88)
+
+    def _on_destroy(self, event: Any = None) -> None:
+        if event is not None and event.widget is not self:
+            return
+        if getattr(self, "_unsub_i18n", None):
+            self._unsub_i18n()
+            self._unsub_i18n = None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Browser Settings Dialog
 # ═══════════════════════════════════════════════════════════════════════════
