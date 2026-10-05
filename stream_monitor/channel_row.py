@@ -460,6 +460,10 @@ class ChannelRow(ctk.CTkFrame):
         self._status_elapsed = ""
         self.time_label.configure(text="")
 
+    def clear_launch_status(self) -> None:
+        """Clear in-memory status after a launch-records reset (UI placeholder)."""
+        self._apply_enabled_visual(reset_status=True)
+
     def _apply_enabled_visual(self, reset_status: bool = True) -> None:
         enabled = self.channel.get("enabled", True)
         channel_mode = channel_mode_for(self.channel)

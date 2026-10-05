@@ -57,6 +57,26 @@ class MonitorController:
     def wake_verify_active(self) -> bool:
         return self._monitor is not None and self._monitor.wake_verify_active
 
+    def is_settled_idle(self) -> bool:
+        """True when mode is idle, nothing is polling, and stop has finished."""
+        if self._mode != "idle" or self.is_running:
+            return False
+        t = self._stopping_thread
+        if t is not None and t.is_alive():
+            return False
+        return self._monitor is None
+
+    def purge_pending_for_reset(self) -> None:
+        """Drop queued/pre-reset status updates and invalidate generation.
+
+        Call only after a settled-idle guard succeeds. Advancing generation
+        prevents delayed pre-reset status/action work from refilling row
+        caches after launch-records reset.
+        """
+        self._generation += 1
+        self._bus.clear()
+        self._bridge.reset()
+
     def tick(self) -> None:
         """Drain queued monitor events on the UI thread."""
         self._bridge.tick()

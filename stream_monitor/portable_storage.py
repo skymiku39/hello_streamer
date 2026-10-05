@@ -49,6 +49,11 @@ class PortablePaths:
     def browser_profile_dir(self) -> Path:
         return self.root / "browser_profile"
 
+    @property
+    def backups_dir(self) -> Path:
+        """App-owned backups root (never inside ``browser_profile/``)."""
+        return self.root / "backups"
+
 
 def portable_paths(root: Path | None = None) -> PortablePaths:
     """Return the canonical writable layout for this application copy."""
