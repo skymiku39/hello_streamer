@@ -509,6 +509,67 @@ def test_migrate_preserves_user_supplied_path() -> None:
     assert settings["user_data_dir"] == "C:/custom/profile"
 
 
+def test_normalize_marks_current_portable_profile(monkeypatch, tmp_path) -> None:
+    profile = tmp_path / "browser_profile"
+    profile.mkdir()
+    monkeypatch.setattr(
+        config_manager, "default_browser_profile_dir", lambda: str(profile)
+    )
+
+    normalized = config_manager._normalize_browser_settings(
+        {
+            "enabled": True,
+            "per_channel_profile": True,
+            "user_data_dir": str(profile),
+        }
+    )
+
+    assert normalized["user_data_dir"] == str(profile)
+    assert normalized["user_data_dir_is_portable_default"] is True
+
+
+def test_normalize_relocates_missing_legacy_portable_profile(
+    monkeypatch, tmp_path
+) -> None:
+    current = tmp_path / "new-copy" / "browser_profile"
+    current.mkdir(parents=True)
+    old = tmp_path / "old-copy" / "browser_profile"
+    monkeypatch.setattr(
+        config_manager, "default_browser_profile_dir", lambda: str(current)
+    )
+
+    normalized = config_manager._normalize_browser_settings(
+        {
+            "enabled": True,
+            "per_channel_profile": True,
+            "user_data_dir": str(old),
+        }
+    )
+
+    assert normalized["user_data_dir"] == str(current)
+    assert normalized["user_data_dir_is_portable_default"] is True
+
+
+def test_normalize_preserves_missing_custom_profile(monkeypatch, tmp_path) -> None:
+    current = tmp_path / "browser_profile"
+    current.mkdir()
+    custom = tmp_path / "external" / "profile"
+    monkeypatch.setattr(
+        config_manager, "default_browser_profile_dir", lambda: str(current)
+    )
+
+    normalized = config_manager._normalize_browser_settings(
+        {
+            "enabled": True,
+            "per_channel_profile": True,
+            "user_data_dir": str(custom),
+        }
+    )
+
+    assert normalized["user_data_dir"] == str(custom)
+    assert normalized["user_data_dir_is_portable_default"] is False
+
+
 # ---------------------------------------------------------------------------
 # Migration #2: opt-in advanced features without isolation.
 #

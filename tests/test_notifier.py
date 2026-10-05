@@ -2633,6 +2633,28 @@ def test_open_browser_for_signin_handles_popen_failure(monkeypatch, tmp_path) ->
     )
 
 
+def test_open_browser_for_signin_fails_closed_when_profile_creation_fails(
+    monkeypatch, tmp_path
+) -> None:
+    _stub_browser_resolution(monkeypatch, "chrome")
+
+    def fail_mkdir(*_args, **_kwargs):
+        raise PermissionError("profile denied")
+
+    monkeypatch.setattr(notifier.Path, "mkdir", fail_mkdir)
+    popen_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        notifier.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: popen_calls.append((_args, _kwargs)) or object(),
+    )
+
+    assert notifier.open_browser_for_signin(
+        str(tmp_path / "profile"), browser_path="chrome"
+    ) is False
+    assert popen_calls == []
+
+
 def test_open_browser_for_signin_creates_profile_dir(monkeypatch, tmp_path) -> None:
     """Helper must create the profile directory before launching so Chrome
     doesn't bail with "profile path doesn't exist" on first sign-in.

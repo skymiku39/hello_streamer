@@ -29,6 +29,7 @@ class _FakeSink:
         window=SimpleNamespace(
             tracking_available=lambda _settings, _url="": False,
             prune_off_topic=lambda: 0,
+            release_keep_awake_for_closed=lambda: 0,
         )
     )
 
