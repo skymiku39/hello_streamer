@@ -85,8 +85,8 @@ from stream_monitor.channel_reorder_ui import ChannelReorderMode
 from stream_monitor.channel_row import ChannelRow
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
-from stream_monitor.launch_records import reset_launch_records
 from stream_monitor.i18n import tr
+from stream_monitor.launch_records import reset_launch_records
 from stream_monitor.monitor import ChannelEntry, ChannelStatus
 from stream_monitor.monitor_controller import MonitorController
 from stream_monitor.notifier import (

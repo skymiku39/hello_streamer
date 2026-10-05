@@ -385,8 +385,9 @@ def test_open_busy_profile_without_cdp_skips_page_assist_promptly(
 ) -> None:
     """Busy profile without a usable CDP endpoint fails fast and skips worker."""
     monkeypatch.delattr(sys, "frozen", raising=False)
-    import stream_monitor.cdp_client as cdp_client
     import time as time_mod
+
+    import stream_monitor.cdp_client as cdp_client
     from stream_monitor.cdp_client import CdpAttachResult
 
     profile = tmp_path / "profile"
@@ -457,8 +458,9 @@ def test_open_fresh_profile_devtools_timeout_skips_page_assist(
 ) -> None:
     """When pre-launch CDP acquisition fails, page assist is skipped promptly."""
     monkeypatch.delattr(sys, "frozen", raising=False)
-    import stream_monitor.cdp_client as cdp_client
     import time as time_mod
+
+    import stream_monitor.cdp_client as cdp_client
     from stream_monitor.cdp_client import CdpAttachResult
 
     profile = tmp_path / "profile"

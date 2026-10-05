@@ -29,7 +29,6 @@ from stream_monitor.app_ui import (
     _font,
     _tooltip_tr,
 )
-from stream_monitor.viewer_engagement_model import page_assist_runtime_allowed
 from stream_monitor.config_manager import (
     _normalize_browser_settings,
     _normalize_viewer_engagement,
@@ -44,6 +43,7 @@ from stream_monitor.notifier import (
     open_url,
 )
 from stream_monitor.url_parser import parse_channel_url
+from stream_monitor.viewer_engagement_model import page_assist_runtime_allowed
 
 logger = logging.getLogger(__name__)
 
