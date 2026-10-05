@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 stream-monitor = "stream_monitor.app:main"
+stream-monitor-test = "stream_monitor.test_cli:main"
 
 [build-system]
 requires = ["hatchling"]
