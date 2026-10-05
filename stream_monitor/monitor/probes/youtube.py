@@ -437,11 +437,24 @@ class YouTubePlatformProbe:
             info = fetcher.get_stream_info(entry.name)
         except Exception:
             logger.exception("Error fetching fallback status for %s", entry.key)
-            return []
+            return facade.handle_fetch_unavailable(
+                entry,
+                label="YouTube fallback",
+                snap=snap,
+                reason="fallback exception",
+            )
 
         if info is None:
+            reason = (
+                "http backoff"
+                if getattr(fetcher, "http_backoff_active", lambda: False)()
+                else "fetch returned None"
+            )
             return facade.handle_fetch_unavailable(
-                entry, label="YouTube fallback"
+                entry,
+                label="YouTube fallback",
+                snap=snap,
+                reason=reason,
             )
 
         live_key = _live_cache_key(entry.key)

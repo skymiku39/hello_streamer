@@ -40,6 +40,24 @@ _YOUTUBE_SOFT_UNAVAILABLE_REASONS = frozenset(
 class OfflineEnqueueMixin:
     """Drives the offline commit path: prepare, build, finalize, enqueue."""
 
+    def _youtube_soft_unavailable_hold(
+        self,
+        entry: ChannelEntry,
+        *,
+        label: str,
+        reason: str,
+    ) -> bool:
+        """True when a YouTube unavailability is not proof of being offline."""
+        if not label.startswith("YouTube"):
+            return False
+        if reason in _YOUTUBE_SOFT_UNAVAILABLE_REASONS:
+            return True
+        try:
+            fetcher = _monitor_deps.get_fetcher(entry.platform)
+        except Exception:
+            return False
+        return bool(getattr(fetcher, "http_backoff_active", lambda: False)())
+
     def _offline_payload_for(
         self, entry: ChannelEntry, live_key: str, prev: Any
     ) -> OfflineInfo:
