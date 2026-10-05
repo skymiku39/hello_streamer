@@ -200,6 +200,21 @@ class ActionExecutor:
             )
         if lifecycle_callback is not None:
             lifecycle_callback()
+        if notification_sent is False:
+            logger.warning(
+                "Browser opened but notification failed: action=%s platform=%s "
+                "channel=%s",
+                plan.key,
+                info.platform,
+                info.channel,
+            )
+            return ActionResult.failed(
+                plan.key,
+                ActionStatus.NOTIFICATION_FAILED,
+                notification_sent=False,
+                browser_opened=True,
+                detail="browser opened; notification failed",
+            )
         return ActionResult.completed(
             plan.key,
             notification_sent=notification_sent,
