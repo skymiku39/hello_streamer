@@ -49,8 +49,13 @@ class YouTubePlatformProbe:
             )
 
         if items is None:
+            reason = getattr(fetcher, "last_unavailable_reason", "") or (
+                "http backoff"
+                if getattr(fetcher, "http_backoff_active", lambda: False)()
+                else "fetch returned None"
+            )
             return facade.handle_fetch_unavailable(
-                entry, label="YouTube", snap=snap
+                entry, label="YouTube", snap=snap, reason=reason
             )
 
         snap.fetcher = fetcher
