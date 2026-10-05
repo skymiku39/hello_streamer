@@ -35,20 +35,36 @@ from stream_monitor.app_ui import (
     _CLR_LINK_HOVER,
     _CLR_LIVE,
     _CLR_OFFLINE,
+    _CLR_PANEL_BORDER,
+    _CLR_SEG_BORDER,
     _CLR_START,
     _CLR_START_HOVER,
+    _CLR_STATUS_DOT_IDLE,
     _CLR_STOP,
     _CLR_STOP_HOVER,
+    _CLR_TEXT_MUTED,
+    _CLR_TEXT_SECONDARY,
+    _COMPACT_ACT_BTN_HEIGHT,
+    _COMPACT_CTRL_PAD_X,
+    _COMPACT_CTRL_PAD_Y,
+    _COMPACT_FIELD_HEIGHT,
+    _COMPACT_FLOW_HGAP,
+    _COMPACT_LINE_GAP,
+    _COMPACT_SEG_HEIGHT,
     _MIN_WINDOW_HEIGHT,
     _MIN_WINDOW_WIDTH,
+    CompactFlowFrame,
     _button_width,
     _clamped_window_geometry,
     _fit_button,
+    _fit_option_menu,
     _font,
     _language_icon,
     _tooltip_tr,
     _truncate_status_name,
-    monitor_mode_button_states,
+    compact_control_button_states,
+    compose_monitor_mode,
+    decompose_monitor_mode,
 )
 from stream_monitor.browser_settings_model import BrowserSettings
 from stream_monitor.canvas_channel_list import (
@@ -467,282 +483,423 @@ class App(ctk.CTk):
             text_color="#555566",
         )
 
-        # ── Bottom control bar ──
-        ctrl = ctk.CTkFrame(outer, corner_radius=12, fg_color=_CLR_CARD)
-        ctrl.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        # ── Compact bottom control panel (v5 HTML arrangement + flex-wrap) ──
+        self._compact_ctrl = ctk.CTkFrame(
+            outer,
+            corner_radius=12,
+            fg_color=_CLR_CARD,
+            border_width=1,
+            border_color=_CLR_PANEL_BORDER,
+        )
+        self._compact_ctrl.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
-        toolbar = ctk.CTkFrame(ctrl, fg_color="transparent")
-        toolbar.pack(fill="x", padx=14, pady=10)
-        toolbar.grid_columnconfigure(1, weight=1)
+        panel = ctk.CTkFrame(self._compact_ctrl, fg_color="transparent")
+        panel.pack(
+            fill="x",
+            padx=_COMPACT_CTRL_PAD_X,
+            pady=_COMPACT_CTRL_PAD_Y,
+        )
 
-        left = ctk.CTkFrame(toolbar, fg_color="transparent")
-        left.grid(row=0, column=0, sticky="w")
+        saved_mode = str(self.config.get("monitor_mode") or TRIGGER_MODE)
+        kind, once = decompose_monitor_mode(saved_mode)
+        self._monitor_kind = kind
+        self._monitor_once = once
 
-        continuous_row = ctk.CTkFrame(left, fg_color="transparent")
-        continuous_row.pack(anchor="w")
-        once_row = ctk.CTkFrame(left, fg_color="transparent")
-        once_row.pack(anchor="w", pady=(5, 0))
+        self._run_flow = CompactFlowFrame(
+            panel, hgap=_COMPACT_FLOW_HGAP, vgap=_COMPACT_LINE_GAP
+        )
+        self._run_flow.pack(fill="x")
+
+        acts = ctk.CTkFrame(self._run_flow, fg_color="transparent")
+        self._run_flow.add(acts)
 
         self.start_btn = ctk.CTkButton(
-            continuous_row,
-            text=tr("toolbar.start"),
+            acts,
+            text=tr("toolbar.run"),
             width=_button_width(
-                tr("toolbar.start"), min_width=108, size=14, weight="bold"
+                tr("toolbar.run"), min_width=96, size=13, weight="bold"
             ),
-            height=38,
+            height=_COMPACT_ACT_BTN_HEIGHT,
             corner_radius=8,
             fg_color=_CLR_START,
             hover_color=_CLR_START_HOVER,
-            font=_font(14, "bold"),
-            command=self._on_start,
-        )
-        self.start_btn.pack(side="left", padx=(0, 6))
-        _tooltip_tr(self.start_btn, "tooltip.start")
-
-        self.watch_btn = ctk.CTkButton(
-            continuous_row,
-            text=tr("toolbar.watch"),
-            width=_button_width(
-                tr("toolbar.watch"), min_width=88, size=14, weight="bold"
-            ),
-            height=38,
-            corner_radius=8,
-            fg_color="#1565c0",
-            hover_color="#0d47a1",
-            font=_font(14, "bold"),
-            command=self._on_watch,
-        )
-        self.watch_btn.pack(side="left", padx=(0, 6))
-        _tooltip_tr(self.watch_btn, "tooltip.watch")
-
-        self.start_once_btn = ctk.CTkButton(
-            once_row,
-            text=tr("toolbar.start_once"),
-            width=_button_width(
-                tr("toolbar.start_once"), min_width=100, size=13, weight="bold"
-            ),
-            height=38,
-            corner_radius=8,
-            fg_color="#388e3c",
-            hover_color="#2e7d32",
             font=_font(13, "bold"),
-            command=self._on_start_once,
+            command=self._on_compact_run,
         )
-        self.start_once_btn.pack(side="left", padx=(0, 6))
-        _tooltip_tr(self.start_once_btn, "tooltip.start_once")
-
-        self.watch_once_btn = ctk.CTkButton(
-            once_row,
-            text=tr("toolbar.watch_once"),
-            width=_button_width(
-                tr("toolbar.watch_once"), min_width=92, size=13, weight="bold"
-            ),
-            height=38,
-            corner_radius=8,
-            fg_color="#1976d2",
-            hover_color="#1565c0",
-            font=_font(13, "bold"),
-            command=self._on_watch_once,
-        )
-        self.watch_once_btn.pack(side="left", padx=(0, 6))
-        _tooltip_tr(self.watch_once_btn, "tooltip.watch_once")
+        self.start_btn.pack(side="left", padx=(0, 8))
+        _tooltip_tr(self.start_btn, "tooltip.run")
 
         self.stop_btn = ctk.CTkButton(
-            once_row,
+            acts,
             text=tr("toolbar.stop"),
             width=_button_width(
-                tr("toolbar.stop"), min_width=72, size=14, weight="bold"
+                tr("toolbar.stop"), min_width=80, size=13, weight="bold"
             ),
-            height=38,
+            height=_COMPACT_ACT_BTN_HEIGHT,
             corner_radius=8,
             fg_color=_CLR_STOP,
             hover_color=_CLR_STOP_HOVER,
             state="disabled",
-            font=_font(14, "bold"),
+            font=_font(13, "bold"),
             command=self.on_stop,
         )
-        self.stop_btn.pack(side="left")
+        self.stop_btn.pack(side="left", padx=(0, 8))
         _tooltip_tr(self.stop_btn, "tooltip.stop")
 
-        self._status_frame = ctk.CTkFrame(toolbar, fg_color="transparent")
-        self._status_frame.grid(row=0, column=1, sticky="ew", padx=(14, 8))
+        self._status_frame = ctk.CTkFrame(acts, fg_color="transparent")
+        self._status_frame.pack(side="left", padx=(4, 0))
+        status_row = ctk.CTkFrame(self._status_frame, fg_color="transparent")
+        status_row.pack(anchor="w")
+        self.status_dot = ctk.CTkLabel(
+            status_row,
+            text="●",
+            font=_font(11),
+            text_color=_CLR_STATUS_DOT_IDLE,
+            width=14,
+        )
+        self.status_dot.pack(side="left", padx=(0, 6))
         self.status_text = ctk.CTkLabel(
-            self._status_frame,
+            status_row,
             text=tr("status.idle"),
             font=_font(13),
-            text_color=_CLR_OFFLINE,
+            text_color=_CLR_TEXT_SECONDARY,
             anchor="w",
             justify="left",
         )
-        self.status_text.pack(anchor="w", fill="x")
+        self.status_text.pack(side="left")
         self.status_sub_text = ctk.CTkLabel(
             self._status_frame,
             text="",
             font=_font(11),
-            text_color="#9aa0b4",
+            text_color=_CLR_TEXT_MUTED,
             anchor="w",
             justify="left",
         )
-        self.status_sub_text.pack(anchor="w", fill="x")
-        # Cache for the status-text key so language switches can refresh it.
+        self.status_sub_text.pack(anchor="w")
         self._status_text_key = "status.idle"
         self._status_text_color = _CLR_OFFLINE
         self._status_subline_key = "status.awaiting_start"
         self._status_subline_kwargs: dict[str, str] = {}
         self._render_status_text()
 
-        right_toolbar = ctk.CTkFrame(toolbar, fg_color="transparent")
-        right_toolbar.grid(row=0, column=2, sticky="e")
-
-        interval_group = ctk.CTkFrame(right_toolbar, fg_color="transparent")
-        interval_group.pack(side="left", padx=(12, 18))
-        self._interval_caption = ctk.CTkLabel(
-            interval_group,
-            text=tr("toolbar.check_interval"),
-            font=_font(11),
-            text_color="#9aa0b4",
-            anchor="w",
+        mode_fld = ctk.CTkFrame(self._run_flow, fg_color="transparent")
+        self._run_flow.add(mode_fld)
+        self._mode_caption = ctk.CTkLabel(
+            mode_fld,
+            text=tr("toolbar.mode"),
+            font=_font(13),
+            text_color=_CLR_TEXT_SECONDARY,
         )
-        self._interval_caption.pack(anchor="w")
+        self._mode_caption.pack(side="left", padx=(0, 8))
+        self.mode_seg = ctk.CTkSegmentedButton(
+            mode_fld,
+            values=self._mode_segment_values(),
+            command=self._on_mode_segment,
+            height=_COMPACT_SEG_HEIGHT,
+            font=_font(13),
+            selected_color=_CLR_ACCENT,
+            selected_hover_color=_CLR_ADD_HOVER,
+            unselected_color=_CLR_CARD,
+            unselected_hover_color="#2a2a40",
+            fg_color=_CLR_SEG_BORDER,
+        )
+        self.mode_seg.pack(side="left")
+        self.mode_seg.set(self._mode_segment_label(self._monitor_kind))
 
+        duration_fld = ctk.CTkFrame(self._run_flow, fg_color="transparent")
+        self._run_flow.add(duration_fld)
+        self._duration_caption = ctk.CTkLabel(
+            duration_fld,
+            text=tr("toolbar.duration"),
+            font=_font(13),
+            text_color=_CLR_TEXT_SECONDARY,
+        )
+        self._duration_caption.pack(side="left", padx=(0, 8))
+        self.duration_seg = ctk.CTkSegmentedButton(
+            duration_fld,
+            values=self._duration_segment_values(),
+            command=self._on_duration_segment,
+            height=_COMPACT_SEG_HEIGHT,
+            font=_font(13),
+            selected_color=_CLR_ACCENT,
+            selected_hover_color=_CLR_ADD_HOVER,
+            unselected_color=_CLR_CARD,
+            unselected_hover_color="#2a2a40",
+            fg_color=_CLR_SEG_BORDER,
+        )
+        self.duration_seg.pack(side="left")
+        self.duration_seg.set(self._duration_segment_label(self._monitor_once))
+
+        interval_fld = ctk.CTkFrame(self._run_flow, fg_color="transparent")
+        self._run_flow.add(interval_fld)
+        self._interval_caption = ctk.CTkLabel(
+            interval_fld,
+            text=tr("toolbar.interval_short"),
+            font=_font(13),
+            text_color=_CLR_TEXT_SECONDARY,
+        )
+        self._interval_caption.pack(side="left", padx=(0, 8))
         self.interval_var = ctk.StringVar(
             value=str(self.config.get("check_interval", 60))
         )
-        interval_line = ctk.CTkFrame(interval_group, fg_color="transparent")
-        interval_line.pack(anchor="w", pady=(2, 0))
         self.interval_entry = ctk.CTkEntry(
-            interval_line,
-            width=78,
-            height=32,
+            interval_fld,
+            width=60,
+            height=_COMPACT_FIELD_HEIGHT,
             textvariable=self.interval_var,
-            font=_font(14, "bold"),
+            font=_font(13),
             justify="center",
         )
         self.interval_entry.pack(side="left")
         _tooltip_tr(self.interval_entry, "tooltip.interval_entry")
-
         self._interval_unit = ctk.CTkLabel(
-            interval_line, text=tr("toolbar.seconds"), font=_font(12), text_color="#d8d8e5"
+            interval_fld,
+            text=tr("toolbar.seconds"),
+            font=_font(13),
+            text_color=_CLR_TEXT_SECONDARY,
         )
-        self._interval_unit.pack(side="left", padx=(6, 0))
+        self._interval_unit.pack(side="left", padx=(8, 0))
 
-        trigger_group = ctk.CTkFrame(right_toolbar, fg_color="transparent")
-        trigger_group.pack(side="left")
-        self._trigger_caption = ctk.CTkLabel(
-            trigger_group,
-            text=tr("toolbar.trigger_label"),
-            font=_font(11),
-            text_color="#9aa0b4",
-            anchor="w",
+        settings_block = ctk.CTkFrame(panel, fg_color="transparent")
+        settings_block.pack(fill="x", pady=(_COMPACT_LINE_GAP, 0))
+        line2_rule = ctk.CTkFrame(
+            settings_block, height=1, fg_color=_CLR_PANEL_BORDER
         )
-        self._trigger_caption.pack(anchor="w")
+        line2_rule.pack(fill="x", pady=(0, _COMPACT_LINE_GAP))
+
+        self._settings_flow = CompactFlowFrame(
+            settings_block, hgap=_COMPACT_FLOW_HGAP, vgap=_COMPACT_LINE_GAP
+        )
+        self._settings_flow.pack(fill="x")
 
         trigger_settings = TriggerSettings.from_mapping(
             self.config.get("trigger_settings")
         )
-        trigger_line = ctk.CTkFrame(trigger_group, fg_color="transparent")
-        trigger_line.pack(anchor="w", pady=(2, 0))
+
+        # Atomic wrap units so long locales reflow instead of clipping the
+        # trailing info button / option menu (HTML flex-wrap behaviour).
+        self._notify_group_label = ctk.CTkLabel(
+            self._settings_flow,
+            text=tr("toolbar.group.notify"),
+            font=_font(13),
+            text_color=_CLR_TEXT_SECONDARY,
+        )
+        self._settings_flow.add(self._notify_group_label)
+
         self.notify_on_live_var = ctk.BooleanVar(
             value=trigger_settings.notify_on_live
         )
         self.notify_on_live_switch = ctk.CTkSwitch(
-            trigger_line,
+            self._settings_flow,
             text=tr("toolbar.notify_on_live"),
             variable=self.notify_on_live_var,
             command=self._persist_trigger_settings,
-            font=_font(12),
+            font=_font(14),
+            switch_width=32,
+            switch_height=18,
         )
-        self.notify_on_live_switch.pack(side="left", padx=(0, 8))
+        self._settings_flow.add(self.notify_on_live_switch)
         _tooltip_tr(self.notify_on_live_switch, "tooltip.notify_on_live")
 
-        self.open_on_live_var = ctk.BooleanVar(value=trigger_settings.open_on_live)
-        self.open_on_live_switch = ctk.CTkSwitch(
-            trigger_line,
-            text=tr("toolbar.open_on_live"),
-            variable=self.open_on_live_var,
-            command=self._persist_trigger_settings,
-            font=_font(12),
-        )
-        self.open_on_live_switch.pack(side="left", padx=(0, 8))
-        _tooltip_tr(self.open_on_live_switch, "tooltip.open_on_live")
-
-        self._after_open_caption = ctk.CTkLabel(
-            trigger_line,
-            text=tr("toolbar.after_open"),
-            font=_font(11),
-            text_color="#9aa0b4",
-        )
-        self._after_open_caption.pack(side="left", padx=(0, 5))
-        labels = _after_open_labels()
-        self.after_open_var = ctk.StringVar(value=labels[trigger_settings.after_open])
-        self.after_open_menu = ctk.CTkOptionMenu(
-            trigger_line,
-            variable=self.after_open_var,
-            values=[labels[effect] for effect in _AFTER_OPEN_EFFECTS],
-            command=lambda _value: self._persist_trigger_settings(),
-            width=170,
-            height=32,
-            font=_font(12),
-            dropdown_font=_font(12),
-        )
-        self.after_open_menu.pack(side="left")
-        _tooltip_tr(self.after_open_menu, "tooltip.after_open")
-
-        upcoming_line = ctk.CTkFrame(trigger_group, fg_color="transparent")
-        upcoming_line.pack(anchor="w", pady=(5, 0))
         self.notify_on_upcoming_var = ctk.BooleanVar(
             value=trigger_settings.notify_on_upcoming
         )
         self.notify_on_upcoming_switch = ctk.CTkSwitch(
-            upcoming_line,
+            self._settings_flow,
             text=tr("toolbar.notify_on_upcoming"),
             variable=self.notify_on_upcoming_var,
             command=self._persist_trigger_settings,
-            font=_font(12),
+            font=_font(14),
+            switch_width=32,
+            switch_height=18,
         )
-        self.notify_on_upcoming_switch.pack(side="left", padx=(0, 8))
+        self._settings_flow.add(self.notify_on_upcoming_switch)
         _tooltip_tr(
             self.notify_on_upcoming_switch, "tooltip.notify_on_upcoming"
         )
-
-        self.open_on_upcoming_var = ctk.BooleanVar(
-            value=trigger_settings.open_on_upcoming
-        )
-        self.open_on_upcoming_switch = ctk.CTkSwitch(
-            upcoming_line,
-            text=tr("toolbar.open_on_upcoming"),
-            variable=self.open_on_upcoming_var,
-            command=self._persist_trigger_settings,
-            font=_font(12),
-        )
-        self.open_on_upcoming_switch.pack(side="left", padx=(0, 8))
-        _tooltip_tr(self.open_on_upcoming_switch, "tooltip.open_on_upcoming")
 
         self.notify_on_open_failure_var = ctk.BooleanVar(
             value=trigger_settings.notify_on_open_failure
         )
         self.notify_on_open_failure_switch = ctk.CTkSwitch(
-            upcoming_line,
+            self._settings_flow,
             text=tr("toolbar.notify_on_open_failure"),
             variable=self.notify_on_open_failure_var,
             command=self._persist_trigger_settings,
-            font=_font(12),
+            font=_font(14),
+            switch_width=32,
+            switch_height=18,
         )
-        self.notify_on_open_failure_switch.pack(side="left")
+        self._settings_flow.add(self.notify_on_open_failure_switch)
         _tooltip_tr(
             self.notify_on_open_failure_switch, "tooltip.notify_on_open_failure"
         )
-        self._trigger_hint = ctk.CTkLabel(
-            trigger_group,
-            text=tr("toolbar.trigger_hint"),
-            font=_font(10),
-            text_color="#7f8499",
-            anchor="w",
-            justify="left",
-            wraplength=240,
+
+        self._open_group_label = ctk.CTkLabel(
+            self._settings_flow,
+            text=tr("toolbar.group.open"),
+            font=_font(13),
+            text_color=_CLR_TEXT_SECONDARY,
         )
-        self._trigger_hint.pack(anchor="w", pady=(3, 0))
+        self._settings_flow.add(self._open_group_label)
+
+        self.open_on_live_var = ctk.BooleanVar(value=trigger_settings.open_on_live)
+        self.open_on_live_switch = ctk.CTkSwitch(
+            self._settings_flow,
+            text=tr("toolbar.open_on_live"),
+            variable=self.open_on_live_var,
+            command=self._persist_trigger_settings,
+            font=_font(14),
+            switch_width=32,
+            switch_height=18,
+        )
+        self._settings_flow.add(self.open_on_live_switch)
+        _tooltip_tr(self.open_on_live_switch, "tooltip.open_on_live")
+
+        self.open_on_upcoming_var = ctk.BooleanVar(
+            value=trigger_settings.open_on_upcoming
+        )
+        self.open_on_upcoming_switch = ctk.CTkSwitch(
+            self._settings_flow,
+            text=tr("toolbar.open_on_upcoming"),
+            variable=self.open_on_upcoming_var,
+            command=self._persist_trigger_settings,
+            font=_font(14),
+            switch_width=32,
+            switch_height=18,
+        )
+        self._settings_flow.add(self.open_on_upcoming_switch)
+        _tooltip_tr(self.open_on_upcoming_switch, "tooltip.open_on_upcoming")
+
+        after_fld = ctk.CTkFrame(self._settings_flow, fg_color="transparent")
+        self._settings_flow.add(after_fld)
+        self._after_open_caption = ctk.CTkLabel(
+            after_fld,
+            text=tr("toolbar.after_open"),
+            font=_font(14),
+            text_color="white",
+        )
+        self._after_open_caption.pack(side="left", padx=(0, 8))
+        labels = _after_open_labels()
+        self.after_open_var = ctk.StringVar(value=labels[trigger_settings.after_open])
+        self.after_open_menu = ctk.CTkOptionMenu(
+            after_fld,
+            variable=self.after_open_var,
+            values=[labels[effect] for effect in _AFTER_OPEN_EFFECTS],
+            command=lambda _value: self._persist_trigger_settings(),
+            width=104,
+            height=_COMPACT_FIELD_HEIGHT,
+            font=_font(13),
+            dropdown_font=_font(13),
+        )
+        self.after_open_menu.pack(side="left")
+        _tooltip_tr(self.after_open_menu, "tooltip.after_open")
+        _fit_option_menu(
+            self.after_open_menu,
+            [labels[effect] for effect in _AFTER_OPEN_EFFECTS],
+            min_width=104,
+            size=13,
+        )
+
+        self._trigger_hint_btn = ctk.CTkButton(
+            after_fld,
+            text="i",
+            width=28,
+            height=28,
+            corner_radius=8,
+            fg_color="transparent",
+            hover_color="#2a2a40",
+            text_color=_CLR_TEXT_MUTED,
+            font=_font(14, "bold"),
+        )
+        self._trigger_hint_btn.pack(side="left", padx=(6, 0))
+        _tooltip_tr(self._trigger_hint_btn, "toolbar.trigger_hint")
+
+        self._compact_ctrl.bind(
+            "<Configure>", self._on_compact_ctrl_configure, add="+"
+        )
         self._refresh_trigger_controls()
+        self._apply_monitor_mode_buttons()
+        self._reflow_compact_panel()
+
+
+    def _mode_segment_values(self) -> list[str]:
+        return [tr("toolbar.mode.trigger"), tr("toolbar.mode.watch")]
+
+    def _duration_segment_values(self) -> list[str]:
+        return [
+            tr("toolbar.duration.continuous"),
+            tr("toolbar.duration.once"),
+        ]
+
+    def _mode_segment_label(self, kind: str) -> str:
+        return (
+            tr("toolbar.mode.watch")
+            if kind == "watch"
+            else tr("toolbar.mode.trigger")
+        )
+
+    def _duration_segment_label(self, once: bool) -> str:
+        return (
+            tr("toolbar.duration.once")
+            if once
+            else tr("toolbar.duration.continuous")
+        )
+
+    def _kind_from_segment_label(self, label: str) -> str:
+        return "watch" if label == tr("toolbar.mode.watch") else "trigger"
+
+    def _once_from_segment_label(self, label: str) -> bool:
+        return label == tr("toolbar.duration.once")
+
+    def _sync_monitor_segments(self) -> None:
+        """Refresh segmented-button labels/selection after language or mode changes."""
+        if not hasattr(self, "mode_seg"):
+            return
+        self._segment_syncing = True
+        try:
+            self.mode_seg.configure(values=self._mode_segment_values())
+            self.duration_seg.configure(values=self._duration_segment_values())
+            self.mode_seg.set(self._mode_segment_label(self._monitor_kind))
+            self.duration_seg.set(self._duration_segment_label(self._monitor_once))
+        finally:
+            self._segment_syncing = False
+
+    def _on_mode_segment(self, value: str) -> None:
+        if getattr(self, "_segment_syncing", False):
+            return
+        self._monitor_kind = self._kind_from_segment_label(value)
+        self._apply_monitor_mode_buttons()
+        if self._controller.mode != "idle":
+            self._on_compact_run()
+
+    def _on_duration_segment(self, value: str) -> None:
+        if getattr(self, "_segment_syncing", False):
+            return
+        self._monitor_once = self._once_from_segment_label(value)
+        self._apply_monitor_mode_buttons()
+        if self._controller.mode != "idle":
+            self._on_compact_run()
+
+    def _on_compact_run(self) -> None:
+        mode = compose_monitor_mode(self._monitor_kind, once=self._monitor_once)
+        {
+            TRIGGER_MODE: self._on_start,
+            WATCH_MODE: self._on_watch,
+            TRIGGER_ONCE_MODE: self._on_start_once,
+            WATCH_ONCE_MODE: self._on_watch_once,
+        }[mode]()
+
+    def _on_compact_ctrl_configure(self, _event: Any = None) -> None:
+        self._reflow_compact_panel()
+
+    def _reflow_compact_panel(self) -> None:
+        """Reflow compact wrap rows after resize / i18n text width changes."""
+        if not hasattr(self, "_run_flow"):
+            return
+        self.update_idletasks()
+        self._run_flow.reflow()
+        self._settings_flow.reflow()
 
     def _fit_main_toolbar_i18n(self) -> None:
         """Resize toolbar widgets so localized labels are not clipped."""
@@ -762,41 +919,29 @@ class App(ctk.CTk):
         )
         _fit_button(
             self.start_btn,
-            tr("toolbar.start"),
-            min_width=108,
-            size=14,
-            weight="bold",
-        )
-        _fit_button(
-            self.watch_btn,
-            tr("toolbar.watch"),
-            min_width=88,
-            size=14,
-            weight="bold",
-        )
-        _fit_button(
-            self.start_once_btn,
-            tr("toolbar.start_once"),
-            min_width=100,
-            size=13,
-            weight="bold",
-        )
-        _fit_button(
-            self.watch_once_btn,
-            tr("toolbar.watch_once"),
-            min_width=92,
+            tr("toolbar.run"),
+            min_width=96,
             size=13,
             weight="bold",
         )
         _fit_button(
             self.stop_btn,
             tr("toolbar.stop"),
-            min_width=72,
-            size=14,
+            min_width=80,
+            size=13,
             weight="bold",
         )
+        labels = _after_open_labels()
+        _fit_option_menu(
+            self.after_open_menu,
+            [labels[effect] for effect in _AFTER_OPEN_EFFECTS],
+            min_width=104,
+            size=13,
+        )
+        self._sync_monitor_segments()
         self._render_status_text()
         self._refresh_trigger_controls()
+        self._reflow_compact_panel()
 
     # ------------------------------------------------------------------
     # Channel list operations
@@ -1234,10 +1379,12 @@ class App(ctk.CTk):
         self.startup_switch.configure(text=tr("toolbar.startup"))
         self.tray_switch.configure(text=tr("toolbar.minimize_to_tray"))
         self.empty_label.configure(text=tr("status.empty_hint"))
-        self._interval_caption.configure(text=tr("toolbar.check_interval"))
+        self._interval_caption.configure(text=tr("toolbar.interval_short"))
         self._interval_unit.configure(text=tr("toolbar.seconds"))
-        self._trigger_caption.configure(text=tr("toolbar.trigger_label"))
-        self._trigger_hint.configure(text=tr("toolbar.trigger_hint"))
+        self._mode_caption.configure(text=tr("toolbar.mode"))
+        self._duration_caption.configure(text=tr("toolbar.duration"))
+        self._notify_group_label.configure(text=tr("toolbar.group.notify"))
+        self._open_group_label.configure(text=tr("toolbar.group.open"))
         self.notify_on_live_switch.configure(text=tr("toolbar.notify_on_live"))
         self.open_on_live_switch.configure(text=tr("toolbar.open_on_live"))
         self.notify_on_upcoming_switch.configure(
@@ -1314,6 +1461,8 @@ class App(ctk.CTk):
     def _render_status_text(self) -> None:
         main = tr(self._status_text_key)
         self.status_text.configure(text=main, text_color=self._status_text_color)
+        if hasattr(self, "status_dot"):
+            self.status_dot.configure(text_color=self._status_text_color)
         if self._status_subline_key:
             sub = tr(self._status_subline_key, **self._status_subline_kwargs)
             self.status_sub_text.configure(text=sub)
@@ -1417,6 +1566,7 @@ class App(ctk.CTk):
             return
         self.config["monitor_mode"] = mode
         self._save_config()
+        self._sync_selectors_from_mode(mode)
         self._apply_monitor_mode_buttons()
         self._set_status_text(status_key, color)
         self._tray.update_tooltip_key(tray_tooltip_key)
@@ -1467,12 +1617,21 @@ class App(ctk.CTk):
                     logger.exception("close_on_stop sweep failed")
 
     def _apply_monitor_mode_buttons(self) -> None:
-        states = monitor_mode_button_states(self._controller.mode)
+        states = compact_control_button_states(
+            self._controller.mode,
+            kind=self._monitor_kind,
+            once=self._monitor_once,
+        )
         self.start_btn.configure(state=states["start"])
-        self.watch_btn.configure(state=states["watch"])
-        self.start_once_btn.configure(state=states["start_once"])
-        self.watch_once_btn.configure(state=states["watch_once"])
         self.stop_btn.configure(state=states["stop"])
+
+    def _sync_selectors_from_mode(self, mode: str) -> None:
+        if mode == "idle":
+            return
+        kind, once = decompose_monitor_mode(mode)
+        self._monitor_kind = kind
+        self._monitor_once = once
+        self._sync_monitor_segments()
 
     def _on_browser_settings(self) -> None:
         dialog = BrowserSettingsDialog(

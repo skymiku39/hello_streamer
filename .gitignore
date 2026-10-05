@@ -169,6 +169,9 @@ cython_debug/
 # Local PyInstaller release artifacts (official builds live on GitHub Releases).
 release/
 
+# Transient verification screenshots / smoke JSON (use temp or run outputs).
+artifacts/
+
 # Hello Streamer runtime data
 # Per-user browser profile created on demand by the Browser Settings dialog.
 browser_profile/
