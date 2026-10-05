@@ -848,11 +848,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._last_test_url: str | None = None
         self._path_refresh_after: str | None = None
 
-        # Settings used to be one very tall child frame moved by a custom
-        # scrollbar.  On Windows that makes every input and card participate
-        # in a large native-child move during a drag.  Keep each section in a
-        # fixed tab instead: changing tabs only changes visibility, never the
-        # Y position of a populated form.
+        # Keep sections in separate tabs, with a local viewport so long forms
+        # remain reachable on smaller screens without scrolling every section.
         self._scroll_container = ctk.CTkFrame(self, fg_color=_CLR_BG_DARK)
         self._scroll_container.pack(padx=12, pady=(8, 0), fill="both", expand=True)
         self._settings_tabs = ctk.CTkTabview(
@@ -880,7 +877,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         for tab_id, label_key in tab_specs:
             label = tr(label_key)
             self._settings_tabs.add(label)
-            page = self._settings_tabs.tab(label)
+            tab_page = self._settings_tabs.tab(label)
+            page = ctk.CTkScrollableFrame(tab_page, fg_color=_CLR_BG_DARK)
+            page.pack(fill="both", expand=True)
+            page.bind("<Configure>", self._on_settings_page_resize, add="+")
             page.grid_columnconfigure(0, weight=1)
             self._settings_tab_names[tab_id] = label
             self._settings_pages[tab_id] = page
@@ -1198,6 +1198,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self.user_data_dir_entry.insert(0, saved_profile_dir or default_profile_dir)
         self.user_data_dir_entry.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+        self.user_data_dir_entry.bind(
+            "<KeyRelease>", lambda _event: self._sync_engagement_enabled_state()
+        )
 
         self.app_mode_var = ctk.BooleanVar(value=bool(settings.get("app_mode", False)))
 
@@ -1461,6 +1464,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             justify="left",
         )
         self._page_assist_enabled_hint.pack(padx=12, pady=(0, 4), anchor="w")
+        self._page_assist_availability = ctk.CTkLabel(
+            engagement_card, text="", font=_font(11), text_color="#ffb74d",
+            anchor="w", wraplength=440, justify="left",
+        )
+        self._page_assist_availability.pack(padx=12, pady=(0, 6), anchor="w")
         self._page_assist_feature_vars: dict[str, ctk.BooleanVar] = {}
         self._page_assist_feature_switches: list[ctk.CTkSwitch] = []
         self._page_assist_feature_hints: list[ctk.CTkLabel] = []
@@ -1796,6 +1804,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             switch.configure(text=tr(label_key))
             hint.configure(text=tr(hint_key))
         self._engagement_tips.configure(text=tr("engagement.tips"))
+        self._sync_engagement_enabled_state()
         self._profile_title.configure(text=tr("browser.profile.per_channel"))
         self.per_channel_profile_cb.configure(text=tr("browser.profile.per_channel"))
         self._profile_per_channel_hint.configure(text=tr("browser.profile.per_channel.hint"))
@@ -1823,6 +1832,17 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         if self._message_key is not None:
             key, kwargs = self._message_key
             self.message_label.configure(text=tr(key, **kwargs))
+
+    def _on_settings_page_resize(self, event: Any) -> None:
+        """Fit wrapped descriptions to the current tab's available width."""
+        width = max(180, event.width - 80)
+        pending = list(event.widget.winfo_children())
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            if isinstance(widget, ctk.CTkLabel) and widget.cget("wraplength"):
+                if widget.cget("wraplength") != width:
+                    widget.configure(wraplength=width)
 
     def _on_destroy(self, event: Any = None) -> None:
         if event is not None and event.widget is not self:
@@ -2086,6 +2106,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self._on_path_change()
 
     def _on_path_change(self, _event: Any = None) -> None:
+        self._sync_engagement_enabled_state()
         if not self.use_custom_var.get():
             self._set_compat("browser.compat.disabled", "#ffb74d")
             executable = self.path_entry.get().strip() or "chrome"
@@ -2123,15 +2144,32 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         state = "normal" if master_on else "disabled"
         for switch in self._engagement_sub_switches:
             self._set_widget_state(switch, state)
+        # Initialization builds the browser-path controls after this card.
+        # Recompute once those controls exist and on every dimension/path edit.
+        eligible = self._page_assist_runtime_ok
+        if hasattr(self, "path_entry"):
+            eligible = eligible and (
+                bool(self.use_custom_var.get())
+                and self.identity_var.get() == bsm.IDENTITY_DEDICATED
+                and bool(self.user_data_dir_entry.get().strip())
+                and self.placement_var.get() != bsm.PLACEMENT_TAB
+                and detect_browser_family(self.path_entry.get().strip() or "chrome")
+                != "firefox"
+            )
+        if hasattr(self, "_page_assist_availability"):
+            self._page_assist_availability.configure(
+                text=tr("engagement.page_assist.requirements")
+                if self._page_assist_runtime_ok and not eligible else ""
+            )
         page_assist_master = (
             "normal"
-            if master_on and self._page_assist_runtime_ok
+            if master_on and eligible
             else "disabled"
         )
         self._set_widget_state(self._page_assist_enabled_switch, page_assist_master)
         features_on = (
             master_on
-            and self._page_assist_runtime_ok
+            and eligible
             and bool(self.page_assist_enabled_var.get())
         )
         feature_state = "normal" if features_on else "disabled"
@@ -2146,9 +2184,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         data["enabled"] = self.engagement_enabled_var.get()
         for key, _label, _hint in _VIEWER_ENGAGEMENT_TOGGLES:
             data[key] = self._engagement_toggle_vars[key].get()
-        data["page_assist_enabled"] = bool(
-            self.page_assist_enabled_var.get()
-        ) and self._page_assist_runtime_ok
+        if self._page_assist_runtime_ok:
+            data["page_assist_enabled"] = bool(self.page_assist_enabled_var.get())
         for key, _label, _hint in _PAGE_ASSIST_FEATURE_TOGGLES:
             data[key] = self._page_assist_feature_vars[key].get()
         return data

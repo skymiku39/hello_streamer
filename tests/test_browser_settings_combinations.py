@@ -2275,3 +2275,75 @@ def test_dialog_preserves_foreground_hold_seconds_without_ui() -> None:
         assert collected["enabled"] is True
     finally:
         dialog.destroy()
+
+
+def test_frozen_dialog_save_preserves_source_page_assist_preferences(monkeypatch):
+    from stream_monitor import app_dialogs
+
+    monkeypatch.setattr(app_dialogs, "page_assist_runtime_allowed", lambda: False)
+    dialog = app_dialogs.BrowserSettingsDialog(
+        _module_ctk_root(), {"enabled": False},
+        {"enabled": True, "page_assist_enabled": True, "theater_mode": True},
+    )
+    try:
+        assert dialog._page_assist_enabled_switch.cget("state") == "disabled"
+        dialog._on_save()
+        assert dialog.viewer_engagement_result["page_assist_enabled"] is True
+        assert dialog.viewer_engagement_result["theater_mode"] is True
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+
+
+def test_page_assist_controls_follow_launch_requirements_without_losing_preferences():
+    from stream_monitor import app_dialogs
+    from stream_monitor import browser_settings_model as bsm
+
+    dialog = app_dialogs.BrowserSettingsDialog(
+        _module_ctk_root(),
+        {"enabled": True, "user_data_dir": "C:/test/profile", "new_window": True},
+        {"enabled": True, "page_assist_enabled": True},
+    )
+    try:
+        assert dialog._page_assist_enabled_switch.cget("state") == "normal"
+        dialog.placement_var.set(bsm.PLACEMENT_TAB)
+        dialog._on_dimension_change()
+        assert dialog._page_assist_enabled_switch.cget("state") == "disabled"
+        assert dialog._page_assist_availability.cget("text")
+        assert dialog._collect_viewer_engagement()["page_assist_enabled"] is True
+        dialog.placement_var.set(bsm.PLACEMENT_WINDOW)
+        dialog._on_dimension_change()
+        dialog.path_entry.delete(0, "end")
+        dialog.path_entry.insert(0, "firefox")
+        dialog._on_path_change()
+        assert dialog._page_assist_enabled_switch.cget("state") == "disabled"
+        dialog.path_entry.delete(0, "end")
+        dialog.path_entry.insert(0, "chrome")
+        dialog._on_path_change()
+        assert dialog._page_assist_enabled_switch.cget("state") == "normal"
+    finally:
+        dialog.destroy()
+
+
+def test_engagement_bottom_is_reachable_at_minimum_dialog_height():
+    from stream_monitor.app_dialogs import BrowserSettingsDialog
+
+    dialog = BrowserSettingsDialog(_module_ctk_root(), {}, {})
+    try:
+        dialog.geometry("500x540")
+        dialog._settings_tabs.set(dialog._settings_tab_names["engagement"])
+        dialog.update()
+        canvas = dialog._settings_pages["engagement"]._parent_canvas
+        assert canvas.yview()[1] < 1.0
+        tips_bottom = (
+            dialog._engagement_tips.winfo_y()
+            + dialog._engagement_card.winfo_y()
+            + dialog._engagement_tips.winfo_height()
+        )
+        assert tips_bottom > canvas.canvasy(canvas.winfo_height())
+        canvas.yview_moveto(1.0)
+        dialog.update()
+        assert canvas.yview()[0] > 0.0
+        assert tips_bottom <= canvas.canvasy(canvas.winfo_height())
+    finally:
+        dialog.destroy()
