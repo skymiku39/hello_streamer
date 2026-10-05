@@ -196,6 +196,42 @@ def should_close_on_offline(
     )
 
 
+def should_suppress_terminal_after_open(
+    *,
+    mode: str,
+    close_on_offline: bool,
+    tracking_available: bool,
+) -> bool:
+    """Whether stop/exit after open must yield so offline close can run.
+
+    Only persistent ``trigger`` keeps polling until the offline edge.
+    ``trigger_once``, watch/monitor-only modes, and runs without tracking leave
+    the configured after-open effect unchanged.
+    """
+    return (
+        mode == TRIGGER_MODE
+        and close_on_offline
+        and tracking_available
+    )
+
+
+def with_close_on_offline_lifecycle(
+    plan: ActionPlan,
+    *,
+    mode: str,
+    close_on_offline: bool,
+    tracking_available: bool,
+) -> ActionPlan:
+    """Clear terminal after-open effects when close-on-offline needs them."""
+    if plan.is_terminal and should_suppress_terminal_after_open(
+        mode=mode,
+        close_on_offline=close_on_offline,
+        tracking_available=tracking_available,
+    ):
+        return replace(plan, after_open=LifecycleEffect.NONE)
+    return plan
+
+
 def should_prune_blank_tabs(
     *,
     mode: str,

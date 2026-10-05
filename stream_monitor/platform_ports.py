@@ -46,6 +46,8 @@ class WindowManagerPort(Protocol):
 
     def prune_off_topic(self) -> int: ...
 
+    def release_keep_awake_for_closed(self) -> int: ...
+
 
 class PowerPolicyPort(Protocol):
     """System power-policy capability used by viewer engagement."""

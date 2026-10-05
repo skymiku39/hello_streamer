@@ -7,6 +7,7 @@ which looks like a malware dropper to heuristic scanners.
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -70,6 +71,28 @@ VSVersionInfo(
     )
 
 
+def validate_linux_onedir_bundle(bundle_dir: Path) -> None:
+    """Require Linux onedir layout: nonempty HelloStreamer + nonempty ``_internal/``.
+
+    Does not assert the Unix execute bit; retain a shell ``test -x`` for that.
+    """
+    exe = bundle_dir / "HelloStreamer"
+    internal = bundle_dir / "_internal"
+    problems: list[str] = []
+    if not exe.is_file():
+        problems.append(f"missing executable: {exe}")
+    elif exe.stat().st_size == 0:
+        problems.append(f"empty executable: {exe}")
+    if not internal.is_dir():
+        problems.append(f"missing _internal: {internal}")
+    elif not any(internal.iterdir()):
+        problems.append(f"empty _internal: {internal}")
+    if problems:
+        raise FileNotFoundError(
+            "Linux onedir bundle incomplete; " + "; ".join(problems)
+        )
+
+
 def main() -> None:
     is_windows = sys.platform == "win32"
     separator = ";" if is_windows else ":"
@@ -111,5 +134,23 @@ def main() -> None:
     print(f"Built onedir bundle: {root / 'dist' / 'HelloStreamer'}")
 
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build HelloStreamer onedir bundle")
+    parser.add_argument(
+        "--validate-linux-onedir",
+        metavar="DIR",
+        help=(
+            "Validate Linux onedir bundle DIR (nonempty HelloStreamer + "
+            "nonempty _internal), then exit"
+        ),
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    main()
+    args = _parse_args()
+    if args.validate_linux_onedir is not None:
+        validate_linux_onedir_bundle(Path(args.validate_linux_onedir))
+        print(f"OK: Linux onedir bundle at {args.validate_linux_onedir}")
+    else:
+        main()

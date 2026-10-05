@@ -1745,7 +1745,23 @@ def _check_writable(directory: Path) -> None:
         sys.exit(1)
 
 
+def _run_frozen_self_check() -> None:
+    """Import platform-specific frozen dependencies without opening the UI."""
+    if not getattr(sys, "frozen", False):
+        return
+    if sys.platform == "win32":
+        # These imports are intentionally lazy in normal runtime paths.  The
+        # release smoke command makes missing PyInstaller hidden imports fail
+        # at build time instead of on the first toast/tray action.
+        __import__("pystray._win32")
+        __import__("winotify")
+
+
 def main() -> None:
+    if "--self-check" in sys.argv:
+        _run_frozen_self_check()
+        return
+
     if getattr(sys, "frozen", False) and sys.platform != "win32":
         _fix_linux_frozen_env()
 

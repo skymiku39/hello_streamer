@@ -29,6 +29,7 @@ from stream_monitor.app_ui import (
     _font,
     _tooltip_tr,
 )
+from stream_monitor.viewer_engagement_model import page_assist_runtime_allowed
 from stream_monitor.config_manager import (
     _normalize_browser_settings,
     _normalize_viewer_engagement,
@@ -584,6 +585,29 @@ _VIEWER_ENGAGEMENT_TOGGLES: tuple[tuple[str, str, str], ...] = (
         "bring_to_front",
         "engagement.toggle.bring_front",
         "engagement.toggle.bring_front.hint",
+    ),
+)
+
+_PAGE_ASSIST_FEATURE_TOGGLES: tuple[tuple[str, str, str], ...] = (
+    (
+        "accept_content_gate",
+        "engagement.toggle.accept_gate",
+        "engagement.toggle.accept_gate.hint",
+    ),
+    (
+        "claim_channel_points",
+        "engagement.toggle.claim_points",
+        "engagement.toggle.claim_points.hint",
+    ),
+    (
+        "theater_mode",
+        "engagement.toggle.theater",
+        "engagement.toggle.theater.hint",
+    ),
+    (
+        "auto_refresh",
+        "engagement.toggle.auto_refresh",
+        "engagement.toggle.auto_refresh.hint",
     ),
 )
 
@@ -1192,6 +1216,74 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             )
             hint.pack(padx=12, pady=(0, 4), anchor="w")
             self._engagement_sub_hints.append(hint)
+
+        self._page_assist_section_label = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.page_assist.section"),
+            font=_font(12, "bold"),
+            anchor="w",
+        )
+        self._page_assist_section_label.pack(padx=12, pady=(10, 4), anchor="w")
+        self._page_assist_frozen_note = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.page_assist.frozen"),
+            font=_font(10),
+            text_color="#ef9a9a",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        )
+        self._page_assist_runtime_ok = page_assist_runtime_allowed()
+        if not self._page_assist_runtime_ok:
+            self._page_assist_frozen_note.pack(padx=12, pady=(0, 6), anchor="w")
+        self.page_assist_enabled_var = ctk.BooleanVar(
+            value=bool(ve_settings.get("page_assist_enabled"))
+            and self._page_assist_runtime_ok
+        )
+        self._page_assist_enabled_switch = ctk.CTkSwitch(
+            engagement_card,
+            text=tr("engagement.toggle.page_assist"),
+            variable=self.page_assist_enabled_var,
+            command=self._sync_engagement_enabled_state,
+            font=_font(12),
+        )
+        self._page_assist_enabled_switch.pack(padx=12, pady=(0, 2), anchor="w")
+        self._page_assist_enabled_hint = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.toggle.page_assist.hint"),
+            font=_font(10),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=470,
+            justify="left",
+        )
+        self._page_assist_enabled_hint.pack(padx=12, pady=(0, 4), anchor="w")
+        self._page_assist_feature_vars: dict[str, ctk.BooleanVar] = {}
+        self._page_assist_feature_switches: list[ctk.CTkSwitch] = []
+        self._page_assist_feature_hints: list[ctk.CTkLabel] = []
+        for key, label_key, hint_key in _PAGE_ASSIST_FEATURE_TOGGLES:
+            var = ctk.BooleanVar(value=bool(ve_settings.get(key)))
+            self._page_assist_feature_vars[key] = var
+            switch = ctk.CTkSwitch(
+                engagement_card,
+                text=tr(label_key),
+                variable=var,
+                font=_font(12),
+            )
+            switch.pack(padx=12, pady=(6, 2), anchor="w")
+            self._page_assist_feature_switches.append(switch)
+            hint = ctk.CTkLabel(
+                engagement_card,
+                text=tr(hint_key),
+                font=_font(10),
+                text_color="#9aa0b4",
+                anchor="w",
+                wraplength=470,
+                justify="left",
+            )
+            hint.pack(padx=12, pady=(0, 4), anchor="w")
+            self._page_assist_feature_hints.append(hint)
+
         self._engagement_tips = ctk.CTkLabel(
             engagement_card,
             text=tr("engagement.tips"),
@@ -1476,6 +1568,26 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self._engagement_sub_switches,
             _VIEWER_ENGAGEMENT_TOGGLES,
             self._engagement_sub_hints,
+            strict=True,
+        ):
+            switch.configure(text=tr(label_key))
+            hint.configure(text=tr(hint_key))
+        self._page_assist_section_label.configure(
+            text=tr("engagement.page_assist.section")
+        )
+        self._page_assist_frozen_note.configure(
+            text=tr("engagement.page_assist.frozen")
+        )
+        self._page_assist_enabled_switch.configure(
+            text=tr("engagement.toggle.page_assist")
+        )
+        self._page_assist_enabled_hint.configure(
+            text=tr("engagement.toggle.page_assist.hint")
+        )
+        for switch, (key, label_key, hint_key), hint in zip(
+            self._page_assist_feature_switches,
+            _PAGE_ASSIST_FEATURE_TOGGLES,
+            self._page_assist_feature_hints,
             strict=True,
         ):
             switch.configure(text=tr(label_key))
@@ -1804,9 +1916,24 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self._refresh_win32_management_state()
 
     def _sync_engagement_enabled_state(self) -> None:
-        state = "normal" if self.engagement_enabled_var.get() else "disabled"
+        master_on = bool(self.engagement_enabled_var.get())
+        state = "normal" if master_on else "disabled"
         for switch in self._engagement_sub_switches:
             self._set_widget_state(switch, state)
+        page_assist_master = (
+            "normal"
+            if master_on and self._page_assist_runtime_ok
+            else "disabled"
+        )
+        self._set_widget_state(self._page_assist_enabled_switch, page_assist_master)
+        features_on = (
+            master_on
+            and self._page_assist_runtime_ok
+            and bool(self.page_assist_enabled_var.get())
+        )
+        feature_state = "normal" if features_on else "disabled"
+        for switch in self._page_assist_feature_switches:
+            self._set_widget_state(switch, feature_state)
 
     def _collect_viewer_engagement(self) -> dict[str, Any]:
         # Start from the incoming (normalized) settings so any field without a
@@ -1816,6 +1943,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         data["enabled"] = self.engagement_enabled_var.get()
         for key, _label, _hint in _VIEWER_ENGAGEMENT_TOGGLES:
             data[key] = self._engagement_toggle_vars[key].get()
+        data["page_assist_enabled"] = bool(
+            self.page_assist_enabled_var.get()
+        ) and self._page_assist_runtime_ok
+        for key, _label, _hint in _PAGE_ASSIST_FEATURE_TOGGLES:
+            data[key] = self._page_assist_feature_vars[key].get()
         return data
 
     def _snapshot_viewer_engagement(self) -> dict[str, Any]:

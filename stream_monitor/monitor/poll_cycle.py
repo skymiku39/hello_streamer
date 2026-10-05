@@ -170,6 +170,17 @@ class PollCycleMixin:
             return True
         return False
 
+    def _dispatch_pending_offline_events(self) -> int:
+        """Emit each queued went-offline edge once, then clear the queue."""
+        with self._lock:
+            offline_batch = list(self._pending_offline_events)
+            self._pending_offline_events.clear()
+        for entry, offline_info in offline_batch:
+            if self._stop_event.is_set():
+                break
+            self._emit_went_offline(entry, offline_info)
+        return len(offline_batch)
+
     def _execute_poll_cycle(self, poll_started: float) -> float:
         wall_now = time.time()
         run_wake_verify = self._should_run_wake_verification(wall_now)
@@ -183,9 +194,25 @@ class PollCycleMixin:
 
         if run_wake_verify and enabled_entries:
             elapsed = self._run_wake_verification(enabled_entries, poll_started)
-            return self._maybe_run_startup_refresh(
-                enabled_entries, poll_started, elapsed
+            # Restrict startup refresh to wake-confirmed keys so a deferred
+            # secondary YouTube row cannot overwrite wake results.
+            refresh_entries = enabled_entries
+            deferred = getattr(self, "_wake_deferred_keys", None)
+            if deferred:
+                refresh_entries = [
+                    entry for entry in enabled_entries if entry.key not in deferred
+                ]
+            elapsed = self._maybe_run_startup_refresh(
+                refresh_entries, poll_started, elapsed
             )
+            if not self._stop_event.is_set():
+                # Wake verification and startup refresh are one logical cycle.
+                # Dispatch offline edges before the single completion boundary
+                # so one-shot consumers cannot stop between edges and complete.
+                self._dispatch_pending_offline_events()
+                self._emit_poll_complete()
+                self._run_maintenance()
+            return elapsed
 
         with self._lock:
             self._pending_offline_events.clear()
@@ -239,22 +266,25 @@ class PollCycleMixin:
         if self._stop_event.is_set():
             return time.monotonic() - poll_started
 
-        # Dispatch went-offline events *after* went-live so the UI sees
-        # transitions in a sensible order if both occur in the same poll.
-        with self._lock:
-            offline_batch = list(self._pending_offline_events)
-        offline_count = len(offline_batch)
-        for entry, offline_info in offline_batch:
-            if self._stop_event.is_set():
-                break
-            self._emit_went_offline(entry, offline_info)
+        # Keep startup refresh inside the same cycle boundary as tier-1/2 so
+        # LIVE/OFFLINE edges commit and dispatch exactly once before complete.
+        elapsed = time.monotonic() - poll_started
+        elapsed = self._maybe_run_startup_refresh(
+            enabled_entries, poll_started, elapsed
+        )
 
         if self._stop_event.is_set():
-            return time.monotonic() - poll_started
+            return elapsed
+
+        # Dispatch went-offline events *after* went-live so the UI sees
+        # transitions in a sensible order if both occur in the same poll.
+        offline_count = self._dispatch_pending_offline_events()
+
+        if self._stop_event.is_set():
+            return elapsed
 
         self._emit_poll_complete()
 
-        elapsed = time.monotonic() - poll_started
         with self._lock:
             snapshot_keys = len(self._last_status)
         logger.info(
@@ -274,9 +304,7 @@ class PollCycleMixin:
                 self._interval,
             )
         self._run_maintenance()
-        return self._maybe_run_startup_refresh(
-            enabled_entries, poll_started, elapsed
-        )
+        return elapsed
 
     def _check_channel(
         self, entry: ChannelEntry
