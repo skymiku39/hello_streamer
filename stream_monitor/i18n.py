@@ -68,7 +68,6 @@ _ZH_TW: dict[str, str] = {
     "toolbar.notify_on_upcoming": "預定通知",
     "toolbar.open_on_upcoming": "待機室",
     "toolbar.notify_on_open_failure": "開啟失敗通知",
-    "toolbar.trigger_hint": "通知與開啟分開設定；「開啟後」只在開啟直播頁時生效。",
 
     # Tooltips (main window)
     "toolbar.settings": "⚙  應用設定",
@@ -428,7 +427,6 @@ _ZH_CN: dict[str, str] = {
     "toolbar.notify_on_upcoming": "预定通知",
     "toolbar.open_on_upcoming": "等待室",
     "toolbar.notify_on_open_failure": "打开失败通知",
-    "toolbar.trigger_hint": "通知与打开分开设置；“打开后”只在打开直播页时生效。",
 
     # Tooltips (main window)
     "toolbar.settings": "⚙  应用设置",
@@ -784,7 +782,6 @@ _EN: dict[str, str] = {
     "toolbar.notify_on_upcoming": "Upcoming",
     "toolbar.open_on_upcoming": "Waiting room",
     "toolbar.notify_on_open_failure": "Open failure",
-    "toolbar.trigger_hint": "Notification and opening are set separately; After open applies only when opening the live page.",
 
     "toolbar.settings": "⚙  Settings",
     "tooltip.settings.reset": "Back up and clear seen records and status cache; channels and login stay",
@@ -1129,7 +1126,6 @@ _JA: dict[str, str] = {
     "toolbar.notify_on_upcoming": "予定通知",
     "toolbar.open_on_upcoming": "待機室",
     "toolbar.notify_on_open_failure": "起動失敗通知",
-    "toolbar.trigger_hint": "通知と起動は分けて設定します。「起動後」は配信ページを開く場合のみ有効です。",
 
     "toolbar.settings": "⚙  アプリ設定",
     "tooltip.settings.reset": "既視記録と状態キャッシュをバックアップして削除（チャンネルとログインは保持）",
@@ -1475,7 +1471,6 @@ _KO: dict[str, str] = {
     "toolbar.notify_on_upcoming": "예정 알림",
     "toolbar.open_on_upcoming": "대기실",
     "toolbar.notify_on_open_failure": "열기 실패 알림",
-    "toolbar.trigger_hint": "알림과 열기는 따로 설정합니다. ‘연 후’는 라이브 페이지를 열 때만 적용됩니다.",
 
     "toolbar.settings": "⚙  앱 설정",
     "tooltip.settings.reset": "본 기록과 상태 캐시를 백업 후 삭제(채널·로그인은 유지)",

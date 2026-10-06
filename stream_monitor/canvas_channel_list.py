@@ -39,8 +39,8 @@ from stream_monitor.channel_row import ChannelRow, is_live_state
 from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelStatus
 
-ROW_BODY_HEIGHT = 58
-ROW_SLOT_HEIGHT = 64
+ROW_BODY_HEIGHT = 50
+ROW_SLOT_HEIGHT = 52
 ROW_CONTROL_HEIGHT = 30
 ROW_CONTROL_HALF = ROW_CONTROL_HEIGHT // 2
 ROW_CONTROL_GAP = 8
@@ -335,7 +335,7 @@ class CanvasChannelList(ctk.CTkFrame):
         try:
             visual_index = self._visual_order.index(self._rows.index(row))
             offset = int(self.canvas.canvasy(0))
-            return self.canvas.winfo_rooty() + visual_index * ROW_SLOT_HEIGHT + 3 - offset
+            return self.canvas.winfo_rooty() + visual_index * ROW_SLOT_HEIGHT + 2 - offset
         except (ValueError, tk.TclError):
             return self.canvas.winfo_rooty()
 
@@ -361,7 +361,7 @@ class CanvasChannelList(ctk.CTkFrame):
         self._cursor_mode = ""
         self.canvas.delete("all")
         width = max(1, self.canvas.winfo_width())
-        content_height = max(1, len(self._visual_order) * ROW_SLOT_HEIGHT + 6)
+        content_height = max(1, len(self._visual_order) * ROW_SLOT_HEIGHT + 4)
         self.canvas.configure(scrollregion=(0, 0, width, content_height))
         for visual_index, row_index in enumerate(self._visual_order):
             self._draw_row(self._rows[row_index], visual_index, width)
@@ -373,18 +373,19 @@ class CanvasChannelList(ctk.CTkFrame):
         enabled = bool(channel.get("enabled", True))
         channel_mode = channel_mode_for(channel)
         active_mode = channel_mode if enabled else CHANNEL_MODE_TRIGGER
-        top = visual_index * ROW_SLOT_HEIGHT + 3
+        top = visual_index * ROW_SLOT_HEIGHT + 2
         left = 6
         right = max(left + 320, width - 6)
         card_color = _CLR_CARD if enabled else _CLR_CARD_DISABLED
         tag = f"row:{id(row)}"
+        mid_y = top + ROW_BODY_HEIGHT // 2
 
         self._rounded_rectangle(
             left,
             top,
             right,
             top + ROW_BODY_HEIGHT,
-            radius=10,
+            radius=8,
             fill=card_color,
             outline="#2196F3" if row._reorder_highlight else card_color,
             width=2 if row._reorder_highlight else 1,
@@ -392,7 +393,7 @@ class CanvasChannelList(ctk.CTkFrame):
         )
 
         # Left drag handle only (▲/▼ arrow controls removed).
-        handle_y = top + ROW_BODY_HEIGHT // 2
+        handle_y = mid_y
         if enabled:
             self._draw_hover_slot(22, handle_y, tag, "drag", card_color, "#243052")
         self._draw_text(
@@ -500,9 +501,10 @@ class CanvasChannelList(ctk.CTkFrame):
         name_tags: tuple[str, ...] = (tag,)
         if name_truncated:
             name_tags = (tag, "action:name")
+        name_y = mid_y - 8 if id_text else mid_y
         self._draw_text(
             140,
-            top + 20,
+            name_y,
             name,
             fill=name_color,
             anchor="w",
@@ -513,7 +515,7 @@ class CanvasChannelList(ctk.CTkFrame):
         if id_text:
             self._draw_text(
                 140,
-                top + 40,
+                mid_y + 10,
                 id_text,
                 fill="#c0c6d8" if enabled else _CLR_TEXT_DISABLED,
                 anchor="w",
@@ -532,7 +534,7 @@ class CanvasChannelList(ctk.CTkFrame):
         )
         self._draw_text(
             time_right,
-            top + 29,
+            mid_y,
             time_text,
             fill="#aab3d5" if enabled else _CLR_TEXT_DISABLED,
             anchor="e",
@@ -563,7 +565,7 @@ class CanvasChannelList(ctk.CTkFrame):
 
         self._draw_button(
             action_delete_x,
-            top + 29,
+            mid_y,
             "✕",
             tag,
             "delete",
@@ -578,7 +580,7 @@ class CanvasChannelList(ctk.CTkFrame):
         toggle_hover = "#1976d2" if mode_active else "#2f4c73"
         self._draw_button(
             action_toggle_x,
-            top + 29,
+            mid_y,
             toggle_text,
             tag,
             "toggle",
@@ -604,7 +606,7 @@ class CanvasChannelList(ctk.CTkFrame):
             monitor_hover = "#2f4c73" if enabled else "#2b3c5a"
         self._draw_button(
             action_monitor_x,
-            top + 29,
+            mid_y,
             "👁",
             tag,
             "monitor",
@@ -617,7 +619,7 @@ class CanvasChannelList(ctk.CTkFrame):
         )
         self._draw_button(
             action_link_x,
-            top + 29,
+            mid_y,
             "🔗",
             tag,
             "link",

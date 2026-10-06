@@ -63,7 +63,8 @@ def test_visual_gap_for_pointer_fixed_slots() -> None:
 
 def test_target_index_for_content_y_snaps_per_slot() -> None:
     assert target_index_for_content_y(16, source_index=1, num_rows=4) == 0
-    assert target_index_for_content_y(144, source_index=1, num_rows=4) == 3
+    target_row_y = 2 * ROW_SLOT_HEIGHT - ROW_SLOT_HEIGHT // 4
+    assert target_index_for_content_y(target_row_y, source_index=1, num_rows=4) == 3
 
 
 def test_target_index_for_content_y_clamps_to_list_bounds() -> None:

@@ -115,7 +115,13 @@ def _truncate_status_name(
 
 
 def _status_bar_text_width() -> int:
-    keys = (
+    """Fixed width for the compact status column (main + sub line).
+
+    Sized to the longest localized main/sub strings for the *current*
+    language so status and language changes cannot clip the green
+    running label inside the CompactFlowFrame acts group.
+    """
+    main_keys = (
         "status.idle",
         "status.trigger_running",
         "status.trigger_once_running",
@@ -123,15 +129,15 @@ def _status_bar_text_width() -> int:
         "status.watching_once",
         "status.stopped",
         "status.monitor_restarted",
-        "status.poll_checking",
     )
-    sample = tr("status.poll_checking", name="RunRunLuna")
-    two_line = f"{tr('status.trigger_running')}\n{sample}"
-    return max(
-        96,
-        max(_measure_text(tr(k)) for k in keys) + 16,
-        _measure_text(two_line) + 16,
+    main_w = max(_measure_text(tr(k)) for k in main_keys)
+    sub_w = max(
+        _measure_text(tr("status.awaiting_start")),
+        _measure_text(tr("status.poll_waiting")),
+        _measure_text(tr("status.poll_checking", name="RunRunLuna")),
+        _measure_text(tr("status.poll_refreshing", name="RunRunLuna")),
     )
+    return max(96, main_w, sub_w) + 16
 
 
 def _language_icon(size: int = 20) -> ctk.CTkImage:
@@ -358,13 +364,13 @@ _MIN_WINDOW_WIDTH = 920
 _MIN_WINDOW_HEIGHT = 560
 _DEFAULT_WINDOW_GEOMETRY = f"{_MIN_WINDOW_WIDTH}x580"
 _COMPACT_CTRL_PAD_X = 16
-_COMPACT_CTRL_PAD_Y = 12
-_COMPACT_LINE_GAP = 10
+_COMPACT_CTRL_PAD_Y = 6
+_COMPACT_LINE_GAP = 4
 _COMPACT_ACT_BTN_HEIGHT = 34
 _COMPACT_SEG_HEIGHT = 26
 _COMPACT_FIELD_HEIGHT = 30
 _COMPACT_FLOW_HGAP = 14
-_COMPACT_FLOW_VGAP = 8
+_COMPACT_FLOW_VGAP = 4
 
 
 def layout_flow_rows(

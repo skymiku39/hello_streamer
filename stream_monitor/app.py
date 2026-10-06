@@ -62,6 +62,7 @@ from stream_monitor.app_ui import (
     _fit_option_menu,
     _font,
     _language_icon,
+    _status_bar_text_width,
     _tooltip_tr,
     _truncate_status_name,
     compact_control_button_states,
@@ -392,13 +393,13 @@ class App(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
 
         outer = ctk.CTkFrame(self, fg_color="transparent")
-        outer.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
+        outer.grid(row=0, column=0, sticky="nsew", padx=16, pady=10)
         outer.grid_rowconfigure(1, weight=1)
         outer.grid_columnconfigure(0, weight=1)
 
         # ── Title bar ──
         title_bar = ctk.CTkFrame(outer, fg_color="transparent")
-        title_bar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        title_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
         self.language_icon = _language_icon()
         self.language_btn = ctk.CTkButton(
@@ -532,7 +533,7 @@ class App(ctk.CTk):
                 row, y_root=y_root
             ),
         )
-        self.scroll_frame.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self.scroll_frame.grid(row=0, column=0, sticky="nsew", padx=6, pady=4)
         self._scroll_guard = ScrollRepaintGuard(
             self.scroll_frame,
             self,
@@ -568,7 +569,7 @@ class App(ctk.CTk):
             border_width=1,
             border_color=_CLR_PANEL_BORDER,
         )
-        self._compact_ctrl.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self._compact_ctrl.grid(row=2, column=0, sticky="ew", pady=(6, 0))
 
         panel = ctk.CTkFrame(self._compact_ctrl, fg_color="transparent")
         panel.pack(
@@ -637,6 +638,7 @@ class App(ctk.CTk):
             width=14,
         )
         self.status_dot.pack(side="left", padx=(0, 6))
+        status_w = _status_bar_text_width()
         self.status_text = ctk.CTkLabel(
             status_row,
             text=tr("status.idle"),
@@ -644,6 +646,7 @@ class App(ctk.CTk):
             text_color=_CLR_TEXT_SECONDARY,
             anchor="w",
             justify="left",
+            width=status_w,
         )
         self.status_text.pack(side="left")
         self.status_sub_text = ctk.CTkLabel(
@@ -653,8 +656,10 @@ class App(ctk.CTk):
             text_color=_CLR_TEXT_MUTED,
             anchor="w",
             justify="left",
+            width=status_w,
         )
         self.status_sub_text.pack(anchor="w")
+        self._status_label_width = status_w
         self._status_text_key = "status.idle"
         self._status_text_color = _CLR_OFFLINE
         self._status_subline_key = "status.awaiting_start"
@@ -884,20 +889,6 @@ class App(ctk.CTk):
             min_width=104,
             size=13,
         )
-
-        self._trigger_hint_btn = ctk.CTkButton(
-            after_fld,
-            text="i",
-            width=28,
-            height=28,
-            corner_radius=8,
-            fg_color="transparent",
-            hover_color="#2a2a40",
-            text_color=_CLR_TEXT_MUTED,
-            font=_font(14, "bold"),
-        )
-        self._trigger_hint_btn.pack(side="left", padx=(6, 0))
-        _tooltip_tr(self._trigger_hint_btn, "toolbar.trigger_hint")
 
         self._compact_ctrl.bind(
             "<Configure>", self._on_compact_ctrl_configure, add="+"
@@ -1548,14 +1539,26 @@ class App(ctk.CTk):
 
     def _render_status_text(self) -> None:
         main = tr(self._status_text_key)
-        self.status_text.configure(text=main, text_color=self._status_text_color)
+        width = _status_bar_text_width()
+        self.status_text.configure(
+            text=main,
+            text_color=self._status_text_color,
+            width=width,
+        )
         if hasattr(self, "status_dot"):
             self.status_dot.configure(text_color=self._status_text_color)
         if self._status_subline_key:
             sub = tr(self._status_subline_key, **self._status_subline_kwargs)
-            self.status_sub_text.configure(text=sub)
+            self.status_sub_text.configure(text=sub, width=width)
         else:
-            self.status_sub_text.configure(text="")
+            self.status_sub_text.configure(text="", width=width)
+        prev_width = getattr(self, "_status_label_width", None)
+        self._status_label_width = width
+        # Language changes (and first paint) resize the reserved column; reflow
+        # so CompactFlowFrame does not keep a too-narrow acts place width.
+        if prev_width != width and hasattr(self, "_run_flow"):
+            self._reflow_compact_panel()
+
 
     def _set_status_text(self, key: str, color: str) -> None:
         """Update the bottom-toolbar status text + cache for retranslation."""
