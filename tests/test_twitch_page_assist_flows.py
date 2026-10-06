@@ -430,3 +430,69 @@ def test_failed_reconnect_does_not_claim_or_reload(monkeypatch):
     w._run()
     claim.assert_not_called()
     replacement.reload.assert_not_called()
+
+
+def test_periodic_check_preserves_manual_theater_off_after_initialization(monkeypatch, caplog):
+    w = worker(monkeypatch, theater_mode=True, claim_channel_points=True)
+    client = Mock()
+    client.evaluate.return_value = None
+    snapshots = iter([{"state": "off", "control": {"found": True, "x": 1, "y": 2}},
+                      {"state": "on"}])
+    monkeypatch.setattr(w, "_theater_snapshot", lambda c: next(snapshots))
+    w._ensure_theater(client)
+    assert w._theater_confirmed_once
+    client.reset_mock()
+    monkeypatch.setattr(w, "_theater_snapshot", lambda c: {"state": "off"})
+    monkeypatch.setattr(w, "_probe_page_ready", lambda c:
+                        {"hasVideo": True, "readyState": 4, "paused": False})
+    monkeypatch.setattr(w, "_ensure_chat_visible", lambda c: "visible")
+    with caplog.at_level("INFO"):
+        w._check_page(client)
+        w._check_page(client)
+    client.click_at.assert_not_called()
+    client.send_alt_t.assert_not_called()
+    assert "theater=off" in caplog.text
+
+
+def test_initially_active_theater_also_preserves_later_user_choice(monkeypatch):
+    w = worker(monkeypatch)
+    client = Mock()
+    client.evaluate.return_value = None
+    snapshot = Mock(return_value={"state": "on"})
+    monkeypatch.setattr(w, "_theater_snapshot", snapshot)
+    w._ensure_theater(client)
+    snapshot.return_value = {"state": "off"}
+    w._ensure_theater(client)
+    assert snapshot.call_count == 1
+    assert w._theater_confirmed_once
+    client.click_at.assert_not_called()
+    client.send_alt_t.assert_not_called()
+
+
+def test_unconfirmed_theater_can_retry_initialization(monkeypatch):
+    w = worker(monkeypatch)
+    client = Mock()
+    client.evaluate.return_value = None
+    snapshots = iter([{"state": "unknown"},
+                      {"state": "off", "control": {"found": True, "x": 1, "y": 2}},
+                      {"state": "on"}])
+    monkeypatch.setattr(w, "_theater_snapshot", lambda c: next(snapshots))
+    w._ensure_theater(client)
+    assert not w._theater_confirmed_once
+    w._ensure_theater(client)
+    assert w._theater_confirmed_once
+    client.click_at.assert_called_once()
+
+
+def test_reload_gate_flow_does_not_reset_confirmed_theater(monkeypatch):
+    w = worker(monkeypatch, theater_mode=True)
+    w._theater_confirmed_once = True
+    client = Mock()
+    monkeypatch.setattr(w, "_wait_for_gate_or_ready", lambda c: True)
+    snapshot = Mock(return_value={"state": "off"})
+    monkeypatch.setattr(w, "_theater_snapshot", snapshot)
+    w._run_gate_and_theater(client)
+    snapshot.assert_not_called()
+    assert w._theater_confirmed_once
+    client.click_at.assert_not_called()
+    client.send_alt_t.assert_not_called()

@@ -691,6 +691,7 @@ class _PageAssistWorker:
         self.url = url
         self.port = port
         self.settings = settings
+        self._theater_confirmed_once = False
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -916,8 +917,8 @@ class _PageAssistWorker:
             logger.debug("Player focus failed for %s", self.url, exc_info=True)
 
     def _ensure_theater(self, client: CdpClient) -> None:
-        """Enable theater only when state is known off; never blind-toggle."""
-        if self._stop.is_set():
+        """Initialize theater once per worker; preserve subsequent user choices."""
+        if self._stop.is_set() or self._theater_confirmed_once:
             return
         # Twitch hides its controls until the pointer enters the player.
         try:
@@ -931,6 +932,7 @@ class _PageAssistWorker:
         snap = self._theater_snapshot(client)
         state = str(snap["state"])
         if state == "on":
+            self._theater_confirmed_once = True
             logger.info(
                 "Twitch page assist theater already active for %s", self.url
             )
@@ -963,6 +965,7 @@ class _PageAssistWorker:
             snap = self._theater_snapshot(client)
             state = str(snap["state"])
             if state == "on":
+                self._theater_confirmed_once = True
                 logger.info(
                     "Twitch page assist theater enabled via control for %s",
                     self.url,
@@ -989,6 +992,7 @@ class _PageAssistWorker:
             snap = self._theater_snapshot(client)
             state = str(snap["state"])
             if state == "on":
+                self._theater_confirmed_once = True
                 logger.info(
                     "Twitch page assist theater enabled via keyboard for %s",
                     self.url,
@@ -1004,6 +1008,7 @@ class _PageAssistWorker:
                 return
 
         if state == "on":
+            self._theater_confirmed_once = True
             logger.info("Twitch page assist theater verified for %s", self.url)
         else:
             logger.warning(
