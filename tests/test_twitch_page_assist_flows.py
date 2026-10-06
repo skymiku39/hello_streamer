@@ -311,3 +311,122 @@ def test_successful_claim_keeps_configured_poll_interval(monkeypatch):
     w._run()
     assert sleeps == [10, 10]
     assert claim.call_count == 2
+
+
+def test_periodic_check_reconciles_enabled_controls(monkeypatch, caplog):
+    w = worker(monkeypatch, theater_mode=True, claim_channel_points=True)
+    client = Mock()
+    monkeypatch.setattr(w, "_probe_page_ready", lambda c:
+                        {"hasVideo": True, "readyState": 4, "paused": False})
+    theater = Mock()
+    chat = Mock(return_value="visible")
+    monkeypatch.setattr(w, "_ensure_theater", theater)
+    monkeypatch.setattr(w, "_ensure_chat_visible", chat)
+    monkeypatch.setattr(w, "_theater_snapshot", lambda c: {"state": "on"})
+    with caplog.at_level("INFO"):
+        w._check_page(client)
+    theater.assert_called_once_with(client)
+    chat.assert_called_once_with(client)
+    assert "playback=playing theater=on chat=visible" in caplog.text
+    client.reload.assert_not_called()
+
+
+def test_periodic_check_respects_disabled_controls_and_paused_video(monkeypatch, caplog):
+    w = worker(monkeypatch)
+    client = Mock()
+    monkeypatch.setattr(w, "_probe_page_ready", lambda c:
+                        {"hasVideo": True, "readyState": 4, "paused": True})
+    theater = Mock()
+    chat = Mock()
+    monkeypatch.setattr(w, "_ensure_theater", theater)
+    monkeypatch.setattr(w, "_ensure_chat_visible", chat)
+    with caplog.at_level("INFO"):
+        w._check_page(client)
+    theater.assert_not_called()
+    chat.assert_not_called()
+    client.reload.assert_not_called()
+    assert "playback=paused" in caplog.text
+
+
+def test_periodic_check_rechecks_content_gate_before_controls(monkeypatch):
+    w = worker(monkeypatch, accept_content_gate=True, theater_mode=True)
+    client = Mock()
+    ready = iter([{"gatePresent": True}, {"gatePresent": True}])
+    monkeypatch.setattr(w, "_probe_page_ready", lambda c: next(ready))
+    gate = Mock(return_value=True)
+    theater = Mock()
+    monkeypatch.setattr(w, "_try_accept_gate", gate)
+    monkeypatch.setattr(w, "_ensure_theater", theater)
+    w._check_page(client)
+    gate.assert_called_once_with(client)
+    theater.assert_not_called()
+
+
+def test_each_page_checks_every_30_seconds_without_claims(monkeypatch):
+    clock = [0.]
+    monkeypatch.setattr(assist.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(assist, "fuzzy_uniform", lambda low, high: 90)
+    for _ in range(2):
+        w = worker(monkeypatch, claim_channel_points=False)
+        client = Mock()
+        client.connected = True
+        monkeypatch.setattr(assist, "CdpClient", lambda: client)
+        monkeypatch.setattr(w, "_run_gate_and_theater", lambda c: None)
+        start = clock[0]
+        checks = []
+
+        def check(c):
+            checks.append(clock[0] - start)
+            if len(checks) == 2:
+                w.stop()
+
+        def sleep(seconds):
+            if w._stop.is_set():
+                return False
+            clock[0] += seconds
+            return True
+
+        monkeypatch.setattr(w, "_check_page", check)
+        monkeypatch.setattr(w, "_sleep", sleep)
+        w._run()
+        assert checks == [30, 60]
+        client.reload.assert_not_called()
+
+
+def test_disconnected_page_reconnects_to_same_channel(monkeypatch):
+    w = worker(monkeypatch)
+    first, replacement = Mock(), Mock()
+    first.connected = False
+    replacement.connected = True
+    clients = iter([first, replacement])
+    monkeypatch.setattr(assist, "CdpClient", lambda: next(clients))
+    monkeypatch.setattr(w, "_run_gate_and_theater", lambda c: None)
+    checked = []
+
+    def check(c):
+        checked.append(c)
+        w.stop()
+
+    monkeypatch.setattr(w, "_check_page", check)
+    w._run()
+    assert checked == [replacement]
+    replacement.connect.assert_called_once_with(w.port, w.url,
+        timeout=assist.DEFAULT_CDP_ATTACH_TIMEOUT_S)
+    first.close.assert_called_once()
+    replacement.close.assert_called_once()
+
+
+def test_failed_reconnect_does_not_claim_or_reload(monkeypatch):
+    w = worker(monkeypatch, claim_channel_points=True)
+    first, replacement = Mock(), Mock()
+    first.connected = False
+    replacement.connect.side_effect = RuntimeError("offline endpoint")
+    clients = iter([first, replacement])
+    monkeypatch.setattr(assist, "CdpClient", lambda: next(clients))
+    monkeypatch.setattr(w, "_run_gate_and_theater", lambda c: None)
+    claim = Mock()
+    monkeypatch.setattr(w, "_try_claim", claim)
+    monkeypatch.setattr(w, "_sleep", lambda seconds: False)
+    w._run()
+    claim.assert_not_called()
+    replacement.reload.assert_not_called()

@@ -34,6 +34,7 @@ _GATE_POLL_S = 1.0
 _READY_CONFIRM_POLLS = 2
 _THEATER_VERIFY_WAIT_S = 0.6
 _CLAIM_VERIFY_WAIT_S = 0.8
+_PAGE_CHECK_INTERVAL_S = 30.0
 
 # Best-effort DOM helpers. Twitch UI changes; failures are non-fatal.
 _FIND_GATE_JS = r"""
@@ -723,8 +724,26 @@ class _PageAssistWorker:
             claim_deadline = time.monotonic()
             while not self._stop.is_set():
                 self._run_gate_and_theater(client)
+                next_page_check_at = time.monotonic() + _PAGE_CHECK_INTERVAL_S
                 while not self._stop.is_set():
                     now = time.monotonic()
+                    if not client.connected:
+                        client.close()
+                        client = CdpClient()
+                        try:
+                            client.connect(self.port, self.url,
+                                           timeout=DEFAULT_CDP_ATTACH_TIMEOUT_S)
+                        except Exception:
+                            client.close()
+                            publish_page_assist_status(self.url, "unavailable")
+                            logger.warning("Twitch page assist reconnect failed for %s",
+                                           self.url, exc_info=True)
+                            if not self._sleep(_PAGE_CHECK_INTERVAL_S):
+                                return
+                            continue
+                        publish_page_assist_status(self.url, "")
+                        logger.info("Twitch page assist reconnected for %s", self.url)
+                        next_page_check_at = now
                     if (
                         self.settings.auto_refresh
                         and next_refresh_at is not None
@@ -742,6 +761,10 @@ class _PageAssistWorker:
                         next_refresh_at = self._schedule_refresh()
                         break  # restart gate → theater after reload
 
+                    if now >= next_page_check_at:
+                        self._check_page(client)
+                        next_page_check_at = time.monotonic() + _PAGE_CHECK_INTERVAL_S
+
                     if self.settings.claim_channel_points and now >= claim_deadline:
                         self._try_claim(client)
                         # Continue observing at the configured interval after
@@ -755,6 +778,9 @@ class _PageAssistWorker:
                         self.settings.claim_poll_seconds_min,
                         self.settings.claim_poll_seconds_max,
                     )
+                    wait_s = min(wait_s, max(0.1, next_page_check_at - time.monotonic()))
+                    if self.settings.claim_channel_points:
+                        wait_s = min(wait_s, max(0.1, claim_deadline - time.monotonic()))
                     if next_refresh_at is not None:
                         wait_s = min(wait_s, max(1.0, next_refresh_at - time.monotonic()))
                     if not self._sleep(wait_s):
@@ -769,6 +795,38 @@ class _PageAssistWorker:
                 current = _assist_by_url.get(_url_key(self.url))
                 if current is self:
                     _assist_by_url.pop(_url_key(self.url), None)
+
+    def _check_page(self, client: CdpClient) -> None:
+        """Periodically reconcile this page without reloading or blind toggles."""
+        if self._stop.is_set():
+            return
+        ready = self._probe_page_ready(client)
+        if ready.get("gatePresent") and self.settings.accept_content_gate:
+            self._try_accept_gate(client)
+            if not self._sleep(_THEATER_VERIFY_WAIT_S):
+                return
+            ready = self._probe_page_ready(client)
+        if ready.get("gatePresent"):
+            logger.info("Twitch page assist periodic page check for %s: content gate present",
+                        self.url)
+            return
+        if self.settings.theater_mode:
+            self._ensure_theater(client)
+        if self._stop.is_set():
+            return
+        chat = (self._ensure_chat_visible(client) if self.settings.claim_channel_points
+                else self._chat_snapshot(client).get("status", "hidden"))
+        theater = self._theater_snapshot(client).get("state", "unknown")
+        if not ready:
+            playback = "unavailable"
+        elif not ready.get("hasVideo") or ready.get("readyState", 0) < 3:
+            playback = "loading"
+        elif ready.get("paused"):
+            playback = "paused"
+        else:
+            playback = "playing"
+        logger.info("Twitch page assist periodic page check for %s: "
+                    "playback=%s theater=%s chat=%s", self.url, playback, theater, chat)
 
     def _schedule_refresh(self) -> float | None:
         if not self.settings.auto_refresh:
