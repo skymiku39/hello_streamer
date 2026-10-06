@@ -176,5 +176,8 @@ artifacts/
 # Per-user browser profile created on demand by the Browser Settings dialog.
 browser_profile/
 
+# Local launch-record reset backups contain user runtime state.
+backups/
+
 # Internal translation review (reverse-translated comparison) — local only.
 TRANSLATION_REVIEW.md
