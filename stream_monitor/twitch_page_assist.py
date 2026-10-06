@@ -34,8 +34,6 @@ _GATE_POLL_S = 1.0
 _READY_CONFIRM_POLLS = 2
 _THEATER_VERIFY_WAIT_S = 0.6
 _CLAIM_VERIFY_WAIT_S = 0.8
-_CLAIM_COOLDOWN_MIN_S = 12 * 60
-_CLAIM_COOLDOWN_MAX_S = 18 * 60
 
 # Best-effort DOM helpers. Twitch UI changes; failures are non-fatal.
 _FIND_GATE_JS = r"""
@@ -745,15 +743,14 @@ class _PageAssistWorker:
                         break  # restart gate → theater after reload
 
                     if self.settings.claim_channel_points and now >= claim_deadline:
-                        if self._try_claim(client):
-                            claim_deadline = time.monotonic() + fuzzy_uniform(
-                                _CLAIM_COOLDOWN_MIN_S, _CLAIM_COOLDOWN_MAX_S
-                            )
-                        else:
-                            claim_deadline = time.monotonic() + fuzzy_uniform(
-                                self.settings.claim_poll_seconds_min,
-                                self.settings.claim_poll_seconds_max,
-                            )
+                        self._try_claim(client)
+                        # Continue observing at the configured interval after
+                        # success too; a new visible bonus must not be held by
+                        # an unrelated fixed 12–18 minute cooldown.
+                        claim_deadline = time.monotonic() + fuzzy_uniform(
+                            self.settings.claim_poll_seconds_min,
+                            self.settings.claim_poll_seconds_max,
+                        )
                     wait_s = fuzzy_uniform(
                         self.settings.claim_poll_seconds_min,
                         self.settings.claim_poll_seconds_max,

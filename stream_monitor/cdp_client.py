@@ -752,10 +752,18 @@ class CdpClient:
         self.call("Runtime.enable")
 
     def _read_loop(self) -> None:
+        from websocket import WebSocketTimeoutException
+
         assert self._ws is not None
+        ws = self._ws
         try:
             while not self._closed.is_set():
-                raw = self._ws.recv()
+                try:
+                    raw = ws.recv()
+                except WebSocketTimeoutException:
+                    # A quiet page is still connected. Claim polling and delays
+                    # can legitimately exceed the socket's read timeout.
+                    continue
                 if not raw:
                     break
                 try:

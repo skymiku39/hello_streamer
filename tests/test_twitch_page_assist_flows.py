@@ -52,6 +52,13 @@ def set_dom(client, html):
     client.call("Page.setDocumentContent", {"frameId": frame, "html": html})
 
 
+def test_browser_connection_survives_quiet_interval(dom_browser):
+    set_dom(dom_browser, "<p>Quiet page</p>")
+    time.sleep(12)  # Longer than websocket.create_connection(timeout=10).
+    assert dom_browser.connected
+    assert dom_browser.evaluate("document.querySelector('p').textContent") == "Quiet page"
+
+
 @pytest.mark.parametrize("label", [
     "劇院模式 (alt+t)", "剧院模式 (alt+t)", "Theatre Mode (alt+t)",
     "Theater Mode (alt+t)", "シアターモード (alt+t)", "극장 모드 (alt+t)",
@@ -277,3 +284,30 @@ def test_refresh_restarts_gate_and_theater(monkeypatch):
     assert len(runs) == 2
     client.reload.assert_called_once()
     client.close.assert_called_once()
+
+
+def test_successful_claim_keeps_configured_poll_interval(monkeypatch):
+    w = worker(monkeypatch, claim_channel_points=True,
+               claim_poll_seconds_min=10, claim_poll_seconds_max=10)
+    client = Mock()
+    monkeypatch.setattr(assist, "CdpClient", lambda: client)
+    monkeypatch.setattr(w, "_run_gate_and_theater", lambda c: None)
+    clock = [0.]
+    sleeps = []
+    monkeypatch.setattr(assist.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(assist, "fuzzy_uniform", lambda low, high: low)
+    claim = Mock(return_value=True)
+    monkeypatch.setattr(w, "_try_claim", claim)
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+        if len(sleeps) >= 2:
+            w.stop()
+            return False
+        return True
+
+    monkeypatch.setattr(w, "_sleep", sleep)
+    w._run()
+    assert sleeps == [10, 10]
+    assert claim.call_count == 2
