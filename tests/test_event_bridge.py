@@ -518,4 +518,3 @@ def test_removed_channel_live_event_is_ignored_before_side_effects() -> None:
 
     assert sink.live_row_updates == []
     assert sink.executed_actions == []
-

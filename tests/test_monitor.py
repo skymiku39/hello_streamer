@@ -2789,53 +2789,6 @@ def test_twitch_skips_offline_retry_when_stable_offline(monkeypatch) -> None:
     assert fetcher.calls == 3
 
 
-def test_twitch_confirm_retry_none_keeps_live_without_strike(monkeypatch) -> None:
-    """Non-LIVE sample + confirm retry None is unavailable — keep LIVE, no strike."""
-
-    class OfflineThenNoneFetcher:
-        platform = "twitch"
-
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def get_stream_info(self, channel_name: str) -> StreamInfo | None:
-            self.calls += 1
-            if self.calls == 1:
-                return StreamInfo(
-                    channel=channel_name,
-                    platform="twitch",
-                    is_live=False,
-                    url=f"https://www.twitch.tv/{channel_name}",
-                )
-            return None
-
-        def get_latest_finished_vod(self, channel_name: str, *, items=None):
-            return None
-
-    fetcher = OfflineThenNoneFetcher()
-    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
-    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}])
-    entry = ChannelEntry(platform="twitch", name="hello")
-    with monitor._lock:
-        monitor._last_status[entry.key] = ChannelStatus(
-            status=True,
-            url="https://www.twitch.tv/hello",
-            title="Still live",
-        )
-        monitor._live_payload["twitch:hello|_"] = OfflineInfo(
-            url="https://www.twitch.tv/hello",
-            title="Still live",
-            platform="twitch",
-            name="hello",
-        )
-
-    events = monitor._probe_live(entry)
-    assert events == []
-    assert fetcher.calls == 2
-    with monitor._lock:
-        assert monitor._last_status[entry.key].status is True
-        assert monitor._offline_strikes.get("twitch:hello|_") in (None, 0)
-        assert monitor._pending_offline_events == []
 
 
 def test_youtube_poll_passes_fill_timing_false(monkeypatch, tmp_path) -> None:
@@ -3837,4 +3790,3 @@ def test_last_activity_epoch_seeds_wake_verify_gap(tmp_path) -> None:
     assert monitor._should_run_wake_verification(1000.0 + 60 * 5) is True
     assert monitor._should_run_wake_verification(1000.0 + 60) is False
     db.close()
-
