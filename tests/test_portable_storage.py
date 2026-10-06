@@ -15,6 +15,9 @@ def test_portable_paths_keep_all_runtime_state_under_one_root(tmp_path: Path) ->
     assert paths.config_file == paths.root / "config.json"
     assert paths.database_file == paths.root / "seen_videos.db"
     assert paths.application_log == paths.root / "logs" / "stream_monitor.log"
+    assert paths.observation_log == (
+        paths.root / "logs" / "watch_streak_observation.ndjson"
+    )
     assert paths.diagnostics_log == paths.root / "debug-reorder.log"
     assert paths.browser_profile_dir == paths.root / "browser_profile"
 

@@ -214,7 +214,19 @@ Chrome 與 Edge 會共用長駐的 master process。若瀏覽器已經開著，�
 | `config.json` | 使用者設定、頻道清單、瀏覽器設定與語言偏好。 |
 | `seen_videos.db` | SQLite 資料庫，記錄已看過的 YouTube 影片與直播。 |
 | `logs/stream_monitor.log` | 執行 log；單檔上限 2 MB、保留 5 份備份，總計約 12 MB 後自動輪替，適合長期常駐。 |
+| `logs/watch_streak_observation.ndjson` | 可選 Watch Streak 跨場次診斷（需 `--watch-observation`；預設關閉）。 |
 | `browser_profile/` | 預設獨立瀏覽器 Profile 位置。 |
+
+### Watch Streak 診斷觀察（opt-in）
+
+預設關閉。來源碼啟動可加上 `--watch-observation`（`run_hello_streamer.bat` 會轉發 `%*`）：
+
+```bat
+run_hello_streamer.bat --watch-observation
+python -m stream_monitor --watch-observation
+```
+
+僅追加診斷 NDJSON，不改動監控／開窗決策，也不寫入設定、資料庫或 browser profile。詳見 [`docs/watch-streak-observation.md`](docs/watch-streak-observation.md) 與空白對照表 [`docs/watch-streak-external-checklist.csv`](docs/watch-streak-external-checklist.csv)。
 
 可攜版的路徑由 `portable_storage.py` 統一管理；原始碼執行時的根目錄是專案根目錄，打包後則是執行檔所在目錄（與 `_internal` 同層）。請不要只複製 `.exe` 或單一執行檔，需連同 `_internal`、`config.json`、`seen_videos.db` 與需要的資料夾一起搬移。
 

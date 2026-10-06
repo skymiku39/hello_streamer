@@ -38,6 +38,11 @@ class PortablePaths:
         return self.logs_dir / "stream_monitor.log"
 
     @property
+    def observation_log(self) -> Path:
+        """Opt-in Watch Streak diagnostic NDJSON (separate from application_log)."""
+        return self.logs_dir / "watch_streak_observation.ndjson"
+
+    @property
     def diagnostics_log(self) -> Path:
         return self.root / "debug-reorder.log"
 

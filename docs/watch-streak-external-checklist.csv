@@ -1,0 +1,2 @@
+channel,broadcast_start_utc,broadcast_end_utc,baseline_streak_result,baseline_streak_notification,after_streak_result,after_streak_notification,login_status,channel_points_eligibility,stream_ge_10_min,gap_ge_30_min,consecutive_viewing_eligibility,recovery_notification_utc,recovery_deadline_utc,recovery_content_type,recovery_before_result,recovery_after_result,recovery_result,notes
+,,,,,,,,unknown,unknown,unknown,unknown,,,,unknown,unknown,unknown,

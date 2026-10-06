@@ -121,6 +121,64 @@ _PAGE_READY_JS = r"""
 })()
 """
 
+# Read-only observation probe (does not drive assist decisions).
+_PAGE_OBS_JS = r"""
+(() => {
+  const gateTexts = [
+    "start watching",
+    "開始觀看",
+    "开始观看",
+    "視聴を開始",
+    "시청 시작",
+    "regarder",
+    "ver ahora",
+    "assistir"
+  ];
+  const prefer = document.querySelector(
+    '[data-a-target="content-classification-gate-overlay-start-watching-button"]'
+  );
+  let gatePresent = false;
+  if (prefer instanceof HTMLElement) {
+    const r = prefer.getBoundingClientRect();
+    gatePresent = r.width > 1 && r.height > 1;
+  } else {
+    for (const el of document.querySelectorAll('button, [role="button"]')) {
+      if (!(el instanceof HTMLElement)) continue;
+      const label = ((el.innerText || el.textContent || "") + " " +
+        (el.getAttribute("aria-label") || "")).trim().toLowerCase();
+      if (!gateTexts.some((t) => label.includes(t))) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width > 1 && r.height > 1) { gatePresent = true; break; }
+    }
+  }
+  let readyState = null;
+  let paused = null;
+  let hasVideo = false;
+  let currentTime = null;
+  for (const v of document.querySelectorAll("video")) {
+    if (!(v instanceof HTMLVideoElement)) continue;
+    const r = v.getBoundingClientRect();
+    if (r.width <= 1 || r.height <= 1) continue;
+    hasVideo = true;
+    const rs = Number(v.readyState) || 0;
+    if (readyState === null || rs >= readyState) {
+      readyState = rs;
+      paused = !!v.paused;
+      currentTime = Number.isFinite(v.currentTime) ? v.currentTime : null;
+    }
+  }
+  const visibility = (document.visibilityState || "unknown");
+  return {
+    gatePresent,
+    hasVideo,
+    readyState,
+    paused,
+    currentTime,
+    visibilityState: visibility
+  };
+})()
+"""
+
 _CHAT_STATE_JS = r"""
 (() => {
   const visible = (el) => {
@@ -698,6 +756,9 @@ class _PageAssistWorker:
             name=f"twitch-page-assist-{_url_key(url)[-24:]}",
             daemon=True,
         )
+        self._obs_gate_attempt = "none"
+        self._obs_gate_result = "none"
+        self._obs_next_snapshot_at = 0.0
 
     def start(self) -> None:
         self._thread.start()
@@ -713,6 +774,79 @@ class _PageAssistWorker:
         """Sleep interruptibly; return False when stop was requested."""
         return not self._stop.wait(timeout=max(0.0, seconds))
 
+    def _maybe_observe_snapshot(self, client: CdpClient, *, cdp: str = "connected") -> None:
+        """Emit a page snapshot when observation is enabled; never affects assist."""
+        try:
+            from stream_monitor.watch_observation import (
+                SNAPSHOT_INTERVAL_S,
+                is_watch_observation_enabled,
+                observe_page_snapshot,
+                twitch_channel_key_from_url,
+            )
+        except Exception:
+            return
+        if not is_watch_observation_enabled():
+            return
+        now = time.monotonic()
+        if now < self._obs_next_snapshot_at:
+            return
+        self._obs_next_snapshot_at = now + SNAPSHOT_INTERVAL_S
+        channel = twitch_channel_key_from_url(self.url)
+        if not channel:
+            return
+        if cdp != "connected":
+            observe_page_snapshot(
+                channel_key_value=channel,
+                cdp=cdp,
+                content_gate_attempt=self._obs_gate_attempt,
+                content_gate_result=self._obs_gate_result,
+            )
+            return
+        try:
+            hit = client.evaluate(_PAGE_OBS_JS)
+        except Exception:
+            observe_page_snapshot(
+                channel_key_value=channel,
+                cdp="unknown",
+                content_gate_attempt=self._obs_gate_attempt,
+                content_gate_result=self._obs_gate_result,
+            )
+            return
+        if not isinstance(hit, dict):
+            observe_page_snapshot(
+                channel_key_value=channel,
+                cdp="unknown",
+                content_gate_attempt=self._obs_gate_attempt,
+                content_gate_result=self._obs_gate_result,
+            )
+            return
+        visibility = str(hit.get("visibilityState") or "unknown")
+        if visibility not in {"visible", "hidden", "prerender", "unloaded"}:
+            visibility = "unknown"
+        ready_state = hit.get("readyState")
+        ready_int = int(ready_state) if isinstance(ready_state, (int, float)) else None
+        current_time = hit.get("currentTime")
+        media_time = (
+            float(current_time)
+            if isinstance(current_time, (int, float))
+            else None
+        )
+        paused = hit.get("paused")
+        observe_page_snapshot(
+            channel_key_value=channel,
+            cdp="connected",
+            has_video=bool(hit.get("hasVideo")) if "hasVideo" in hit else None,
+            ready_state=ready_int,
+            paused=bool(paused) if isinstance(paused, bool) else None,
+            media_current_time=media_time,
+            content_gate_present=(
+                bool(hit.get("gatePresent")) if "gatePresent" in hit else None
+            ),
+            content_gate_attempt=self._obs_gate_attempt,
+            content_gate_result=self._obs_gate_result,
+            document_visibility=visibility,
+        )
+
     def _run(self) -> None:
         client = CdpClient()
         try:
@@ -721,6 +855,8 @@ class _PageAssistWorker:
                 return
             publish_page_assist_status(self.url, "")
             logger.info("Twitch page assist attached via CDP for %s", self.url)
+            self._obs_next_snapshot_at = 0.0
+            self._maybe_observe_snapshot(client, cdp="connected")
             next_refresh_at = self._schedule_refresh()
             claim_deadline = time.monotonic()
             while not self._stop.is_set():
@@ -745,6 +881,7 @@ class _PageAssistWorker:
                         publish_page_assist_status(self.url, "")
                         logger.info("Twitch page assist reconnected for %s", self.url)
                         next_page_check_at = now
+                    self._maybe_observe_snapshot(client, cdp="connected")
                     if (
                         self.settings.auto_refresh
                         and next_refresh_at is not None
@@ -784,12 +921,44 @@ class _PageAssistWorker:
                         wait_s = min(wait_s, max(0.1, claim_deadline - time.monotonic()))
                     if next_refresh_at is not None:
                         wait_s = min(wait_s, max(1.0, next_refresh_at - time.monotonic()))
+                    # Opt-in observation only: wake for 30s snapshots without
+                    # changing claim/refresh deadlines or disabled-path waits.
+                    try:
+                        from stream_monitor.watch_observation import (
+                            is_watch_observation_enabled,
+                        )
+
+                        if is_watch_observation_enabled():
+                            wait_s = min(
+                                wait_s,
+                                max(1.0, self._obs_next_snapshot_at - time.monotonic()),
+                            )
+                    except Exception:
+                        pass
                     if not self._sleep(wait_s):
                         return
         except Exception:
             if not self._stop.is_set():
                 publish_page_assist_status(self.url, "unavailable")
             logger.exception("Twitch page assist stopped for %s", self.url)
+            try:
+                from stream_monitor.watch_observation import (
+                    is_watch_observation_enabled,
+                    observe_page_snapshot,
+                    twitch_channel_key_from_url,
+                )
+
+                if is_watch_observation_enabled():
+                    channel = twitch_channel_key_from_url(self.url)
+                    if channel:
+                        observe_page_snapshot(
+                            channel_key_value=channel,
+                            cdp="unavailable",
+                            content_gate_attempt=self._obs_gate_attempt,
+                            content_gate_result=self._obs_gate_result,
+                        )
+            except Exception:
+                logger.debug("Watch observation CDP-failure note skipped", exc_info=True)
         finally:
             client.close()
             with _assist_lock:
@@ -1098,12 +1267,15 @@ class _PageAssistWorker:
             return False
         x = float(hit.get("x", 0))
         y = float(hit.get("y", 0))
+        self._obs_gate_attempt = "attempted"
         try:
             client.click_at(x, y)
             logger.info("Twitch page assist accepted content gate for %s", self.url)
+            self._obs_gate_result = "accepted"
             return True
         except Exception:
             logger.exception("Gate click failed for %s", self.url)
+            self._obs_gate_result = "failed"
             return False
 
     def _probe_claim(self, client: CdpClient) -> dict[str, Any]:

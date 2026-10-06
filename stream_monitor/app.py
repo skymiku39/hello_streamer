@@ -197,6 +197,12 @@ class App(ctk.CTk):
         self._config_save_after: str | None = None
         # Owns the event bus, bridge, monitor thread, and idle/trigger/watch mode.
         self._controller = MonitorController(self, self._db)
+        try:
+            from stream_monitor.watch_observation import attach_monitor_bus
+
+            attach_monitor_bus(self._controller.event_bus)
+        except Exception:
+            logger.exception("Watch observation bus attach failed")
         self._platform = platform_services()
         self._action_coordinator = ActionCoordinator(
             runner=execute_action_plan,
@@ -321,6 +327,12 @@ class App(ctk.CTk):
         if getattr(self, "_unsub_i18n", None):
             self._unsub_i18n()
             self._unsub_i18n = None
+        try:
+            from stream_monitor.watch_observation import disable_watch_observation
+
+            disable_watch_observation(emit_close=True)
+        except Exception:
+            logger.exception("Watch observation shutdown failed")
         self.after(0, self.destroy)
 
     # ------------------------------------------------------------------
@@ -2186,6 +2198,23 @@ def main() -> None:
         logger.info("Another instance is already running — activating it")
         sys.exit(0)
 
+    # Enable only after lock acquisition so a second instance cannot leave an
+    # orphan app.lifecycle open event when try_lock fails.
+    try:
+        from stream_monitor.watch_observation import (
+            enable_watch_observation,
+            is_watch_observation_requested,
+        )
+
+        if is_watch_observation_requested(sys.argv[1:]):
+            enable_watch_observation(paths=portable_paths())
+            logger.info(
+                "Watch observation enabled → %s",
+                portable_paths().observation_log,
+            )
+    except Exception:
+        logger.exception("Watch observation enable failed (non-fatal)")
+
     try:
         app = App(silent=silent)
         app.mainloop()
@@ -2195,6 +2224,16 @@ def main() -> None:
         logger.critical("Fatal application exception", exc_info=True)
         raise
     finally:
+        try:
+            from stream_monitor.watch_observation import (
+                disable_watch_observation,
+                is_watch_observation_enabled,
+            )
+
+            if is_watch_observation_enabled():
+                disable_watch_observation(emit_close=True)
+        except Exception:
+            logger.exception("Watch observation final shutdown failed")
         lock.release()
 
 

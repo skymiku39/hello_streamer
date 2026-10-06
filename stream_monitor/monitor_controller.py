@@ -45,6 +45,11 @@ class MonitorController:
         return self._mode
 
     @property
+    def event_bus(self) -> MonitorEventBus:
+        """Expose the monitor bus for diagnostic subscribers (opt-in only)."""
+        return self._bus
+
+    @property
     def is_running(self) -> bool:
         return self._monitor is not None and self._monitor.is_running
 

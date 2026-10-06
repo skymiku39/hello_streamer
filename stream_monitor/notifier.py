@@ -151,6 +151,11 @@ _VIEWER_ENGAGEMENT: ViewerEngagementSettings | None = None
 _ENGAGEMENT_AWAKE_URLS: set[str] = set()
 _ENGAGEMENT_AWAKE_SINCE: dict[str, float] = {}
 _ENGAGEMENT_AWAKE_LOCK = threading.Lock()
+# App-managed URLs registered for observation close sync via HWND tracking.
+# Independent of keep-awake: observation must not require engagement awake.
+_OBS_MANAGED_URLS: set[str] = set()
+_OBS_MANAGED_SINCE: dict[str, float] = {}
+_OBS_MANAGED_LOCK = threading.Lock()
 
 
 def configure_viewer_engagement(
@@ -179,6 +184,60 @@ def _release_engagement_keep_awake(url: str) -> None:
                 set_system_keep_awake(False)
 
 
+def _register_obs_managed_url(url: str) -> None:
+    """Remember an app-managed open for HWND-based observation close sync."""
+    if not url:
+        return
+    with _OBS_MANAGED_LOCK:
+        _OBS_MANAGED_URLS.add(url)
+        _OBS_MANAGED_SINCE[url] = time.monotonic()
+
+
+def _unregister_obs_managed_url(url: str) -> None:
+    if not url:
+        return
+    with _OBS_MANAGED_LOCK:
+        _OBS_MANAGED_URLS.discard(url)
+        _OBS_MANAGED_SINCE.pop(url, None)
+
+
+def sync_observed_closes_for_tracked_windows(*, min_age_s: float = 6.0) -> int:
+    """Emit observed closes when app-managed HWNDs disappear.
+
+    Uses the HWND registry, not keep-awake. Attribution stays ``observed``
+    (never claims ``manual`` when the external source is unknown).
+    """
+    now = time.monotonic()
+    noted = 0
+    with _OBS_MANAGED_LOCK:
+        candidates = [
+            (url, _OBS_MANAGED_SINCE.get(url, 0.0))
+            for url in list(_OBS_MANAGED_URLS)
+        ]
+    for url, since in candidates:
+        if now - since < max(min_age_s, 0.0):
+            continue
+        if tracked_hwnds_for_url(url):
+            continue
+        with _OBS_MANAGED_LOCK:
+            if url not in _OBS_MANAGED_URLS:
+                continue
+            _OBS_MANAGED_URLS.discard(url)
+            _OBS_MANAGED_SINCE.pop(url, None)
+        noted += 1
+        try:
+            from stream_monitor.watch_observation import observe_window_action
+
+            observe_window_action(
+                action="close",
+                origin="observed",
+                url=url,
+            )
+        except Exception:
+            logger.exception("Watch observation observed-close hook failed")
+    return noted
+
+
 # Wrap the Win32 close helpers so closing a window we opened for a Twitch URL
 # also releases its keep-awake request. ``app``/``app_dialogs`` import these
 # names from ``notifier``, so the wrappers transparently apply everywhere.
@@ -194,16 +253,49 @@ def close_browser_window_for_url(
     publish_page_assist_status(url, "")
     closed = _close_browser_window_for_url_impl(url, title_keywords=title_keywords)
     _release_engagement_keep_awake(url)
+    _unregister_obs_managed_url(url)
+    if closed:
+        try:
+            from stream_monitor.watch_observation import observe_window_action
+
+            # App-managed close: independent of keep-awake / engagement awake.
+            observe_window_action(
+                action="close",
+                origin="app_requested",
+                url=url,
+            )
+        except Exception:
+            logger.exception("Watch observation window close hook failed")
     return closed
 
 
 def close_all_tracked_windows() -> int:
     stop_all_page_assist()
+    with _OBS_MANAGED_LOCK:
+        observed_urls = list(_OBS_MANAGED_URLS)
     publish_page_assist_status("*", "")
     closed = _close_all_tracked_windows_impl()
+    # close_all is used by the explicit "close on Stop" action. Preserve a
+    # per-channel trace before clearing the app-managed URL registry. The
+    # origin records the app's close request; the aggregate HWND count remains
+    # the platform helper's result and is not attributed to individual URLs.
+    for url in observed_urls:
+        try:
+            from stream_monitor.watch_observation import observe_window_action
+
+            observe_window_action(
+                action="close",
+                origin="app_requested",
+                url=url,
+            )
+        except Exception:
+            logger.exception("Watch observation close-all hook failed")
     with _ENGAGEMENT_AWAKE_LOCK:
         _ENGAGEMENT_AWAKE_URLS.clear()
         _ENGAGEMENT_AWAKE_SINCE.clear()
+    with _OBS_MANAGED_LOCK:
+        _OBS_MANAGED_URLS.clear()
+        _OBS_MANAGED_SINCE.clear()
     set_system_keep_awake(False)
     return closed
 
@@ -220,7 +312,11 @@ def release_keep_awake_for_closed_tracked_windows(*, min_age_s: float = 6.0) -> 
 
     Independent of blank-tab cleanup: runs whenever engagement URLs are held,
     so closing the only tracked window still clears the sleep block.
+
+    Also syncs observation closes via HWND tracking (not keep-awake membership)
+    so external closes are noted even when engagement keep-awake is off.
     """
+    sync_observed_closes_for_tracked_windows(min_age_s=min_age_s)
     now = time.monotonic()
     released = 0
     with _ENGAGEMENT_AWAKE_LOCK:
@@ -975,6 +1071,32 @@ def _open_with_browser_settings(
 
     if keep_awake_after_launch:
         _register_engagement_keep_awake(url)
+
+    try:
+        from stream_monitor.watch_observation import (
+            is_watch_observation_enabled,
+            observe_page_snapshot,
+            observe_window_action,
+            twitch_channel_key_from_url,
+        )
+
+        if is_watch_observation_enabled():
+            observe_window_action(
+                action="open",
+                origin="app_requested" if manage else "unknown",
+                url=url,
+            )
+            if manage:
+                _register_obs_managed_url(url)
+            if manage and not cdp_port:
+                channel = twitch_channel_key_from_url(url)
+                if channel:
+                    observe_page_snapshot(
+                        channel_key_value=channel,
+                        cdp="unavailable",
+                    )
+    except Exception:
+        logger.exception("Watch observation window open hook failed")
 
     if cdp_port and manage and engagement_for_assist is not None:
         try:
