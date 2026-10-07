@@ -180,7 +180,7 @@ def test_dialog_buttons_use_application_style(native_app):
             deadline = time.monotonic() + 3
             while not dialog.winfo_ismapped() and time.monotonic() < deadline:
                 _pump(app, 0.05)
-            for language in ("zh_TW", "en", "ja"):
+            for language, _native_name, _english_name in i18n.LANGUAGES:
                 i18n.set_language(language)
                 _pump(app)
                 button = getattr(dialog, name)
