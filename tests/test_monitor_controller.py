@@ -46,8 +46,9 @@ class _FakeMonitor:
         self.is_running = True
         self.started += 1
 
-    def request_live_recheck(self) -> None:
+    def request_live_recheck(self) -> int:
         self.live_rechecks += 1
+        return self.poll_cycle
 
     def stop(self, timeout=None) -> None:
         self.is_running = False

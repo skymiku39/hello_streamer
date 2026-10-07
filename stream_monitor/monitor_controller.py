@@ -124,13 +124,15 @@ class MonitorController:
         else:
             self._bridge.disarm_one_shot()
         self._mode = mode
-        self._ensure_running(
+        recheck_boundary = self._ensure_running(
             channels,
             interval,
             initial_statuses=initial_statuses,
             last_activity_epoch=last_activity_epoch,
             recheck_live=recheck_live,
         )
+        if recheck_boundary is not None:
+            self._bridge.defer_live_actions_until_after(recheck_boundary)
         self._last_started_mode = mode
         return True
 
@@ -216,20 +218,21 @@ class MonitorController:
         initial_statuses: dict[str, Any] | None = None,
         last_activity_epoch: float = 0.0,
         recheck_live: bool = False,
-    ) -> None:
+    ) -> int | None:
         # Do not create a new monitor while the previous poll thread is still
         # unwinding network work or using the shared SQLite connection.
         self._join_stopping_thread(timeout=None)
+        recheck_boundary = None
         if self._monitor is not None and self._monitor.is_running:
             self._monitor.update_interval(interval)
             self._monitor.update_channels(channels)
             if recheck_live:
-                self._monitor.request_live_recheck()
+                recheck_boundary = self._monitor.request_live_recheck()
         elif self._monitor is not None:
             self._monitor.update_interval(interval)
             self._monitor.update_channels(channels)
             if recheck_live:
-                self._monitor.request_live_recheck()
+                recheck_boundary = self._monitor.request_live_recheck()
             self._monitor.restart_thread()
         else:
             # An in-flight publication can race with stop() clearing the bus.
@@ -245,8 +248,9 @@ class MonitorController:
                 last_activity_epoch=last_activity_epoch,
             )
             if recheck_live:
-                self._monitor.request_live_recheck()
+                recheck_boundary = self._monitor.request_live_recheck()
             self._monitor.start()
+        return recheck_boundary
 
     def _join_stopping_thread(self, *, timeout: float | None) -> None:
         """Block until any previous monitor-stop thread has finished."""

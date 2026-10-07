@@ -108,12 +108,18 @@ class MonitorEventBridge:
         self._pending = PendingStatusStore()
         self._pending_display_names = PendingDisplayNamesStore()
         self._one_shot_after_cycle: int | None = None
+        self._live_actions_after_cycle: int | None = None
 
     def reset(self) -> None:
         """Drop buffered status updates (called when monitoring stops)."""
         self._pending.clear()
         self._pending_display_names.clear()
         self._one_shot_after_cycle = None
+        self._live_actions_after_cycle = None
+
+    def defer_live_actions_until_after(self, cycle: int) -> None:
+        """Do not launch queued watch-cycle events before the fresh recheck."""
+        self._live_actions_after_cycle = cycle
 
     def arm_one_shot(self, *, after_cycle: int) -> None:
         """Accept only events from the next monitor cycle onward.
@@ -159,6 +165,17 @@ class MonitorEventBridge:
 
         other_events: list[MonitorEvent] = []
         for event in buffered:
+            if (
+                isinstance(event, ChannelWentLive)
+                and event.info.is_live
+                and self._live_actions_after_cycle is not None
+                and event.cycle_id <= self._live_actions_after_cycle
+            ):
+                logger.info(
+                    "Waiting for fresh trigger poll: channel=%s cycle=%d",
+                    event.entry.key, event.cycle_id,
+                )
+                continue
             if isinstance(event, PollActivity):
                 if sink.is_channel_active(event.entry):
                     latest_poll_activity = (

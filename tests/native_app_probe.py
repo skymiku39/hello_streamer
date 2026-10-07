@@ -126,7 +126,7 @@ def test_live_event_reaches_browser_through_real_app(native_app):
     services.notification.send.assert_not_called()
 
 
-def test_watch_to_trigger_opens_current_live_once(native_app):
+def test_watch_to_trigger_opens_current_live_once(native_app, *, pending_event=False):
     app, services = native_app()
     info = StreamInfo(
         channel="testchannel", platform="twitch", is_live=True,
@@ -138,10 +138,15 @@ def test_watch_to_trigger_opens_current_live_once(native_app):
         monitor = app._controller._monitor
         monitor._poll_cycle = 1
         monitor._tier1_probe_entries(monitor._entries)
-        _pump(app)
+        if not pending_event:
+            _pump(app)
         services.browser.open.assert_not_called()
         # Go through the actual segmented-control callback and controller.
         app._on_mode_segment(app._mode_segment_label("trigger"))
+        _pump(app)
+        # The watch-cycle event may still be queued when the user switches.
+        # It must not open now and again on the requested fresh poll.
+        services.browser.open.assert_not_called()
         monitor._poll_cycle = 2
         monitor._tier1_probe_entries(monitor._entries)
         _pump(app)
@@ -197,6 +202,8 @@ if __name__ == "__main__":
             test_live_event_reaches_browser_through_real_app(create)
         elif sys.argv[1] == "watch_to_trigger":
             test_watch_to_trigger_opens_current_live_once(create)
+        elif sys.argv[1] == "watch_to_trigger_pending":
+            test_watch_to_trigger_opens_current_live_once(create, pending_event=True)
         elif sys.argv[1] == "dialogs":
             test_dialog_buttons_use_application_style(create)
         else:

@@ -397,7 +397,7 @@ class Monitor(
     def update_interval(self, interval: int) -> None:
         self._interval = max(10, interval)
 
-    def request_live_recheck(self) -> None:
+    def request_live_recheck(self) -> int:
         """Re-emit confirmed live streams once after entering trigger mode.
 
         Observation already advances edge/seen state in watch mode. Wait for
@@ -408,6 +408,7 @@ class Monitor(
                 entry.key: self._poll_cycle
                 for entry in self._entries if entry.enabled
             }
+            return self._poll_cycle
 
     def _run_maintenance(self, *, force: bool = False) -> None:
         """Prune SQLite seen_videos and the YouTube watch-details cache."""

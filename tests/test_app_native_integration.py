@@ -38,5 +38,9 @@ def test_watch_to_trigger_opens_current_live_once():
     _run("watch_to_trigger")
 
 
+def test_watch_to_trigger_waits_for_fresh_poll_with_queued_event():
+    _run("watch_to_trigger_pending")
+
+
 def test_dialog_buttons_use_application_style():
     _run("dialogs")
