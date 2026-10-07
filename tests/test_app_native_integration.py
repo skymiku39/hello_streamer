@@ -30,6 +30,10 @@ def test_cold_start_interval_fits_without_manual_resize(mode, scale):
     _run("layout", mode, scale)
 
 
+def test_dense_saved_window_keeps_controls_visible():
+    _run("dense_layout")
+
+
 def test_live_event_reaches_browser_through_real_app():
     _run("action")
 

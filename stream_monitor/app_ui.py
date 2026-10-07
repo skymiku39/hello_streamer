@@ -462,9 +462,10 @@ class CompactFlowFrame(ctk.CTkFrame):
         widget.bind("<Configure>", lambda _event: self.request_reflow(), add="+")
         self.request_reflow()
 
-    def _on_configure(self, event: Any = None) -> None:
-        if event is not None and getattr(event, "widget", None) is not self:
-            return
+    def _on_configure(self, _event: Any = None) -> None:
+        # CTkFrame.bind forwards to its internal canvas. Its Configure/Map
+        # event therefore names that canvas, not this public frame. Filtering
+        # on event.widget is self would discard the first usable size.
         self.request_reflow()
 
     def request_reflow(self) -> None:

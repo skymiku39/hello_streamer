@@ -65,7 +65,8 @@ def native_app():
     monkeypatch.setattr(notifier, "platform_services", lambda: services)
     apps = []
 
-    def create(*, silent=False, scale=1.0):
+    def create(*, silent=False, scale=1.0, config_overrides=None):
+        config.update(config_overrides or {})
         ctk.set_widget_scaling(scale)
         ctk.set_window_scaling(scale)
         app = App(silent=silent)
@@ -93,12 +94,33 @@ def _pump(app, seconds=0.2):
         time.sleep(0.005)
 
 
+def _assert_controls_visible(app):
+    flow = app._run_flow
+    controls = (
+        app.start_btn, app.stop_btn, app.mode_seg, app.duration_seg,
+        app.interval_entry,
+    )
+    for widget in (*flow._items, *controls):
+        assert widget.winfo_ismapped(), f"Unmapped control: {widget}"
+        assert widget.winfo_width() > 2 and widget.winfo_height() > 2
+        ancestor = widget.master
+        while ancestor is not None:
+            assert widget.winfo_rootx() >= ancestor.winfo_rootx() - 1
+            assert widget.winfo_rooty() >= ancestor.winfo_rooty() - 1
+            assert widget.winfo_rootx() + widget.winfo_width() <= ancestor.winfo_rootx() + ancestor.winfo_width() + 1
+            assert widget.winfo_rooty() + widget.winfo_height() <= ancestor.winfo_rooty() + ancestor.winfo_height() + 1
+            if ancestor is app:
+                break
+            ancestor = ancestor.master
+
+
 def test_cold_start_interval_fits_without_manual_resize(native_app, silent, scale):
     app, _services = native_app(silent=silent, scale=scale)
     if silent:
         _pump(app)
         app.deiconify()
     _pump(app)
+    _assert_controls_visible(app)
     flow = app._run_flow
     # These controls fit at the default width. Do not call reflow or change
     # geometry here: those interventions hid the startup bug in the old smoke.
@@ -110,6 +132,21 @@ def test_cold_start_interval_fits_without_manual_resize(native_app, silent, scal
     before = [(w.winfo_x(), w.winfo_y(), w.winfo_width()) for w in flow._items]
     _pump(app)
     assert before == [(w.winfo_x(), w.winfo_y(), w.winfo_width()) for w in flow._items]
+
+
+def test_dense_saved_window_keeps_controls_visible(native_app):
+    app, _services = native_app(config_overrides={
+        "window_geometry": "920x560+80+80",
+        "channels": [{"platform": "twitch", "name": f"channel{i}"} for i in range(18)],
+    })
+    _pump(app)
+    _assert_controls_visible(app)
+    for language, _native_name, _english_name in i18n.LANGUAGES:
+        i18n.set_language(language)
+        for width in (1200, 920):
+            app.geometry(f"{width}x560+80+80")
+            _pump(app)
+            _assert_controls_visible(app)
 
 
 def test_live_event_reaches_browser_through_real_app(native_app):
@@ -198,6 +235,8 @@ if __name__ == "__main__":
     with native_app() as create:
         if sys.argv[1] == "layout":
             test_cold_start_interval_fits_without_manual_resize(create, sys.argv[2] == "silent", float(sys.argv[3]))
+        elif sys.argv[1] == "dense_layout":
+            test_dense_saved_window_keeps_controls_visible(create)
         elif sys.argv[1] == "action":
             test_live_event_reaches_browser_through_real_app(create)
         elif sys.argv[1] == "watch_to_trigger":
