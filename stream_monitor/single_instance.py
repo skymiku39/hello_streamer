@@ -9,6 +9,7 @@ import hashlib
 import logging
 import socket
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 _PORT = 47201  # legacy/default value kept for integrations that import it
 _HOST = "127.0.0.1"
 _MSG_SHOW = b"SHOW"
+_SOCKET_TIMEOUT = 0.2
+_REQUEST_TIMEOUT = 1.0
 
 
 def port_for_root(root: Path | None = None) -> int:
@@ -50,29 +53,67 @@ class SingleInstance:
 
     def try_lock(self) -> bool:
         """Return True if this is the first instance; False if another is running."""
+        if self._server is not None:
+            return True
+        server: socket.socket | None = None
         try:
-            self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
-            self._server.bind((_HOST, self._port))
-            self._server.listen(1)
-            self._thread = threading.Thread(target=self._listen, daemon=True)
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            server.bind((_HOST, self._port))
+            server.listen(1)
+            server.settimeout(_SOCKET_TIMEOUT)
+            self._server = server
+            self._thread = threading.Thread(
+                target=self._listen, args=(server,), daemon=True,
+                name="single-instance-listener",
+            )
             self._thread.start()
             return True
         except OSError:
             self._server = None
+            if server is not None:
+                server.close()
             self._signal_existing()
             return False
 
-    def _listen(self) -> None:
-        while self._server is not None:
+    def _listen(self, server: socket.socket) -> None:
+        while self._server is server:
             try:
-                conn, _ = self._server.accept()
-                data = conn.recv(64)
-                conn.close()
-                if data == _MSG_SHOW and self._on_show:
-                    self._on_show()
+                conn, _ = server.accept()
+            except TimeoutError:
+                continue
             except OSError:
                 break
+            try:
+                with conn:
+                    data = self._read_request(conn, server)
+            except OSError:
+                # A reset or incomplete client must not disable the listener.
+                logger.debug("Single-instance client disconnected", exc_info=True)
+                continue
+            if self._server is server and data == _MSG_SHOW and self._on_show:
+                try:
+                    self._on_show()
+                except Exception:
+                    logger.exception("Could not show the existing instance")
+
+    def _read_request(self, conn: socket.socket, server: socket.socket) -> bytes:
+        conn.settimeout(_SOCKET_TIMEOUT)
+        deadline = time.monotonic() + _REQUEST_TIMEOUT
+        data = b""
+        while self._server is server and len(data) < len(_MSG_SHOW):
+            if time.monotonic() >= deadline:
+                break
+            try:
+                chunk = conn.recv(len(_MSG_SHOW) - len(data))
+            except TimeoutError:
+                continue
+            if not chunk:
+                break
+            data += chunk
+            if not _MSG_SHOW.startswith(data):
+                break
+        return data
 
     def _signal_existing(self) -> None:
         """Tell the already-running instance to show its window."""
@@ -84,9 +125,11 @@ class SingleInstance:
             logger.warning("Failed to signal existing instance")
 
     def release(self) -> None:
-        if self._server:
+        server = self._server
+        self._server = None
+        if server is not None:
             try:
-                self._server.close()
+                server.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            self._server = None
+            server.close()
