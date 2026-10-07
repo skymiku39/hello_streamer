@@ -38,11 +38,11 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 | 平台 | 檔案 |
 | --- | --- |
-| Windows x64 | `HelloStreamer-v1.2.1-windows-x64.zip`（解壓後執行資料夾內的 `HelloStreamer.exe`） |
-| Linux x64 | `HelloStreamer-v1.2.1-linux-x64.tar.gz` |
-| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v1.2.1-linux-arm64.tar.gz` |
+| Windows x64 | `HelloStreamer-v1.3.0-windows-x64.zip`（解壓後執行資料夾內的 `HelloStreamer.exe`） |
+| Linux x64 | `HelloStreamer-v1.3.0-linux-x64.tar.gz` |
+| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v1.3.0-linux-arm64.tar.gz` |
 
-發佈檔名由 tag 驅動：`HelloStreamer-${tag}-windows-x64.zip`、`HelloStreamer-${tag}-linux-x64.tar.gz`、`HelloStreamer-${tag}-linux-arm64.tar.gz`（`${tag}` 為推送的 `v*` tag，例如 `v1.2.1`）。
+發佈檔名由 tag 驅動：`HelloStreamer-${tag}-windows-x64.zip`、`HelloStreamer-${tag}-linux-x64.tar.gz`、`HelloStreamer-${tag}-linux-arm64.tar.gz`（`${tag}` 為推送的 `v*` tag，例如 `v1.3.0`）。
 
 Windows 請**整包解壓後再執行**，不要只抽出單一 `.exe`（同層還有 `_internal` 等相依檔）。第一次執行時 SmartScreen 仍可能顯示安全提示，請確認來源是本專案的 GitHub Release。v1.2.1 起改為資料夾版（onedir）打包，以降低 Windows Defender 對「單檔自解」的誤判。
 

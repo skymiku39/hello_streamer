@@ -16,6 +16,7 @@ from build import (
     validate_linux_onedir_bundle,
     validate_windows_onedir_bundle,
 )
+from stream_monitor import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_YML = ROOT / ".github" / "workflows" / "release.yml"
@@ -171,9 +172,9 @@ def test_readme_release_assets_match_workflow_naming() -> None:
     assert "artifact: linux-x64" in workflow
     assert "artifact: linux-arm64" in workflow
 
-    assert "HelloStreamer-v1.2.1-windows-x64.zip" in readme
-    assert "HelloStreamer-v1.2.1-linux-x64.tar.gz" in readme
-    assert "HelloStreamer-v1.2.1-linux-arm64.tar.gz" in readme
+    assert f"HelloStreamer-v{__version__}-windows-x64.zip" in readme
+    assert f"HelloStreamer-v{__version__}-linux-x64.tar.gz" in readme
+    assert f"HelloStreamer-v{__version__}-linux-arm64.tar.gz" in readme
     assert "HelloStreamer-${tag}-windows-x64.zip" in readme
     assert "HelloStreamer-${tag}-linux-x64.tar.gz" in readme
     assert "HelloStreamer-${tag}-linux-arm64.tar.gz" in readme
