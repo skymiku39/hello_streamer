@@ -119,6 +119,12 @@ def test_cold_start_interval_fits_without_manual_resize(native_app, silent, scal
     if silent:
         _pump(app)
         app.deiconify()
+        # Silent startup schedules the saved monitor mode after 500 ms.
+        # Wait for that real state transition before comparing control sizes.
+        deadline = time.monotonic() + 3
+        while app.monitor_mode == "idle" and time.monotonic() < deadline:
+            _pump(app, 0.02)
+        assert app.monitor_mode == "trigger"
     _pump(app)
     _assert_controls_visible(app)
     flow = app._run_flow
@@ -131,7 +137,8 @@ def test_cold_start_interval_fits_without_manual_resize(native_app, silent, scal
     assert last.winfo_x() + last.winfo_width() <= flow.winfo_width() + 2
     before = [(w.winfo_x(), w.winfo_y(), w.winfo_width()) for w in flow._items]
     _pump(app)
-    assert before == [(w.winfo_x(), w.winfo_y(), w.winfo_width()) for w in flow._items]
+    after = [(w.winfo_x(), w.winfo_y(), w.winfo_width()) for w in flow._items]
+    assert before == after, (before, after)
 
 
 def test_dense_saved_window_keeps_controls_visible(native_app):

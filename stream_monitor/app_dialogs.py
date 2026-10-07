@@ -591,7 +591,11 @@ class AppSettingsDialog(ctk.CTkToplevel):
         self._on_reset_launch_records = on_reset_launch_records
         self._message_after: str | None = None
 
-        body = ctk.CTkFrame(self, fg_color="transparent")
+        # Reserve the close action before allocating space to localized
+        # content. Font fallback and longer translations may need scrolling.
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.pack(fill="x", side="bottom", padx=18, pady=(0, 16))
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
         body.pack(fill="both", expand=True, padx=18, pady=16)
 
         self._heading = ctk.CTkLabel(
@@ -684,8 +688,6 @@ class AppSettingsDialog(ctk.CTkToplevel):
         )
         self._message.pack(anchor="w", pady=(12, 0))
 
-        footer = ctk.CTkFrame(body, fg_color="transparent")
-        footer.pack(fill="x", side="bottom", pady=(16, 0))
         self._close_btn = AppButton(
             footer,
             text=tr("settings.btn.close"),
