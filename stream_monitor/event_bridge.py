@@ -7,6 +7,7 @@ from typing import Any
 
 from stream_monitor.browser_settings_model import coerce_browser_settings
 from stream_monitor.channel_policy import (
+    channel_mode_for,
     resolve_live_action,
     should_close_on_offline,
     should_prune_blank_tabs,
@@ -25,6 +26,7 @@ from stream_monitor.events import (
     PollWaiting,
 )
 from stream_monitor.fetcher.base import StreamInfo
+from stream_monitor.util import channel_key
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +307,20 @@ class MonitorEventBridge:
             )
         )
         generation = sink.monitor_generation
+        # A probe captures its ChannelEntry before network I/O. Resolve policy
+        # from the current UI settings so a mode change takes effect even for
+        # events which were already in flight or queued.
+        current_channel_modes: dict[str, str] = {}
+        channels = sink.config.get("channels")
+        if isinstance(channels, list):
+            for channel in channels:
+                if (
+                    isinstance(channel, dict)
+                    and isinstance(channel.get("platform"), str)
+                    and isinstance(channel.get("name"), str)
+                ):
+                    key = channel_key(channel["platform"], channel["name"])
+                    current_channel_modes[key] = channel_mode_for(channel)
         for entry, info in live_events:
             if not poll_complete and not sink.defer_channel_row_repaints:
                 sink.apply_live_row_status(entry, info)
@@ -312,7 +328,9 @@ class MonitorEventBridge:
             decision = resolve_live_action(
                 mode=mode,
                 monitor_only=getattr(entry, "monitor_only", False),
-                channel_mode=getattr(entry, "channel_mode", None),
+                channel_mode=current_channel_modes.get(
+                    entry.key, getattr(entry, "channel_mode", None),
+                ),
                 configured_action=configured_action,
                 stream_status=info.stream_status or "live",
                 trigger_settings=trigger_settings,
@@ -352,7 +370,9 @@ class MonitorEventBridge:
             if should_close_on_offline(
                 mode=mode,
                 monitor_only=getattr(entry, "monitor_only", False),
-                channel_mode=getattr(entry, "channel_mode", None),
+                channel_mode=current_channel_modes.get(
+                    entry.key, getattr(entry, "channel_mode", None),
+                ),
                 wake_verify_active=sink.wake_verify_active,
                 close_on_offline=close_on_offline,
                 tracking_available=offline_tracking_available,

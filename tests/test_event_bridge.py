@@ -15,6 +15,7 @@ import pytest
 from stream_monitor.event_bridge import MonitorEventBridge
 from stream_monitor.events import (
     ChannelWentLive,
+    ChannelWentOffline,
     MonitorEventBus,
     PartialStatusUpdate,
     PollActivity,
@@ -226,6 +227,65 @@ def test_trigger_mode_notify_entry_dispatches_notification_only() -> None:
     assert plan.notify is True
     assert plan.open_browser is False
     assert sink.monitor_cycle_complete_calls == 0
+
+
+@pytest.mark.parametrize(
+    "old_mode,new_mode",
+    [(old, new) for old in ("trigger", "monitor", "notify")
+     for new in ("trigger", "monitor", "notify") if old != new],
+)
+def test_queued_live_event_uses_current_channel_mode(old_mode, new_mode):
+    bus = MonitorEventBus()
+    sink = _RecordingSink()
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(ChannelWentLive(entry=_entry(channel_mode=old_mode), info=_live_info()))
+    sink.config["channels"] = [
+        {"platform": "twitch", "name": "Hello", "channel_mode": new_mode},
+    ]
+
+    bridge.tick()
+
+    plans = [action.key for action, *_ in sink.executed_actions]
+    assert plans == {"trigger": ["open_and_stop"], "notify": ["notify_only"], "monitor": []}[new_mode]
+    assert len(sink.live_row_updates) == 1
+
+
+def test_queued_live_event_respects_current_legacy_monitor_only():
+    bus = MonitorEventBus()
+    sink = _RecordingSink()
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(ChannelWentLive(entry=_entry(), info=_live_info()))
+    sink.config["channels"] = [
+        {"platform": "twitch", "name": "hello", "monitor_only": True},
+    ]
+
+    bridge.tick()
+
+    assert sink.executed_actions == []
+    assert len(sink.live_row_updates) == 1
+
+
+@pytest.mark.parametrize(
+    "old_mode,new_mode",
+    [(old, new) for old in ("trigger", "monitor", "notify")
+     for new in ("trigger", "monitor", "notify") if old != new],
+)
+def test_queued_offline_event_uses_current_channel_mode(old_mode, new_mode):
+    bus = MonitorEventBus()
+    sink = _RecordingSink()
+    sink.current_browser_settings = lambda: SimpleNamespace(close_on_offline=True)
+    sink.platform_services.window.tracking_available = lambda _: True
+    bridge = MonitorEventBridge(sink, bus)
+    entry = _entry(channel_mode=old_mode)
+    offline_info = SimpleNamespace(url="https://www.twitch.tv/hello")
+    bus.publish(ChannelWentOffline(entry=entry, offline_info=offline_info))
+    sink.config["channels"] = [
+        {"platform": "twitch", "name": "hello", "channel_mode": new_mode},
+    ]
+
+    bridge.tick()
+
+    assert sink.offline_calls == ([(entry, offline_info)] if new_mode == "trigger" else [])
 
 
 def test_completed_poll_consumes_global_one_shot_mode() -> None:
