@@ -10,6 +10,8 @@ import threading
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from stream_monitor.event_bridge import MonitorEventBridge
 from stream_monitor.events import (
     ChannelWentLive,
@@ -251,6 +253,44 @@ def test_trigger_once_dispatches_actions_then_consumes_global_mode() -> None:
     assert sink.monitor_cycle_complete_calls == 1
 
 
+@pytest.mark.parametrize("mode", ["watch_once", "trigger_once"])
+@pytest.mark.parametrize("defer_repaints", [False, True])
+def test_one_shot_finishes_painting_all_rows_after_returning_to_idle(
+    mode: str, defer_repaints: bool,
+) -> None:
+    class CompletingSink(_RecordingSink):
+        def on_monitor_cycle_complete(self) -> None:
+            super().on_monitor_cycle_complete()
+            self._monitor_mode = "idle"
+
+    bus = MonitorEventBus()
+    sink = CompletingSink(mode=mode)
+    sink.defer_channel_row_repaints = defer_repaints
+    rows = [_FakeRow(f"twitch:c{i}") for i in range(8)]
+    sink._channel_rows = rows
+    bridge = MonitorEventBridge(sink, bus)
+    names = {row.key: row.key.upper() for row in rows}
+    bus.publish(PollStatusUpdate(
+        statuses={row.key: True for row in rows}, display_names=names,
+    ))
+
+    bridge.tick()
+    assert sink.monitor_mode == "idle"
+    assert sum(bool(row.applied) for row in rows) == (0 if defer_repaints else 3)
+
+    # Releasing a drag must also allow the completed cycle to finish painting.
+    sink.defer_channel_row_repaints = False
+    bus.publish(ChannelWentLive(entry=_entry("late"), info=_live_info("late")))
+    for _ in range(3):
+        bridge.tick()
+
+    assert [row.applied for row in rows] == [[True]] * len(rows)
+    assert sink.applied_display_names == [names]
+    assert sink.monitor_cycle_complete_calls == 1
+    assert sink.executed_actions == []
+    assert bus.drain() == []
+
+
 def test_one_shot_ignores_events_from_the_cycle_already_in_progress() -> None:
     bus = MonitorEventBus()
     sink = _RecordingSink(mode="trigger_once", action="open_and_stop")
@@ -269,6 +309,25 @@ def test_one_shot_ignores_events_from_the_cycle_already_in_progress() -> None:
     bridge.tick()
 
     assert [info.channel for _, info, _ in sink.executed_actions] == ["new"]
+    assert sink.monitor_cycle_complete_calls == 1
+
+
+def test_one_shot_does_not_dispatch_a_second_buffered_cycle() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger_once", action="open_and_keep")
+    bridge = MonitorEventBridge(sink, bus)
+    for cycle in (1, 2):
+        name = f"c{cycle}"
+        bus.publish(ChannelWentLive(
+            entry=_entry(name), info=_live_info(name), cycle_id=cycle,
+        ))
+        bus.publish(PollStatusUpdate(
+            statuses={}, display_names={}, cycle_id=cycle,
+        ))
+
+    bridge.tick()
+
+    assert [info.channel for _, info, _ in sink.executed_actions] == ["c1"]
     assert sink.monitor_cycle_complete_calls == 1
 
 

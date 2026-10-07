@@ -131,6 +131,12 @@ class MonitorEventBridge:
         sink = self._sink
         if sink.monitor_mode == "idle":
             self._bus.clear()
+            # A completed one-shot leaves its UI batch intact. Finish painting
+            # it over later ticks, including after a drag releases repaints.
+            # Explicit stop/reset already discards this pending state.
+            if not sink.defer_channel_row_repaints:
+                self._pending_display_names.flush(sink)
+                self._pending.flush(sink.iter_channel_rows(), limit=3)
             return
 
         live_events: list[tuple[ChannelEntry, StreamInfo]] = []
@@ -201,6 +207,11 @@ class MonitorEventBridge:
                     elif row._status_state in ("live", "offline", "upcoming"):
                         self._pending.set(row.key, None)
                 poll_complete = True
+                # Keep each completed cycle's effects together. In particular,
+                # a one-shot must not dispatch another cycle already queued
+                # while the UI was busy.
+                self._bus.requeue(other_events[index + 1:])
+                break
 
         for entry, info in live_events:
             if info.display_name:
