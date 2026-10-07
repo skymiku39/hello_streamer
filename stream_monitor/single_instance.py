@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -58,7 +59,11 @@ class SingleInstance:
         server: socket.socket | None = None
         try:
             server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            # POSIX keeps recently closed client connections in TIME_WAIT.
+            # Reuse that local address after exit, while an active listener
+            # still prevents a second instance from binding. Windows retains
+            # its stricter non-reuse behavior to avoid sharing a live port.
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, int(sys.platform != "win32"))
             server.bind((_HOST, self._port))
             server.listen(1)
             server.settimeout(_SOCKET_TIMEOUT)

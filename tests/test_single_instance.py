@@ -94,6 +94,12 @@ def test_existing_instance_is_signalled_and_can_release_port(instance_factory):
     assert second.try_lock() is False
     assert shown.wait(1)
     assert second._server is None
+    # Make the server close an accepted connection first. On POSIX this
+    # leaves TIME_WAIT on its local port, even after the listener exits.
+    with _connect(owner) as client:
+        client.settimeout(1)
+        client.sendall(b"SHOW")
+        assert client.recv(1) == b""
     owner.release()
     owner._thread.join(timeout=1)
     replacement = single_instance.SingleInstance(port=port)
