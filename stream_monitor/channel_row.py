@@ -16,6 +16,7 @@ from stream_monitor.app_ui import (
     _CLR_TEXT_DISABLED,
     _CLR_TWITCH,
     _CLR_YOUTUBE,
+    AppButton,
     _font,
     _format_countdown,
     _format_elapsed,
@@ -102,7 +103,7 @@ class ChannelRow(ctk.CTkFrame):
 
         # Drag handle only — visible ▲/▼ arrow controls were removed; reorder
         # still works via long-press drag (and any keyboard bindings on App).
-        self.drag_handle = ctk.CTkButton(
+        self.drag_handle = AppButton(
             move_frame,
             text="⠿",
             width=30,
@@ -120,14 +121,14 @@ class ChannelRow(ctk.CTkFrame):
 
         # Kept as no-op widgets for older tests / optional keyboard callers that
         # still pass on_move_up / on_move_down; not packed into the layout.
-        self.up_btn = ctk.CTkButton(
+        self.up_btn = AppButton(
             move_frame,
             text="",
             width=1,
             height=1,
             command=on_move_up,
         )
-        self.down_btn = ctk.CTkButton(
+        self.down_btn = AppButton(
             move_frame,
             text="",
             width=1,
@@ -189,7 +190,7 @@ class ChannelRow(ctk.CTkFrame):
         self.status_label.pack(side="left", padx=6, pady=8)
         self.status_label.bind("<Button-1>", lambda _event: self._open_active_page())
 
-        self.delete_btn = ctk.CTkButton(
+        self.delete_btn = AppButton(
             self,
             text="✕",
             width=32,
@@ -202,7 +203,7 @@ class ChannelRow(ctk.CTkFrame):
         )
         self.delete_btn.pack(side="right", padx=(0, 10), pady=8)
 
-        self.toggle_btn = ctk.CTkButton(
+        self.toggle_btn = AppButton(
             self,
             text="⏸",
             width=30,
@@ -226,7 +227,7 @@ class ChannelRow(ctk.CTkFrame):
         #   • clicking the eye while monitor-only → switches to notify-only
         #   • clicking the eye while notify-only → switches back to triggering
         #   • clicking pause/resume always clears monitor-only (resume = full)
-        self.monitor_only_btn = ctk.CTkButton(
+        self.monitor_only_btn = AppButton(
             self,
             text="👁",
             width=30,
@@ -241,7 +242,7 @@ class ChannelRow(ctk.CTkFrame):
         )
         self.monitor_only_btn.pack(side="right", padx=(0, 4), pady=8)
 
-        self.link_btn = ctk.CTkButton(
+        self.link_btn = AppButton(
             self,
             text="🔗",
             width=30,

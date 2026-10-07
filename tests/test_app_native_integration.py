@@ -36,3 +36,7 @@ def test_live_event_reaches_browser_through_real_app():
 
 def test_watch_to_trigger_opens_current_live_once():
     _run("watch_to_trigger")
+
+
+def test_dialog_buttons_use_application_style():
+    _run("dialogs")

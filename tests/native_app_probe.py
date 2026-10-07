@@ -15,8 +15,15 @@ import customtkinter as ctk
 import pytest
 
 from stream_monitor import app as app_module
-from stream_monitor import notifier
+from stream_monitor import i18n, notifier
 from stream_monitor.app import App
+from stream_monitor.app_dialogs import (
+    AddChannelDialog,
+    AppSettingsDialog,
+    BrowserSettingsDialog,
+    LanguageDialog,
+)
+from stream_monitor.app_ui import _FONT_FAMILY, AppButton
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import Monitor
@@ -145,6 +152,43 @@ def test_watch_to_trigger_opens_current_live_once(native_app):
         services.browser.open.assert_called_once()
 
 
+def test_dialog_buttons_use_application_style(native_app):
+    app, _services = native_app()
+    _pump(app)
+    callbacks = {
+        "minimize_to_tray": False, "run_on_startup": False,
+        "on_tray_changed": lambda _v: None,
+        "on_startup_changed": lambda _v: True,
+        "on_reset_launch_records": lambda: (True, "settings.reset.success"),
+    }
+    factories = [
+        (lambda: AppSettingsDialog(app, **callbacks), "_close_btn"),
+        (lambda: LanguageDialog(app), "_close_btn"),
+        (lambda: AddChannelDialog(app), "_cancel_btn"),
+        (lambda: BrowserSettingsDialog(app, {}), "_cancel_btn"),
+    ]
+    for factory, name in factories:
+        dialog = factory()
+        try:
+            # CTk briefly withdraws new Windows dialogs while applying their
+            # title-bar theme. Wait for mapping, not a fixed startup delay.
+            deadline = time.monotonic() + 3
+            while not dialog.winfo_ismapped() and time.monotonic() < deadline:
+                _pump(app, 0.05)
+            for language in ("zh_TW", "en", "ja"):
+                i18n.set_language(language)
+                _pump(app)
+                button = getattr(dialog, name)
+                assert isinstance(button, AppButton)
+                assert button.cget("font").cget("family") == _FONT_FAMILY
+                assert button.cget("fg_color") != "transparent"
+                assert button.winfo_ismapped(), (type(dialog).__name__, language)
+                assert button.winfo_reqwidth() >= button.cget("font").measure(button.cget("text"))
+                assert button.winfo_rooty() + button.winfo_height() <= dialog.winfo_rooty() + dialog.winfo_height()
+        finally:
+            dialog.destroy()
+
+
 if __name__ == "__main__":
     with native_app() as create:
         if sys.argv[1] == "layout":
@@ -153,5 +197,7 @@ if __name__ == "__main__":
             test_live_event_reaches_browser_through_real_app(create)
         elif sys.argv[1] == "watch_to_trigger":
             test_watch_to_trigger_opens_current_live_once(create)
+        elif sys.argv[1] == "dialogs":
+            test_dialog_buttons_use_application_style(create)
         else:
             raise ValueError(sys.argv[1])

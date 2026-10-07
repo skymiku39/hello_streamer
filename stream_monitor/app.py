@@ -55,6 +55,7 @@ from stream_monitor.app_ui import (
     _COMPACT_SEG_HEIGHT,
     _MIN_WINDOW_HEIGHT,
     _MIN_WINDOW_WIDTH,
+    AppButton,
     CompactFlowFrame,
     _button_width,
     _clamped_window_geometry,
@@ -414,7 +415,7 @@ class App(ctk.CTk):
         title_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
         self.language_icon = _language_icon()
-        self.language_btn = ctk.CTkButton(
+        self.language_btn = AppButton(
             title_bar,
             text="",
             image=self.language_icon,
@@ -447,7 +448,7 @@ class App(ctk.CTk):
         )
         self._title_en_label.pack(side="left", padx=(10, 0), pady=(6, 0))
 
-        self.add_btn = ctk.CTkButton(
+        self.add_btn = AppButton(
             title_bar,
             text=tr("toolbar.add_channel"),
             width=_button_width(
@@ -463,7 +464,7 @@ class App(ctk.CTk):
         self.add_btn.pack(side="right")
         _tooltip_tr(self.add_btn, "tooltip.add_channel")
 
-        self.browser_settings_btn = ctk.CTkButton(
+        self.browser_settings_btn = AppButton(
             title_bar,
             text=tr("toolbar.browser_settings"),
             width=_button_width(
@@ -485,7 +486,7 @@ class App(ctk.CTk):
         self.browser_settings_btn.pack(side="right", padx=(0, 8))
         _tooltip_tr(self.browser_settings_btn, "tooltip.browser_settings")
 
-        self.settings_btn = ctk.CTkButton(
+        self.settings_btn = AppButton(
             title_bar,
             text=tr("toolbar.settings"),
             width=_button_width(
@@ -605,7 +606,7 @@ class App(ctk.CTk):
         acts = ctk.CTkFrame(self._run_flow, fg_color="transparent")
         self._run_flow.add(acts)
 
-        self.start_btn = ctk.CTkButton(
+        self.start_btn = AppButton(
             acts,
             text=tr("toolbar.run"),
             width=_button_width(
@@ -621,7 +622,7 @@ class App(ctk.CTk):
         self.start_btn.pack(side="left", padx=(0, 8))
         _tooltip_tr(self.start_btn, "tooltip.run")
 
-        self.stop_btn = ctk.CTkButton(
+        self.stop_btn = AppButton(
             acts,
             text=tr("toolbar.stop"),
             width=_button_width(

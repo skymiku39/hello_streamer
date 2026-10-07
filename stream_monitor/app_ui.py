@@ -361,6 +361,33 @@ _CLR_TEXT_SECONDARY = "#9aa0b4"
 _CLR_TEXT_MUTED = "#7f8499"
 _CLR_STATUS_DOT_IDLE = "#6d6b67"
 
+_BUTTON_DEFAULTS = {
+    "height": 34,
+    "corner_radius": 8,
+    "fg_color": "#263653",
+    "hover_color": "#354866",
+    "border_width": 1,
+    "border_color": "#465570",
+    "text_color": "#e6eaf2",
+    "text_color_disabled": "#7f8499",
+}
+
+
+class AppButton(ctk.CTkButton):
+    """Application button defaults, independent of the toolkit's theme/font.
+
+    Callers may override colors for semantic actions (start, stop, delete),
+    while close/cancel buttons share the neutral application style.
+    """
+
+    def __init__(self, master: Any, **kwargs: Any) -> None:
+        options = {**_BUTTON_DEFAULTS, **kwargs}
+        if "font" not in options:
+            options["font"] = _font(13)
+        if "width" not in options:
+            options["width"] = _button_width(options.get("text", ""), min_width=88)
+        super().__init__(master, **options)
+
 _MIN_WINDOW_WIDTH = 920
 _MIN_WINDOW_HEIGHT = 560
 _DEFAULT_WINDOW_GEOMETRY = f"{_MIN_WINDOW_WIDTH}x580"

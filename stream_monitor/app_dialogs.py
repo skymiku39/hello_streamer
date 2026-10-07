@@ -24,6 +24,7 @@ from stream_monitor.app_ui import (
     _CLR_LINK_HOVER,
     _CLR_LIVE,
     PLATFORM_OPTIONS,
+    AppButton,
     _button_width,
     _fit_button,
     _font,
@@ -192,21 +193,17 @@ class AddChannelDialog(ctk.CTkToplevel):
         btn_frame.pack(padx=24, pady=(14, 22), fill="x")
         btn_frame.pack_propagate(False)
 
-        self._cancel_btn = ctk.CTkButton(
+        self._cancel_btn = AppButton(
             btn_frame,
             text=tr("add.btn.cancel"),
             width=_button_width(tr("add.btn.cancel"), min_width=96),
             height=40,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             font=_font(13),
             command=self.destroy,
         )
         self._cancel_btn.pack(side="right", padx=(8, 0), pady=4)
 
-        self._add_btn = ctk.CTkButton(
+        self._add_btn = AppButton(
             btn_frame,
             text=tr("add.btn.add"),
             width=_button_width(tr("add.btn.add"), min_width=96, weight="bold"),
@@ -478,21 +475,17 @@ class LanguageDialog(ctk.CTkToplevel):
         footer.pack(padx=22, pady=(6, 18), fill="x", side="bottom")
         footer.pack_propagate(False)
 
-        self._close_btn = ctk.CTkButton(
+        self._close_btn = AppButton(
             footer,
             text=tr("lang.btn.close"),
             width=_button_width(tr("lang.btn.close"), min_width=88),
             height=36,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             font=_font(13),
             command=self._on_close,
         )
         self._close_btn.pack(side="right", padx=(8, 0), pady=8)
 
-        self._apply_btn = ctk.CTkButton(
+        self._apply_btn = AppButton(
             footer,
             text=tr("lang.btn.apply"),
             width=_button_width(
@@ -589,6 +582,7 @@ class AppSettingsDialog(ctk.CTkToplevel):
         super().__init__(parent)
         self.title(tr("settings.title"))
         self.geometry("560x420")
+        self.configure(fg_color=_CLR_BG_DARK)
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -665,7 +659,7 @@ class AppSettingsDialog(ctk.CTkToplevel):
 
         reset_row = ctk.CTkFrame(body, fg_color="transparent")
         reset_row.pack(fill="x")
-        self.reset_btn = ctk.CTkButton(
+        self.reset_btn = AppButton(
             reset_row,
             text=tr("settings.reset.btn"),
             width=_button_width(tr("settings.reset.btn"), min_width=140, size=13),
@@ -692,16 +686,12 @@ class AppSettingsDialog(ctk.CTkToplevel):
 
         footer = ctk.CTkFrame(body, fg_color="transparent")
         footer.pack(fill="x", side="bottom", pady=(16, 0))
-        self._close_btn = ctk.CTkButton(
+        self._close_btn = AppButton(
             footer,
             text=tr("settings.btn.close"),
             width=_button_width(tr("settings.btn.close"), min_width=88),
             height=34,
             corner_radius=8,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             command=self.destroy,
         )
         self._close_btn.pack(side="right")
@@ -1070,16 +1060,12 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self.apply_geometry_cb.grid(row=0, column=0, sticky="w")
 
-        self.reset_geometry_btn = ctk.CTkButton(
+        self.reset_geometry_btn = AppButton(
             header_frame,
             text=tr("browser.geometry.reset"),
             width=_button_width(tr("browser.geometry.reset"), min_width=72),
             height=26,
             corner_radius=6,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             font=_font(11),
             command=self._on_reset_geometry,
         )
@@ -1204,7 +1190,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         self.app_mode_var = ctk.BooleanVar(value=bool(settings.get("app_mode", False)))
 
-        self._signin_btn = ctk.CTkButton(
+        self._signin_btn = AppButton(
             self._identity_path_frame,
             text=tr("browser.btn.signin"),
             width=_button_width(tr("browser.btn.signin"), min_width=120),
@@ -1614,7 +1600,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         btn_frame.pack(padx=16, pady=(8, 12), fill="x")
         btn_frame.pack_propagate(False)
 
-        self._test_btn = ctk.CTkButton(
+        self._test_btn = AppButton(
             btn_frame,
             text=tr("browser.btn.test"),
             width=_button_width(tr("browser.btn.test"), min_width=100),
@@ -1629,15 +1615,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._test_btn.pack(side="left", pady=4)
 
-        self._test_close_btn = ctk.CTkButton(
+        self._test_close_btn = AppButton(
             btn_frame,
             text=tr("browser.btn.test_close"),
             width=_button_width(tr("browser.btn.test_close"), min_width=100),
             height=40,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             font=_font(12),
             command=self._on_test_close,
         )
@@ -1645,7 +1627,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         _tooltip_tr(self._test_btn, "browser.btn.test.tooltip")
         _tooltip_tr(self._test_close_btn, "browser.btn.test_close.tooltip")
 
-        self._save_btn = ctk.CTkButton(
+        self._save_btn = AppButton(
             btn_frame,
             text=tr("browser.btn.save"),
             width=_button_width(
@@ -1659,15 +1641,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._save_btn.pack(side="right", pady=4)
 
-        self._cancel_btn = ctk.CTkButton(
+        self._cancel_btn = AppButton(
             btn_frame,
             text=tr("browser.btn.cancel"),
             width=_button_width(tr("browser.btn.cancel"), min_width=96),
             height=40,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             font=_font(13),
             command=self._on_cancel,
         )
