@@ -375,6 +375,8 @@ uv run python build.py
 
 推送 `v*` tag 後，release workflow 會建立 GitHub Release，並依 tag 產生：`HelloStreamer-${tag}-windows-x64.zip`、`HelloStreamer-${tag}-linux-x64.tar.gz`、`HelloStreamer-${tag}-linux-arm64.tar.gz`。
 
+若需修正發行流程後重建既有版本，可從 Actions 手動執行 release workflow，將 `release_tag` 設為已存在的版本標籤。程式碼、版本檢查、下載檔名與發行說明都取自該標籤，無須移動既有 tag。
+
 ## Linux / Raspberry Pi
 
 Linux 桌面環境建議安裝以下套件：

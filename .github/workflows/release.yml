@@ -4,12 +4,19 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing version tag to rebuild (for example v1.3.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
   UV_VERSION: "0.12.20"
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   build-windows:
@@ -18,6 +25,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -33,7 +42,7 @@ jobs:
         run: |
           uv --version
           uv sync --locked --extra dev
-          uv tree --locked --extra dev --depth 2
+          uv tree --locked --depth 2
 
       - name: Ruff
         run: uv run ruff check .
@@ -45,7 +54,7 @@ jobs:
         run: uv run pytest -q
 
       - name: Verify release tag matches package version
-        run: uv run python build.py --check-release-tag "${{ github.ref_name }}"
+        run: uv run python build.py --check-release-tag "$env:RELEASE_TAG"
 
       - name: Build Executable
         run: uv run python build.py
@@ -58,7 +67,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release
           uv run python build.py --validate-windows-onedir dist/HelloStreamer
-          Compress-Archive -Path "dist/HelloStreamer" -DestinationPath "release/HelloStreamer-${{ github.ref_name }}-windows-x64.zip"
+          Compress-Archive -Path "dist/HelloStreamer" -DestinationPath "release/HelloStreamer-${env:RELEASE_TAG}-windows-x64.zip"
 
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
@@ -82,6 +91,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       - name: Set up QEMU
         if: matrix.platform != 'linux/amd64'
@@ -94,7 +105,7 @@ jobs:
           docker run --rm --platform "${{ matrix.platform }}" \
             -v "${{ github.workspace }}:/src" \
             -w /src \
-            -e RELEASE_TAG="${{ github.ref_name }}" \
+            -e RELEASE_TAG \
             -e UV_VERSION="${{ env.UV_VERSION }}" \
             debian:bookworm \
             bash -c '
@@ -126,7 +137,7 @@ jobs:
               # Keep Debian GTK / system-site packages visible to the build venv.
               uv venv --python python3 --system-site-packages
               uv sync --locked --extra dev
-              uv tree --locked --extra dev --depth 2
+              uv tree --locked --depth 2
               . .venv/bin/activate
               python -m ruff check .
               python -m compileall -f stream_monitor build.py
@@ -169,7 +180,7 @@ jobs:
             exit 1
           fi
           mkdir -p release
-          tar -czf "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C dist HelloStreamer
+          tar -czf "release/HelloStreamer-${RELEASE_TAG}-${{ matrix.artifact }}.tar.gz" -C dist HelloStreamer
 
       - name: Upload Release Artifact
         uses: actions/upload-artifact@v4
@@ -187,6 +198,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       - name: Download Release Artifacts
         uses: actions/download-artifact@v4
@@ -204,6 +217,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: release/*
           body_path: release_body.md
         env:

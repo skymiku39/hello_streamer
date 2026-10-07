@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import shlex
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -153,9 +156,37 @@ def test_release_workflow_statically_wires_gates() -> None:
     assert "version: ${{ env.UV_VERSION }}" in text
     assert "astral.sh/uv/${UV_VERSION}/install.sh" in text
     assert text.count("uv sync --locked --extra dev") >= 2
-    assert text.count("uv tree --locked --extra dev --depth 2") == 2
+    assert text.count("uv tree --locked --depth 2") == 2
     assert "pip install -e" not in text
     assert "--system-site-packages" in text
+
+
+def test_release_dependency_inspection_commands_accept_real_uv_arguments():
+    """Execute workflow diagnostic commands; string checks miss invalid flags."""
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("Release command validation requires uv")
+    commands = {
+        line.strip() for line in RELEASE_YML.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("uv tree ")
+    }
+    assert commands
+    for command in commands:
+        result = subprocess.run(
+            [uv, *shlex.split(command)[1:], "--offline"],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_release_retry_keeps_checkout_assets_and_publication_on_requested_tag():
+    text = RELEASE_YML.read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in text
+    assert "RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}" in text
+    assert text.count("ref: refs/tags/${{ env.RELEASE_TAG }}") == 3
+    assert "tag_name: ${{ env.RELEASE_TAG }}" in text
+    assert 'build.py --check-release-tag "$env:RELEASE_TAG"' in text
+    assert 'build.py --check-release-tag "$RELEASE_TAG"' in text
 
 
 def test_readme_release_assets_match_workflow_naming() -> None:
@@ -163,9 +194,9 @@ def test_readme_release_assets_match_workflow_naming() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     workflow = RELEASE_YML.read_text(encoding="utf-8")
 
-    windows_pattern = "HelloStreamer-${{ github.ref_name }}-windows-x64.zip"
+    windows_pattern = "HelloStreamer-${env:RELEASE_TAG}-windows-x64.zip"
     linux_pattern = (
-        "HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz"
+        "HelloStreamer-${RELEASE_TAG}-${{ matrix.artifact }}.tar.gz"
     )
     assert windows_pattern in workflow
     assert linux_pattern in workflow
