@@ -37,6 +37,7 @@ class _FakeMonitor:
         self.started = 0
         self.request_stops = 0
         self.restarts = 0
+        self.live_rechecks = 0
         self.poll_cycle = 0
         self.updated_channels: list = []
         self.updated_intervals: list = []
@@ -44,6 +45,9 @@ class _FakeMonitor:
     def start(self) -> None:
         self.is_running = True
         self.started += 1
+
+    def request_live_recheck(self) -> None:
+        self.live_rechecks += 1
 
     def stop(self, timeout=None) -> None:
         self.is_running = False
@@ -108,6 +112,22 @@ def test_start_again_reuses_running_monitor(controller) -> None:
     monitor = controller._created[0]
     assert monitor.updated_intervals[-1] == 45
     assert monitor.updated_channels[-1] == channels
+
+
+@pytest.mark.parametrize("watch_mode", ["watch", "watch_once"])
+@pytest.mark.parametrize("trigger_mode", ["trigger", "trigger_once"])
+@pytest.mark.parametrize("stop_first", [False, True])
+def test_watch_to_trigger_rechecks_live_after_observation(
+    controller, watch_mode, trigger_mode, stop_first,
+) -> None:
+    channels = [{"platform": "twitch", "name": "a"}]
+    controller.start(watch_mode, channels, 30)
+    if stop_first:
+        controller.stop()
+    controller.start(trigger_mode, channels, 30)
+    assert controller._created[-1].live_rechecks == 1
+    controller.start(trigger_mode, channels, 30)
+    assert controller._created[-1].live_rechecks == 1
 
 
 def test_start_one_shot_sets_a_cycle_boundary_when_reusing_monitor(controller) -> None:

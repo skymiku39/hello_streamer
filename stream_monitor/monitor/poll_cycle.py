@@ -15,6 +15,7 @@ from stream_monitor.monitor.types import (
     _YOUTUBE_MAX_CONCURRENT,
     ChannelEntry,
     _ProbeSnapshot,
+    _video_item_to_stream_info,
     poll_rest_overshoot_seconds,
     split_platform_entries,
 )
@@ -367,6 +368,29 @@ class PollCycleMixin:
         probe = get_platform_probe(entry.platform)
         events = probe.probe_live(self._facade, entry, snap)
         probe.finalize_tier1_probe(self._facade, entry, snap)
+        with self._lock:
+            boundary = self._live_recheck_after.get(entry.key)
+            if boundary is None or self._poll_cycle <= boundary:
+                return events
+            # Only fresh, available probe payloads may satisfy a recheck.
+            # Missing responses and held fallback state retain the request.
+            info = snap.twitch_info or snap.youtube_fallback_info
+            if info is not None:
+                confirmed = [info] if info.is_live else []
+            elif snap.youtube_items and not snap.youtube_fallback:
+                confirmed = [
+                    _video_item_to_stream_info(item, entry.name)
+                    for item in snap.youtube_items if item.style == "LIVE"
+                ]
+            else:
+                return events
+            self._live_recheck_after.pop(entry.key, None)
+        existing = {info.url for _entry, info in events}
+        for info in confirmed:
+            if info.url and info.url not in existing:
+                events.append((entry, info))
+                existing.add(info.url)
+                logger.info("Trigger-mode live recheck: %s url=%s", entry.key, info.url)
         return events
 
     def _refresh_details(self, entry: ChannelEntry) -> Callable[[], None]:

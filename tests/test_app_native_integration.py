@@ -32,3 +32,7 @@ def test_cold_start_interval_fits_without_manual_resize(mode, scale):
 
 def test_live_event_reaches_browser_through_real_app():
     _run("action")
+
+
+def test_watch_to_trigger_opens_current_live_once():
+    _run("watch_to_trigger")

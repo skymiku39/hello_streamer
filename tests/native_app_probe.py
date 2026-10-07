@@ -8,7 +8,8 @@ import time
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import customtkinter as ctk
 import pytest
@@ -19,6 +20,7 @@ from stream_monitor.app import App
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import Monitor
+from stream_monitor.monitor import deps as monitor_deps
 
 
 @contextmanager
@@ -47,6 +49,7 @@ def native_app():
     monkeypatch.setattr(app_module, "_reorder_debug", lambda *_a, **_kw: None)
     monkeypatch.setattr(App, "maybe_restart_dead_monitor", lambda _s: None)
     monkeypatch.setattr(Monitor, "start", lambda _s: None)
+    monkeypatch.setattr(Monitor, "restart_thread", lambda _s: None)
     services = MagicMock()
     services.window.tracking_available.return_value = False
     services.window.release_keep_awake_for_closed.return_value = 0
@@ -116,11 +119,39 @@ def test_live_event_reaches_browser_through_real_app(native_app):
     services.notification.send.assert_not_called()
 
 
+def test_watch_to_trigger_opens_current_live_once(native_app):
+    app, services = native_app()
+    info = StreamInfo(
+        channel="testchannel", platform="twitch", is_live=True,
+        url="https://www.twitch.tv/testchannel", title="Live", stream_status="live",
+    )
+    fetcher = SimpleNamespace(get_stream_info=lambda _name: info)
+    with patch.object(monitor_deps, "get_fetcher", return_value=fetcher):
+        app._on_watch()
+        monitor = app._controller._monitor
+        monitor._poll_cycle = 1
+        monitor._tier1_probe_entries(monitor._entries)
+        _pump(app)
+        services.browser.open.assert_not_called()
+        # Go through the actual segmented-control callback and controller.
+        app._on_mode_segment(app._mode_segment_label("trigger"))
+        monitor._poll_cycle = 2
+        monitor._tier1_probe_entries(monitor._entries)
+        _pump(app)
+        services.browser.open.assert_called_once_with(info, None)
+        monitor._poll_cycle = 3
+        monitor._tier1_probe_entries(monitor._entries)
+        _pump(app)
+        services.browser.open.assert_called_once()
+
+
 if __name__ == "__main__":
     with native_app() as create:
         if sys.argv[1] == "layout":
             test_cold_start_interval_fits_without_manual_resize(create, sys.argv[2] == "silent", float(sys.argv[3]))
         elif sys.argv[1] == "action":
             test_live_event_reaches_browser_through_real_app(create)
+        elif sys.argv[1] == "watch_to_trigger":
+            test_watch_to_trigger_opens_current_live_once(create)
         else:
             raise ValueError(sys.argv[1])

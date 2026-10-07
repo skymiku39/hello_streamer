@@ -89,6 +89,7 @@ class Monitor(
         self._session = ProbeSession()
         self._facade = ProbeFacade(self)
         self._poll_cycle = 0
+        self._live_recheck_after: dict[str, int] = {}
         self._stable_status_polls: dict[str, int] = {}
         self._last_poll_ended: float = 0.0
         self._last_poll_wall_started: float = 0.0
@@ -395,6 +396,18 @@ class Monitor(
 
     def update_interval(self, interval: int) -> None:
         self._interval = max(10, interval)
+
+    def request_live_recheck(self) -> None:
+        """Re-emit confirmed live streams once after entering trigger mode.
+
+        Observation already advances edge/seen state in watch mode. Wait for
+        a new probe cycle instead of launching from possibly stale UI caches.
+        """
+        with self._lock:
+            self._live_recheck_after = {
+                entry.key: self._poll_cycle
+                for entry in self._entries if entry.enabled
+            }
 
     def _run_maintenance(self, *, force: bool = False) -> None:
         """Prune SQLite seen_videos and the YouTube watch-details cache."""

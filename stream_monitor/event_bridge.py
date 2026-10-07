@@ -336,10 +336,10 @@ class MonitorEventBridge:
                 trigger_settings=trigger_settings,
             )
             if decision.action is None:
-                if decision.suppressed_reason == "monitor_only":
-                    logger.info(
-                        "Skipped action for %s (monitor_only)", entry.key
-                    )
+                logger.info(
+                    "Skipped action for %s (%s, mode=%s)",
+                    entry.key, decision.suppressed_reason, mode,
+                )
                 continue
             if decision.plan is None:
                 logger.warning(
@@ -362,6 +362,10 @@ class MonitorEventBridge:
             # The bridge only submits the pure plan.  ActionCoordinator owns
             # worker lifetime and post-launch lifecycle transitions, keeping
             # the event drain independent from desktop side-effects.
+            logger.info(
+                "Submitting live action: channel=%s action=%s generation=%s",
+                entry.key, plan.key, generation,
+            )
             sink.execute_live_action(
                 plan, info, browser_settings, generation
             )

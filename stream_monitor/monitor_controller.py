@@ -13,6 +13,8 @@ from typing import Any
 
 from stream_monitor.channel_policy import (
     GLOBAL_ACTIVE_MODES,
+    GLOBAL_MONITOR_MODES,
+    GLOBAL_TRIGGER_MODES,
     TRIGGER_ONCE_MODE,
     WATCH_ONCE_MODE,
     is_one_shot_monitor_mode,
@@ -37,6 +39,7 @@ class MonitorController:
         self._bridge = MonitorEventBridge(sink, self._bus)
         self._monitor: Monitor | None = None
         self._mode = "idle"
+        self._last_started_mode = "idle"
         self._generation = 0
         self._stopping_thread: threading.Thread | None = None
 
@@ -108,6 +111,10 @@ class MonitorController:
         """Enter ``mode`` and ensure the monitor is polling. False if no channels."""
         if not channels:
             return False
+        recheck_live = (
+            self._last_started_mode in GLOBAL_MONITOR_MODES
+            and mode in GLOBAL_TRIGGER_MODES
+        )
         self._generation += 1
         if is_one_shot_monitor_mode(mode):
             current_cycle = (
@@ -122,7 +129,9 @@ class MonitorController:
             interval,
             initial_statuses=initial_statuses,
             last_activity_epoch=last_activity_epoch,
+            recheck_live=recheck_live,
         )
+        self._last_started_mode = mode
         return True
 
     def stop(self) -> None:
@@ -206,6 +215,7 @@ class MonitorController:
         interval: int,
         initial_statuses: dict[str, Any] | None = None,
         last_activity_epoch: float = 0.0,
+        recheck_live: bool = False,
     ) -> None:
         # Do not create a new monitor while the previous poll thread is still
         # unwinding network work or using the shared SQLite connection.
@@ -213,9 +223,13 @@ class MonitorController:
         if self._monitor is not None and self._monitor.is_running:
             self._monitor.update_interval(interval)
             self._monitor.update_channels(channels)
+            if recheck_live:
+                self._monitor.request_live_recheck()
         elif self._monitor is not None:
             self._monitor.update_interval(interval)
             self._monitor.update_channels(channels)
+            if recheck_live:
+                self._monitor.request_live_recheck()
             self._monitor.restart_thread()
         else:
             # An in-flight publication can race with stop() clearing the bus.
@@ -230,6 +244,8 @@ class MonitorController:
                 initial_statuses=initial_statuses,
                 last_activity_epoch=last_activity_epoch,
             )
+            if recheck_live:
+                self._monitor.request_live_recheck()
             self._monitor.start()
 
     def _join_stopping_thread(self, *, timeout: float | None) -> None:
