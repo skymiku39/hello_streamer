@@ -171,6 +171,8 @@ def build_pyinstaller_command(
         "HelloStreamer",
         "--collect-data",
         "customtkinter",
+        "--hidden-import",
+        "websocket",
         "--add-data",
         f"stream_monitor{separator}stream_monitor",
     ]

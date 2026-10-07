@@ -7,12 +7,12 @@ limit. System sleep or browser suspension can interrupt playback.
 These settings let the user opt in to launch-time mitigations the desktop app
 *can* control (window visibility, system-sleep suppression, Chrome performance
 whitelist). Optional CDP page-assist (content gate, theater mode, channel-point
-claim, auto-refresh) is source-run only and hard-disabled in frozen builds.
+claim, auto-refresh) is available in source and packaged builds.
 """
 
 from __future__ import annotations
 
-import sys
+import importlib.util
 from dataclasses import asdict, dataclass, fields
 from typing import Any
 
@@ -39,7 +39,7 @@ class ViewerEngagementSettings:
     # a requirement for Twitch viewer counting.
     foreground_hold_seconds: int = 15
 
-    # --- CDP page assist (source / non-frozen only) ---
+    # --- Optional CDP page assist ---
     page_assist_enabled: bool = False
     accept_content_gate: bool = True
     claim_channel_points: bool = False
@@ -78,8 +78,8 @@ class ViewerEngagementSettings:
 
 
 def page_assist_runtime_allowed() -> bool:
-    """Page assist is never available inside a packaged (frozen) executable."""
-    return not bool(getattr(sys, "frozen", False))
+    """Both distribution modes support CDP when its transport is installed."""
+    return importlib.util.find_spec("websocket") is not None
 
 
 def coerce_viewer_engagement(

@@ -1416,9 +1416,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             anchor="w",
         )
         self._page_assist_section_label.pack(padx=12, pady=(10, 4), anchor="w")
-        self._page_assist_frozen_note = ctk.CTkLabel(
+        self._page_assist_unavailable_note = ctk.CTkLabel(
             engagement_card,
-            text=tr("engagement.page_assist.frozen"),
+            text=tr("engagement.page_assist.unavailable"),
             font=_font(10),
             text_color="#ef9a9a",
             anchor="w",
@@ -1427,7 +1427,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._page_assist_runtime_ok = page_assist_runtime_allowed()
         if not self._page_assist_runtime_ok:
-            self._page_assist_frozen_note.pack(padx=12, pady=(0, 6), anchor="w")
+            self._page_assist_unavailable_note.pack(padx=12, pady=(0, 6), anchor="w")
         self.page_assist_enabled_var = ctk.BooleanVar(
             value=bool(ve_settings.get("page_assist_enabled"))
             and self._page_assist_runtime_ok
@@ -1764,8 +1764,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._page_assist_section_label.configure(
             text=tr("engagement.page_assist.section")
         )
-        self._page_assist_frozen_note.configure(
-            text=tr("engagement.page_assist.frozen")
+        self._page_assist_unavailable_note.configure(
+            text=tr("engagement.page_assist.unavailable")
         )
         self._page_assist_enabled_switch.configure(
             text=tr("engagement.toggle.page_assist")

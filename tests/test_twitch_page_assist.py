@@ -1,4 +1,4 @@
-"""Tests for CDP Twitch page assist (source-only)."""
+"""Tests for CDP Twitch page assist in source and packaged builds."""
 
 from __future__ import annotations
 
@@ -33,13 +33,13 @@ def test_page_assist_defaults_are_opt_in() -> None:
     assert settings.auto_refresh is False
 
 
-def test_page_assist_runtime_blocked_when_frozen(monkeypatch) -> None:
+def test_page_assist_runtime_allowed_when_frozen(monkeypatch) -> None:
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    assert page_assist_runtime_allowed() is False
+    assert page_assist_runtime_allowed() is True
     settings = ViewerEngagementSettings(
         enabled=True, page_assist_enabled=True
     )
-    assert settings.page_assist_active() is False
+    assert settings.page_assist_active() is True
 
 
 def test_page_assist_runtime_allowed_when_source(monkeypatch) -> None:
@@ -49,6 +49,14 @@ def test_page_assist_runtime_allowed_when_source(monkeypatch) -> None:
         enabled=True, page_assist_enabled=True
     )
     assert settings.page_assist_active() is True
+
+
+def test_page_assist_unavailable_without_transport(monkeypatch) -> None:
+    from stream_monitor import viewer_engagement_model
+
+    monkeypatch.setattr(viewer_engagement_model.importlib.util, "find_spec", lambda _name: None)
+    assert page_assist_runtime_allowed() is False
+    assert not ViewerEngagementSettings(enabled=True, page_assist_enabled=True).page_assist_active()
 
 
 def test_normalize_viewer_engagement_page_assist_ints() -> None:
@@ -653,14 +661,19 @@ console.log(JSON.stringify(result));
     assert data["y"] == 220
 
 
-def test_start_page_assist_rejected_when_frozen(monkeypatch) -> None:
+def test_start_page_assist_supported_when_frozen(monkeypatch) -> None:
+    from stream_monitor import twitch_page_assist
+
     monkeypatch.setattr(sys, "frozen", True, raising=False)
+    started = []
+    monkeypatch.setattr(twitch_page_assist._PageAssistWorker, "start", lambda self: started.append(self.url))
     assert (
         start_page_assist(
             "https://www.twitch.tv/foo",
             9222,
             ViewerEngagementSettings(enabled=True, page_assist_enabled=True),
         )
-        is False
+        is True
     )
+    assert started == ["https://www.twitch.tv/foo"]
     stop_page_assist("https://www.twitch.tv/foo")

@@ -2114,6 +2114,7 @@ def _run_frozen_self_check() -> None:
     """Import platform-specific frozen dependencies without opening the UI."""
     if not getattr(sys, "frozen", False):
         return
+    __import__("websocket")
     if sys.platform == "win32":
         # These imports are intentionally lazy in normal runtime paths.  The
         # release smoke command makes missing PyInstaller hidden imports fail

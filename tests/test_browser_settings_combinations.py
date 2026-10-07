@@ -2277,7 +2277,7 @@ def test_dialog_preserves_foreground_hold_seconds_without_ui() -> None:
         dialog.destroy()
 
 
-def test_frozen_dialog_save_preserves_source_page_assist_preferences(monkeypatch):
+def test_unavailable_transport_preserves_page_assist_preferences(monkeypatch):
     from stream_monitor import app_dialogs
 
     monkeypatch.setattr(app_dialogs, "page_assist_runtime_allowed", lambda: False)
@@ -2295,10 +2295,14 @@ def test_frozen_dialog_save_preserves_source_page_assist_preferences(monkeypatch
             dialog.destroy()
 
 
-def test_page_assist_controls_follow_launch_requirements_without_losing_preferences():
+@pytest.mark.parametrize("frozen", [False, True])
+def test_page_assist_controls_follow_launch_requirements_without_losing_preferences(monkeypatch, frozen):
+    import sys
+
     from stream_monitor import app_dialogs
     from stream_monitor import browser_settings_model as bsm
 
+    monkeypatch.setattr(sys, "frozen", frozen, raising=False)
     dialog = app_dialogs.BrowserSettingsDialog(
         _module_ctk_root(),
         {"enabled": True, "user_data_dir": "C:/test/profile", "new_window": True},
