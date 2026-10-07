@@ -1,6 +1,6 @@
 """Twitch in-page assist orchestrator driven by Chromium CDP.
 
-Runs only for source builds with viewer_engagement.page_assist_enabled.
+Runs when viewer_engagement.page_assist_enabled and launch requirements hold.
 Each managed Twitch window gets one background worker that:
   1. accepts content-classification / Start Watching gates
   2. optionally enables theater mode (verified; idempotent; never blind-toggle)

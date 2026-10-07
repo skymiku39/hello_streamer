@@ -1,8 +1,7 @@
 """Minimal Chromium DevTools Protocol client for Twitch page assist.
 
-Source-run only. Packaged builds must not import the execution path that
-attaches to a live browser; helpers that allocate a port remain safe to call
-from tests.
+Used by source and packaged builds when the user enables page assist for a
+dedicated Chromium profile and a managed browser window.
 """
 
 from __future__ import annotations

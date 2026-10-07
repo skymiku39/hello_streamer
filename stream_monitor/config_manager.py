@@ -90,7 +90,7 @@ DEFAULT_VIEWER_ENGAGEMENT: dict[str, Any] = {
     "whitelist_performance": True,
     "bring_to_front": True,
     "foreground_hold_seconds": 15,
-    # CDP page assist (source-run only; frozen builds hard-disable at runtime).
+    # Optional CDP page assist for source and packaged builds.
     "page_assist_enabled": False,
     "accept_content_gate": True,
     "claim_channel_points": False,
