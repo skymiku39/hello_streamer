@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from stream_monitor.action_coordinator import ActionCoordinator
-from stream_monitor.action_executor import ActionResult, ActionStatus
+from stream_monitor.action_executor import ActionExecutor, ActionResult, ActionStatus
 from stream_monitor.action_plan import action_plan_for
 from stream_monitor.fetcher.base import StreamInfo
+from stream_monitor.platform_ports import ActionPorts
 
 
 def _info() -> StreamInfo:
@@ -273,3 +277,85 @@ def test_pending_queue_has_a_bounded_limit() -> None:
     )
     assert coordinator.submit(plan, second_info, None, generation=1) is False
     release.set()
+
+
+def _wait_for_workers(coordinator):
+    deadline = time.monotonic() + 2
+    while coordinator.has_active_work() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert not coordinator.has_active_work()
+
+
+def _terminal_executor(*, notification_ok=True):
+    return ActionExecutor(
+        ports=ActionPorts(
+            notification=SimpleNamespace(send=lambda *args, **kwargs: notification_ok),
+            browser=SimpleNamespace(open=lambda *args: True),
+        )
+    )
+
+
+@pytest.mark.parametrize("action", ["open_and_stop", "open_and_exit"])
+def test_cancelling_generation_invalidates_already_scheduled_lifecycle(action):
+    scheduled = []
+    lifecycle = []
+    coordinator = _coordinator(
+        _terminal_executor().execute, scheduled=scheduled, lifecycle=lifecycle,
+    )
+    assert coordinator.submit(action_plan_for(action), _info(), None, generation=1)
+    _wait_for_workers(coordinator)
+    assert len(scheduled) == 1
+
+    coordinator.cancel_generation(1)
+    scheduled[0]()
+    assert lifecycle == []
+
+
+@pytest.mark.parametrize("action", ["open_and_stop", "open_and_exit"])
+def test_notification_failure_does_not_release_queued_terminal_action(action):
+    scheduled = []
+    lifecycle = []
+    coordinator = _coordinator(
+        _terminal_executor(notification_ok=False).execute,
+        scheduled=scheduled, lifecycle=lifecycle,
+    )
+    plan = action_plan_for(action)
+    assert coordinator.submit(plan, _info(), None, generation=1)
+    _wait_for_workers(coordinator)
+    assert len(scheduled) == 1
+    assert coordinator.submit(plan, _info(), None, generation=1) is False
+
+    scheduled[0]()
+    assert lifecycle == ["stop" if action == "open_and_stop" else "exit"]
+
+
+def test_failed_ui_schedule_reports_failure_and_allows_terminal_retry():
+    attempts = []
+    scheduled = []
+    results = []
+    executor = _terminal_executor()
+
+    def schedule(callback):
+        attempts.append(callback)
+        if len(attempts) == 1:
+            raise RuntimeError("UI scheduler temporarily unavailable")
+        scheduled.append(callback)
+
+    def run(*args, **kwargs):
+        result = executor.execute(*args, **kwargs)
+        results.append(result)
+        return result
+
+    coordinator = ActionCoordinator(
+        runner=run, schedule_ui=schedule, generation_is_current=lambda _: True,
+        on_stop=lambda: None, on_exit=lambda: None,
+    )
+    plan = action_plan_for("open_and_stop")
+    assert coordinator.submit(plan, _info(), None, generation=1)
+    _wait_for_workers(coordinator)
+    assert results[0].status == ActionStatus.LIFECYCLE_FAILED
+    assert results[0].browser_opened is True
+    assert coordinator.submit(plan, _info(), None, generation=1)
+    _wait_for_workers(coordinator)
+    assert results[1].succeeded
+    assert len(scheduled) == 1
