@@ -6,6 +6,8 @@ without spawning polling threads.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from stream_monitor import monitor_controller
@@ -173,3 +175,39 @@ def test_snapshot_display_names_passthrough(controller) -> None:
     assert controller.snapshot_display_names() == {}
     controller.start("trigger", [{"platform": "twitch", "name": "a"}], 30)
     assert controller.snapshot_display_names() == {"twitch:a": "A"}
+
+
+@pytest.mark.parametrize("mode", ["trigger", "watch", "trigger_once", "watch_once"])
+def test_restart_discards_events_published_while_old_monitor_stops(controller, monkeypatch, mode):
+    channels = [{"platform": "twitch", "name": "a"}]
+    controller.start("watch", channels, 30)
+    old_monitor = controller._created[0]
+    release_stop = threading.Event()
+
+    def late_stop(timeout=None):
+        assert release_stop.wait(2)
+        old_monitor.event_bus.publish(PollWaiting(cycle_id=99))
+        old_monitor.is_running = False
+
+    monkeypatch.setattr(old_monitor, "stop", late_stop)
+    controller.stop()
+    real_join = controller._join_stopping_thread
+
+    def join_after_mode_switch(*, timeout):
+        release_stop.set()
+        real_join(timeout=timeout)
+
+    def start_new(monitor):
+        monitor.is_running = True
+        monitor.event_bus.publish(PollWaiting(cycle_id=1))
+
+    monkeypatch.setattr(controller, "_join_stopping_thread", join_after_mode_switch)
+    monkeypatch.setattr(_FakeMonitor, "start", start_new)
+    try:
+        controller.start(mode, channels, 30)
+        assert controller._bus.drain() == [PollWaiting(cycle_id=1)]
+        if mode.endswith("_once"):
+            assert controller._bridge._one_shot_after_cycle == 0
+    finally:
+        release_stop.set()
+        controller.shutdown()

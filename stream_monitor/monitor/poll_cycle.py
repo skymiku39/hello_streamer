@@ -77,7 +77,7 @@ class PollCycleMixin:
         the Twitch queue (e.g. YT1 + TW1/TW2/TW3 together, then YT2).
         Secondary: ▲▼ list order within each platform queue.
         """
-        if not entries:
+        if not entries or self._stop_event.is_set():
             return []
         youtube_pending, twitch_pending = split_platform_entries(entries)
         youtube_pending = list(youtube_pending)
@@ -119,6 +119,8 @@ class PollCycleMixin:
             while not self._stop_event.is_set():
                 with cond:
                     while True:
+                        if self._stop_event.is_set():
+                            return
                         entry = _claim()
                         if entry is not None:
                             break
@@ -126,6 +128,8 @@ class PollCycleMixin:
                             return
                         cond.wait(timeout=0.25)
                 try:
+                    if self._stop_event.is_set():
+                        return
                     item = work_fn(entry)
                     with results_lock:
                         results.append(item)
@@ -317,9 +321,13 @@ class PollCycleMixin:
         self, events: list[tuple[ChannelEntry, StreamInfo]]
     ) -> int:
         """Notify listeners as soon as tier-1 confirms a new live edge."""
+        dispatched = 0
         for entry, info in events:
+            if self._stop_event.is_set():
+                break
             self._emit_went_live(entry, info)
-        return len(events)
+            dispatched += 1
+        return dispatched
 
     def _tier1_probe_entries(
         self,

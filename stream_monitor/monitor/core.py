@@ -261,7 +261,7 @@ class Monitor(
             return dict(self._display_names)
 
     def _emit_went_live(self, entry: ChannelEntry, info: StreamInfo) -> None:
-        if self._event_bus is None:
+        if self._event_bus is None or self._stop_event.is_set():
             return
         self._event_bus.publish(
             ChannelWentLive(
@@ -272,7 +272,7 @@ class Monitor(
     def _emit_went_offline(
         self, entry: ChannelEntry, offline_info: OfflineInfo
     ) -> None:
-        if self._event_bus is None:
+        if self._event_bus is None or self._stop_event.is_set():
             return
         self._event_bus.publish(
             ChannelWentOffline(
@@ -285,7 +285,7 @@ class Monitor(
     def _emit_poll_activity(
         self, entry: ChannelEntry, phase: str, display_name: str
     ) -> None:
-        if self._event_bus is None:
+        if self._event_bus is None or self._stop_event.is_set():
             return
         self._event_bus.publish(
             PollActivity(
@@ -299,7 +299,7 @@ class Monitor(
     def _emit_partial_snapshot(
         self, statuses: dict[str, Any], display_names: dict[str, str]
     ) -> None:
-        if self._event_bus is None:
+        if self._event_bus is None or self._stop_event.is_set():
             return
         self._event_bus.publish(
             PartialStatusUpdate(
@@ -310,7 +310,7 @@ class Monitor(
         )
 
     def _emit_poll_complete(self) -> None:
-        if self._event_bus is None:
+        if self._event_bus is None or self._stop_event.is_set():
             return
         with self._lock:
             statuses = dict(self._last_status)

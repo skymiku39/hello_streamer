@@ -218,6 +218,10 @@ class MonitorController:
             self._monitor.update_channels(channels)
             self._monitor.restart_thread()
         else:
+            # An in-flight publication can race with stop() clearing the bus.
+            # The old producer has now exited, so clear once more before the
+            # new monitor can publish events for this session.
+            self._bus.clear()
             self._monitor = Monitor(
                 channels=channels,
                 interval=interval,
