@@ -137,13 +137,13 @@ def read_devtools_active_port(user_data_dir: str) -> int | None:
     path = Path(root) / "DevToolsActivePort"
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     first = (text.splitlines() or [""])[0].strip()
-    if not first.isdigit():
+    if not first.isascii() or not first.isdigit() or len(first) > 5:
         return None
     port = int(first)
-    return port if port > 0 else None
+    return port if 0 < port <= 65535 else None
 
 
 def wait_for_devtools_active_port(

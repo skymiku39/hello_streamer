@@ -891,9 +891,18 @@ def _open_with_browser_settings(
         chromium_family=family in {"chromium", "unknown"},
         standalone_window=standalone_window,
     ):
-        from stream_monitor.cdp_client import acquire_cdp_debugging_port
+        from stream_monitor.cdp_client import (
+            CdpAttachResult,
+            acquire_cdp_debugging_port,
+        )
 
-        attach = acquire_cdp_debugging_port(effective_user_data_dir)
+        try:
+            attach = acquire_cdp_debugging_port(effective_user_data_dir)
+        except Exception:
+            # Optional page assistance must not prevent the configured player
+            # from opening when local endpoint discovery or port binding fails.
+            logger.exception("Twitch page assist CDP discovery failed for %s", url)
+            attach = CdpAttachResult(ok=False, reason="unavailable")
         cdp_attach_reason = attach.reason
         cdp_attach_message = attach.message
         if attach.ok and isinstance(attach.port, int) and attach.port > 0:

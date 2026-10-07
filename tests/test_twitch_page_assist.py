@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -252,6 +253,58 @@ def _patch_open_browser_common(monkeypatch) -> None:
         lambda *a, **k: None,
     )
     monkeypatch.setattr(notifier, "_enum_browser_hwnds", lambda *_a, **_k: set())
+
+
+@pytest.mark.parametrize("error", [OSError("no free port"), ValueError("bad endpoint")])
+def test_cdp_discovery_exception_does_not_block_browser_launch(
+    monkeypatch, tmp_path, error,
+) -> None:
+    import stream_monitor.cdp_client as cdp_client
+    from stream_monitor.page_assist_status import drain_page_assist_status
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    _patch_open_browser_common(monkeypatch)
+    settings = ViewerEngagementSettings(
+        enabled=True, page_assist_enabled=True, keep_system_awake=False,
+        whitelist_performance=False,
+    )
+    monkeypatch.setattr(notifier, "_active_viewer_engagement", lambda: settings)
+    monkeypatch.setattr(cdp_client, "acquire_cdp_debugging_port", Mock(side_effect=error))
+    launched = Mock()
+    assist = Mock()
+    monkeypatch.setattr(notifier.subprocess, "Popen", launched)
+    monkeypatch.setattr(notifier, "start_page_assist", assist)
+    drain_page_assist_status()
+
+    assert notifier.open_url("https://www.twitch.tv/foo", {
+        "enabled": True, "browser_path": "chrome", "app_mode": True,
+        "user_data_dir": str(tmp_path / "profile"), "per_channel_profile": False,
+    }) is True
+
+    launched.assert_called_once()
+    assert not any("--remote-debugging-port=" in arg for arg in launched.call_args.args[0])
+    assist.assert_not_called()
+    assert ("https://www.twitch.tv/foo", "unavailable") in drain_page_assist_status()
+
+
+@pytest.mark.parametrize("content", [
+    b"\xff", b"65536\n", b"999999\n", b"0\n", b"-1\n", b"9" * 5000,
+], ids=["invalid-utf8", "out-of-range", "six-digits", "zero", "negative", "oversized"])
+def test_invalid_devtools_port_file_is_ignored(tmp_path, content) -> None:
+    from stream_monitor.cdp_client import read_devtools_active_port
+
+    (tmp_path / "DevToolsActivePort").write_bytes(content)
+    assert read_devtools_active_port(str(tmp_path)) is None
+
+
+@pytest.mark.parametrize("port", [1, 65535])
+def test_valid_devtools_port_file_is_read(tmp_path, port) -> None:
+    from stream_monitor.cdp_client import read_devtools_active_port
+
+    (tmp_path / "DevToolsActivePort").write_text(
+        f"{port}\n/devtools/browser/example\n", encoding="utf-8",
+    )
+    assert read_devtools_active_port(str(tmp_path)) == port
 
 
 def test_open_fresh_profile_ephemeral_port_resolves_devtools(
