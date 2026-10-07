@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -35,29 +36,39 @@ def _preferences_path(user_data_dir: str, profile: str) -> Path:
     return base / profile / "Preferences"
 
 
-def _load_preferences(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
+def _load_preferences(path: Path) -> dict[str, Any] | None:
     try:
-        with path.open("r", encoding="utf-8") as handle:
+        with path.open("r", encoding="utf-8-sig") as handle:
             data = json.load(handle)
+    except FileNotFoundError:
+        return {}
     except (OSError, ValueError):
         logger.debug("chrome_prefs: could not read %s", path, exc_info=True)
-        return {}
-    return data if isinstance(data, dict) else {}
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _atomic_write(path: Path, data: dict[str, Any]) -> bool:
+    tmp: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        with tmp.open("w", encoding="utf-8") as handle:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=path.name + ".", suffix=".tmp", delete=False,
+        ) as handle:
+            tmp = Path(handle.name)
             json.dump(data, handle, ensure_ascii=False)
         os.replace(tmp, path)
         return True
-    except OSError:
+    except (OSError, ValueError):
         logger.exception("chrome_prefs: failed to write %s", path)
         return False
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("chrome_prefs: could not remove %s", tmp, exc_info=True)
 
 
 def merge_tab_discarding_exceptions(
@@ -76,15 +87,18 @@ def merge_tab_discarding_exceptions(
         return False
     path = _preferences_path(user_data_dir, profile)
     prefs = _load_preferences(path)
+    if prefs is None:
+        return False
 
-    group = prefs.get(_PREF_GROUP)
+    group = prefs.get(_PREF_GROUP, {})
     if not isinstance(group, dict):
-        group = {}
-    sub = group.get(_PREF_SUB)
+        return False
+    sub = group.get(_PREF_SUB, {})
     if not isinstance(sub, dict):
-        sub = {}
-    existing = sub.get(_PREF_KEY)
-    current = list(existing) if isinstance(existing, list) else []
+        return False
+    current = sub.get(_PREF_KEY, [])
+    if not isinstance(current, list):
+        return False
 
     merged = list(current)
     for pattern in patterns:
