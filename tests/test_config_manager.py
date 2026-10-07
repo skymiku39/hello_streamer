@@ -58,6 +58,99 @@ def test_load_recovers_newer_atomic_temp_file(tmp_path, monkeypatch) -> None:
     assert json.loads(path.read_text(encoding="utf-8"))["minimize_to_tray"] is False
 
 
+@pytest.mark.parametrize("use_temp", [False, True])
+def test_load_accepts_utf8_bom_without_losing_settings(
+    tmp_path, monkeypatch, use_temp,
+) -> None:
+    path = tmp_path / "config.json"
+    candidate = tmp_path / ".config.json.tmp" if use_temp else path
+    candidate.write_text(
+        json.dumps({"check_interval": 75}), encoding="utf-8-sig",
+    )
+    _use_config_path(monkeypatch, path)
+
+    assert config_manager.load()["check_interval"] == 75
+    assert not (tmp_path / "config.json.corrupt").exists()
+
+
+def test_load_backs_up_invalid_utf8_bytes(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "config.json"
+    original = b'{"channels": [\xff]}'
+    path.write_bytes(original)
+    _use_config_path(monkeypatch, path)
+
+    assert config_manager.load() == _migrated_defaults()
+    assert (tmp_path / "config.json.corrupt").read_bytes() == original
+    assert isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+
+
+def test_load_ignores_invalid_utf8_temp_without_rewriting_it(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "config.json"
+    temp_path = tmp_path / ".config.json.tmp"
+    _use_config_path(monkeypatch, path)
+    config_manager.save({"check_interval": 75})
+    original_main = path.read_bytes()
+    temp_path.write_bytes(b'\xff')
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(temp_path, ns=(2_000_000_000, 2_000_000_000))
+
+    assert config_manager.load()["check_interval"] == 75
+    assert path.read_bytes() == original_main
+    assert temp_path.read_bytes() == b'\xff'
+
+
+def test_temp_recovery_preserves_main_when_corrupt_backup_fails(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "config.json"
+    temp_path = tmp_path / ".config.json.tmp"
+    path.write_text("{", encoding="utf-8")
+    temp_path.write_text('{"check_interval": 75}', encoding="utf-8")
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(temp_path, ns=(2_000_000_000, 2_000_000_000))
+    original_temp = temp_path.read_bytes()
+    _use_config_path(monkeypatch, path)
+    original_replace = Path.replace
+
+    def replace(self, target):
+        if self == path:
+            raise PermissionError("cannot back up main config")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+
+    assert config_manager.load()["check_interval"] == 75
+    assert path.read_text(encoding="utf-8") == "{"
+    assert temp_path.read_bytes() == original_temp
+
+
+@pytest.mark.parametrize("literal", ["1e999", "-1e999", "NaN"])
+@pytest.mark.parametrize("field", [
+    "check_interval", "config_format_version", "browser_settings",
+    "viewer_engagement",
+])
+def test_load_falls_back_for_nonfinite_numeric_values(
+    tmp_path, monkeypatch, literal, field,
+) -> None:
+    path = tmp_path / "config.json"
+    value = literal
+    if field == "browser_settings":
+        value = '{"width": ' + literal + '}'
+    elif field == "viewer_engagement":
+        value = '{"foreground_hold_seconds": ' + literal + '}'
+    path.write_text('{"' + field + '": ' + value + '}', encoding="utf-8")
+    _use_config_path(monkeypatch, path)
+
+    config = config_manager.load()
+
+    assert config["check_interval"] == config_manager.DEFAULT_CONFIG["check_interval"]
+    assert config["config_format_version"] == config_manager.CONFIG_FORMAT_VERSION
+    assert config["browser_settings"]["width"] == config_manager.DEFAULT_WINDOW_WIDTH
+    assert config["viewer_engagement"]["foreground_hold_seconds"] == 15
+
+
 def test_load_validates_config_values(tmp_path, monkeypatch) -> None:
     path = tmp_path / "config.json"
     path.write_text(

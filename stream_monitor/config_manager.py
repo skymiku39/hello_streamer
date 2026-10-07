@@ -208,7 +208,7 @@ def _normalize_channels(value: Any) -> list[dict[str, str]]:
 def _normalize_interval(value: Any) -> int:
     try:
         interval = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return DEFAULT_CONFIG["check_interval"]
     return max(MIN_CHECK_INTERVAL, interval)
 
@@ -216,7 +216,7 @@ def _normalize_interval(value: Any) -> int:
 def _coerce_int(value: Any, default: int) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -497,7 +497,7 @@ def _stored_format_version(stored: dict[str, Any]) -> int:
     raw = stored.get("config_format_version", 0)
     try:
         return int(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -543,14 +543,14 @@ def load() -> dict[str, Any]:
     if path.exists():
         disk_existed = True
         try:
-            with path.open("r", encoding="utf-8") as f:
+            with path.open("r", encoding="utf-8-sig") as f:
                 raw = json.load(f)
             read_succeeded = True
             if isinstance(raw, dict):
                 stored = raw
             else:
                 corrupt = True
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             corrupt = True
             backup = _next_corrupt_backup_path(path)
             try:
@@ -603,19 +603,20 @@ def load() -> dict[str, Any]:
                 temp_path.stat().st_mtime_ns > path.stat().st_mtime_ns
             )
             if temp_is_newer:
-                with temp_path.open("r", encoding="utf-8") as f:
+                with temp_path.open("r", encoding="utf-8-sig") as f:
                     temp_raw = json.load(f)
                 if isinstance(temp_raw, dict):
                     stored = temp_raw
                     disk_existed = True
                     read_succeeded = True
-                    corrupt = False
+                    # Recovery must not erase the fact that an invalid main
+                    # file could not be backed up; keep that copy untouched.
                     temp_recovered = True
                     logger.warning(
                         "Recovered newer config from interrupted atomic save: %s",
                         temp_path,
                     )
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             # Keep the temp file for forensic recovery; the valid main config
             # remains authoritative when the candidate cannot be read.
             logger.warning(
