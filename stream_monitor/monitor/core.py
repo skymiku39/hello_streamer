@@ -89,6 +89,7 @@ class Monitor(
         self._session = ProbeSession()
         self._facade = ProbeFacade(self)
         self._poll_cycle = 0
+        self._live_recheck_after: dict[str, int] = {}
         self._stable_status_polls: dict[str, int] = {}
         self._last_poll_ended: float = 0.0
         self._last_poll_wall_started: float = 0.0
@@ -96,6 +97,7 @@ class Monitor(
         self._last_poll_planned_rest: float = 0.0
         self._wake_verify_mode = False
         self._wake_verify_active = False
+        self._wake_deferred_keys: set[str] = set()
         self._startup_refresh_pending = False
         self._force_offline_vod_refresh = False
         self._last_maintenance_wall: float = 0.0
@@ -260,7 +262,7 @@ class Monitor(
             return dict(self._display_names)
 
     def _emit_went_live(self, entry: ChannelEntry, info: StreamInfo) -> None:
-        if self._event_bus is None:
+        if self._event_bus is None or self._stop_event.is_set():
             return
         self._event_bus.publish(
             ChannelWentLive(
@@ -271,7 +273,7 @@ class Monitor(
     def _emit_went_offline(
         self, entry: ChannelEntry, offline_info: OfflineInfo
     ) -> None:
-        if self._event_bus is None:
+        if self._event_bus is None or self._stop_event.is_set():
             return
         self._event_bus.publish(
             ChannelWentOffline(
@@ -284,7 +286,7 @@ class Monitor(
     def _emit_poll_activity(
         self, entry: ChannelEntry, phase: str, display_name: str
     ) -> None:
-        if self._event_bus is None:
+        if self._event_bus is None or self._stop_event.is_set():
             return
         self._event_bus.publish(
             PollActivity(
@@ -298,7 +300,7 @@ class Monitor(
     def _emit_partial_snapshot(
         self, statuses: dict[str, Any], display_names: dict[str, str]
     ) -> None:
-        if self._event_bus is None:
+        if self._event_bus is None or self._stop_event.is_set():
             return
         self._event_bus.publish(
             PartialStatusUpdate(
@@ -309,7 +311,7 @@ class Monitor(
         )
 
     def _emit_poll_complete(self) -> None:
-        if self._event_bus is None:
+        if self._event_bus is None or self._stop_event.is_set():
             return
         with self._lock:
             statuses = dict(self._last_status)
@@ -394,6 +396,19 @@ class Monitor(
 
     def update_interval(self, interval: int) -> None:
         self._interval = max(10, interval)
+
+    def request_live_recheck(self) -> int:
+        """Re-emit confirmed live streams once after entering trigger mode.
+
+        Observation already advances edge/seen state in watch mode. Wait for
+        a new probe cycle instead of launching from possibly stale UI caches.
+        """
+        with self._lock:
+            self._live_recheck_after = {
+                entry.key: self._poll_cycle
+                for entry in self._entries if entry.enabled
+            }
+            return self._poll_cycle
 
     def _run_maintenance(self, *, force: bool = False) -> None:
         """Prune SQLite seen_videos and the YouTube watch-details cache."""

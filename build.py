@@ -7,11 +7,17 @@ which looks like a malware dropper to heuristic scanners.
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
 
 from stream_monitor import __version__
+
+# winotify is imported lazily inside notifier toast code; PyInstaller will not
+# see it unless we force a hidden import for frozen Windows builds.
+WINDOWS_HIDDEN_IMPORTS: tuple[str, ...] = ("pystray._win32", "winotify")
+LINUX_HIDDEN_IMPORTS: tuple[str, ...] = ("pystray._appindicator",)
 
 
 def _version_tuple(version: str) -> tuple[int, int, int, int]:
@@ -70,13 +76,90 @@ VSVersionInfo(
     )
 
 
-def main() -> None:
-    is_windows = sys.platform == "win32"
-    separator = ";" if is_windows else ":"
-    root = Path(__file__).resolve().parent
+def normalize_release_tag(tag: str) -> str:
+    """Strip a leading ``v`` / ``V`` from a git release tag."""
+    if len(tag) > 1 and tag[0] in "vV" and tag[1].isdigit():
+        return tag[1:]
+    return tag
 
+
+def require_tag_matches_package_version(
+    tag: str,
+    *,
+    module_version: str | None = None,
+    distribution_version: str | None = None,
+    distribution_name: str = "stream-monitor",
+) -> None:
+    """Fail if tag (without leading v) != module / installed package version."""
+    sm_version = module_version if module_version is not None else __version__
+    if distribution_version is None:
+        from importlib.metadata import version as pkg_version
+
+        dist_version = pkg_version(distribution_name)
+    else:
+        dist_version = distribution_version
+    if sm_version != dist_version:
+        raise SystemExit(
+            f"stream_monitor.__version__ ({sm_version!r}) != "
+            f"{distribution_name} package version ({dist_version!r})"
+        )
+    normalized = normalize_release_tag(tag)
+    if normalized != sm_version:
+        raise SystemExit(
+            f"Release tag {tag!r} (normalized {normalized!r}) != "
+            f"package version {sm_version!r}"
+        )
+
+
+def validate_windows_onedir_bundle(bundle_dir: Path) -> None:
+    """Require Windows onedir layout: HelloStreamer.exe + _internal/."""
+    exe = bundle_dir / "HelloStreamer.exe"
+    internal = bundle_dir / "_internal"
+    missing: list[str] = []
+    if not exe.is_file():
+        missing.append(str(exe))
+    if not internal.is_dir():
+        missing.append(str(internal))
+    if missing:
+        raise FileNotFoundError(
+            "Windows onedir bundle incomplete; missing: " + ", ".join(missing)
+        )
+
+
+def validate_linux_onedir_bundle(bundle_dir: Path) -> None:
+    """Require Linux onedir layout: nonempty HelloStreamer + nonempty ``_internal/``.
+
+    Does not assert the Unix execute bit; retain a shell ``test -x`` for that.
+    """
+    exe = bundle_dir / "HelloStreamer"
+    internal = bundle_dir / "_internal"
+    problems: list[str] = []
+    if not exe.is_file():
+        problems.append(f"missing executable: {exe}")
+    elif exe.stat().st_size == 0:
+        problems.append(f"empty executable: {exe}")
+    if not internal.is_dir():
+        problems.append(f"missing _internal: {internal}")
+    elif not any(internal.iterdir()):
+        problems.append(f"empty _internal: {internal}")
+    if problems:
+        raise FileNotFoundError(
+            "Linux onedir bundle incomplete; " + "; ".join(problems)
+        )
+
+
+def build_pyinstaller_command(
+    *,
+    is_windows: bool,
+    root: Path,
+    version: str,
+    python_executable: str | None = None,
+) -> list[str]:
+    """Build the PyInstaller argv (does not run it)."""
+    separator = ";" if is_windows else ":"
+    exe = python_executable if python_executable is not None else sys.executable
     cmd = [
-        sys.executable,
+        exe,
         "-m",
         "PyInstaller",
         "--noconfirm",
@@ -88,28 +171,71 @@ def main() -> None:
         "HelloStreamer",
         "--collect-data",
         "customtkinter",
+        "--hidden-import",
+        "websocket",
         "--add-data",
         f"stream_monitor{separator}stream_monitor",
     ]
 
     if is_windows:
         version_file = root / "build" / "HelloStreamer_version_info.txt"
-        _write_windows_version_file(version_file, __version__)
-        cmd += [
-            "--version-file",
-            str(version_file),
-            "--hidden-import",
-            "pystray._win32",
-        ]
+        _write_windows_version_file(version_file, version)
+        cmd += ["--version-file", str(version_file)]
+        for hidden in WINDOWS_HIDDEN_IMPORTS:
+            cmd += ["--hidden-import", hidden]
     else:
-        cmd += ["--hidden-import", "pystray._appindicator"]
+        for hidden in LINUX_HIDDEN_IMPORTS:
+            cmd += ["--hidden-import", hidden]
 
     cmd.append("stream_monitor/app.py")
+    return cmd
 
+
+def main() -> None:
+    root = Path(__file__).resolve().parent
+    cmd = build_pyinstaller_command(
+        is_windows=sys.platform == "win32",
+        root=root,
+        version=__version__,
+    )
     print("Running:", " ".join(cmd))
     subprocess.run(cmd, check=True)
     print(f"Built onedir bundle: {root / 'dist' / 'HelloStreamer'}")
 
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="HelloStreamer PyInstaller build helpers")
+    parser.add_argument(
+        "--check-release-tag",
+        metavar="TAG",
+        help="Verify TAG (without leading v) matches module/package version, then exit",
+    )
+    parser.add_argument(
+        "--validate-windows-onedir",
+        metavar="DIR",
+        help="Validate Windows onedir bundle DIR (exe + _internal), then exit",
+    )
+    parser.add_argument(
+        "--validate-linux-onedir",
+        metavar="DIR",
+        help=(
+            "Validate Linux onedir bundle DIR (nonempty HelloStreamer + "
+            "nonempty _internal), then exit"
+        ),
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    main()
+    args = _parse_args()
+    if args.check_release_tag is not None:
+        require_tag_matches_package_version(args.check_release_tag)
+        print(f"OK: tag {args.check_release_tag!r} matches version {__version__!r}")
+    elif args.validate_windows_onedir is not None:
+        validate_windows_onedir_bundle(Path(args.validate_windows_onedir))
+        print(f"OK: Windows onedir bundle at {args.validate_windows_onedir}")
+    elif args.validate_linux_onedir is not None:
+        validate_linux_onedir_bundle(Path(args.validate_linux_onedir))
+        print(f"OK: Linux onedir bundle at {args.validate_linux_onedir}")
+    else:
+        main()

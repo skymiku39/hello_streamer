@@ -199,7 +199,36 @@ class ActionExecutor:
                 detail="missing lifecycle callback",
             )
         if lifecycle_callback is not None:
-            lifecycle_callback()
+            try:
+                lifecycle_callback()
+            except Exception:
+                logger.exception(
+                    "Lifecycle effect failed: action=%s effect=%s",
+                    plan.key,
+                    plan.after_open,
+                )
+                return ActionResult.failed(
+                    plan.key,
+                    ActionStatus.LIFECYCLE_FAILED,
+                    notification_sent=notification_sent,
+                    browser_opened=True,
+                    detail="lifecycle callback failed",
+                )
+        if notification_sent is False:
+            logger.warning(
+                "Browser opened but notification failed: action=%s platform=%s "
+                "channel=%s",
+                plan.key,
+                info.platform,
+                info.channel,
+            )
+            return ActionResult.failed(
+                plan.key,
+                ActionStatus.NOTIFICATION_FAILED,
+                notification_sent=False,
+                browser_opened=True,
+                detail="browser opened; notification failed",
+            )
         return ActionResult.completed(
             plan.key,
             notification_sent=notification_sent,

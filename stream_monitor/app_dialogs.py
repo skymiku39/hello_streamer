@@ -24,6 +24,7 @@ from stream_monitor.app_ui import (
     _CLR_LINK_HOVER,
     _CLR_LIVE,
     PLATFORM_OPTIONS,
+    AppButton,
     _button_width,
     _fit_button,
     _font,
@@ -43,8 +44,20 @@ from stream_monitor.notifier import (
     open_url,
 )
 from stream_monitor.url_parser import parse_channel_url
+from stream_monitor.viewer_engagement_model import page_assist_runtime_allowed
 
 logger = logging.getLogger(__name__)
+
+
+def _is_portable_default_profile(path: str) -> bool:
+    """Return whether *path* names this copy's app-owned profile folder."""
+    default_path = default_browser_profile_dir()
+    if not path or not default_path:
+        return False
+    try:
+        return Path(path).expanduser().resolve() == Path(default_path).resolve()
+    except (OSError, RuntimeError):
+        return False
 
 
 def _browser_card(parent: ctk.CTkBaseClass, *, pady: tuple[int, int] = (0, 10)) -> ctk.CTkFrame:
@@ -180,21 +193,17 @@ class AddChannelDialog(ctk.CTkToplevel):
         btn_frame.pack(padx=24, pady=(14, 22), fill="x")
         btn_frame.pack_propagate(False)
 
-        self._cancel_btn = ctk.CTkButton(
+        self._cancel_btn = AppButton(
             btn_frame,
             text=tr("add.btn.cancel"),
             width=_button_width(tr("add.btn.cancel"), min_width=96),
             height=40,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             font=_font(13),
             command=self.destroy,
         )
         self._cancel_btn.pack(side="right", padx=(8, 0), pady=4)
 
-        self._add_btn = ctk.CTkButton(
+        self._add_btn = AppButton(
             btn_frame,
             text=tr("add.btn.add"),
             width=_button_width(tr("add.btn.add"), min_width=96, weight="bold"),
@@ -466,21 +475,17 @@ class LanguageDialog(ctk.CTkToplevel):
         footer.pack(padx=22, pady=(6, 18), fill="x", side="bottom")
         footer.pack_propagate(False)
 
-        self._close_btn = ctk.CTkButton(
+        self._close_btn = AppButton(
             footer,
             text=tr("lang.btn.close"),
             width=_button_width(tr("lang.btn.close"), min_width=88),
             height=36,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             font=_font(13),
             command=self._on_close,
         )
         self._close_btn.pack(side="right", padx=(8, 0), pady=8)
 
-        self._apply_btn = ctk.CTkButton(
+        self._apply_btn = AppButton(
             footer,
             text=tr("lang.btn.apply"),
             width=_button_width(
@@ -561,6 +566,191 @@ class LanguageDialog(ctk.CTkToplevel):
             self._unsub_i18n = None
 
 
+class AppSettingsDialog(ctk.CTkToplevel):
+    """Application preferences: tray/startup toggles and launch-records reset."""
+
+    def __init__(
+        self,
+        parent: ctk.CTk,
+        *,
+        minimize_to_tray: bool,
+        run_on_startup: bool,
+        on_tray_changed: Callable[[bool], None],
+        on_startup_changed: Callable[[bool], bool],
+        on_reset_launch_records: Callable[[], tuple[bool, str]],
+    ) -> None:
+        super().__init__(parent)
+        self.title(tr("settings.title"))
+        self.geometry("560x420")
+        self.configure(fg_color=_CLR_BG_DARK)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self._on_tray_changed = on_tray_changed
+        self._on_startup_changed = on_startup_changed
+        self._on_reset_launch_records = on_reset_launch_records
+        self._message_after: str | None = None
+
+        # Reserve the close action before allocating space to localized
+        # content. Font fallback and longer translations may need scrolling.
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.pack(fill="x", side="bottom", padx=18, pady=(0, 16))
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
+        body.pack(fill="both", expand=True, padx=18, pady=16)
+
+        self._heading = ctk.CTkLabel(
+            body,
+            text=tr("settings.section.app"),
+            font=_font(16, "bold"),
+            anchor="w",
+        )
+        self._heading.pack(anchor="w")
+
+        self._app_hint = ctk.CTkLabel(
+            body,
+            text=tr("settings.section.app.hint"),
+            font=_font(12),
+            text_color="#9aa0b4",
+            anchor="w",
+            justify="left",
+            wraplength=500,
+        )
+        self._app_hint.pack(anchor="w", pady=(4, 12))
+
+        card = ctk.CTkFrame(body, fg_color=_CLR_CARD, corner_radius=10)
+        card.pack(fill="x", pady=(0, 14))
+
+        self.minimize_to_tray_var = ctk.BooleanVar(value=minimize_to_tray)
+        self.tray_switch = ctk.CTkSwitch(
+            card,
+            text=tr("toolbar.minimize_to_tray"),
+            variable=self.minimize_to_tray_var,
+            command=self._on_tray_toggle,
+            font=_font(13),
+        )
+        self.tray_switch.pack(anchor="w", padx=14, pady=(12, 6))
+        _tooltip_tr(self.tray_switch, "tooltip.minimize_to_tray")
+
+        self.startup_var = ctk.BooleanVar(value=run_on_startup)
+        self.startup_switch = ctk.CTkSwitch(
+            card,
+            text=tr("toolbar.startup"),
+            variable=self.startup_var,
+            command=self._on_startup_toggle,
+            font=_font(13),
+        )
+        self.startup_switch.pack(anchor="w", padx=14, pady=(0, 12))
+        _tooltip_tr(self.startup_switch, "tooltip.startup")
+
+        self._reset_heading = ctk.CTkLabel(
+            body,
+            text=tr("settings.reset.title"),
+            font=_font(16, "bold"),
+            anchor="w",
+        )
+        self._reset_heading.pack(anchor="w", pady=(4, 0))
+
+        self._reset_body = ctk.CTkLabel(
+            body,
+            text=tr("settings.reset.body"),
+            font=_font(12),
+            text_color="#c5cad8",
+            anchor="w",
+            justify="left",
+            wraplength=500,
+        )
+        self._reset_body.pack(anchor="w", pady=(4, 10))
+
+        reset_row = ctk.CTkFrame(body, fg_color="transparent")
+        reset_row.pack(fill="x")
+        self.reset_btn = AppButton(
+            reset_row,
+            text=tr("settings.reset.btn"),
+            width=_button_width(tr("settings.reset.btn"), min_width=140, size=13),
+            height=34,
+            corner_radius=8,
+            fg_color="#6d4c41",
+            hover_color="#5d4037",
+            font=_font(13, "bold"),
+            command=self._on_reset_clicked,
+        )
+        self.reset_btn.pack(side="left")
+        _tooltip_tr(self.reset_btn, "tooltip.settings.reset")
+
+        self._message = ctk.CTkLabel(
+            body,
+            text="",
+            font=_font(12),
+            text_color="#9aa0b4",
+            anchor="w",
+            justify="left",
+            wraplength=500,
+        )
+        self._message.pack(anchor="w", pady=(12, 0))
+
+        self._close_btn = AppButton(
+            footer,
+            text=tr("settings.btn.close"),
+            width=_button_width(tr("settings.btn.close"), min_width=88),
+            height=34,
+            corner_radius=8,
+            command=self.destroy,
+        )
+        self._close_btn.pack(side="right")
+
+        self._unsub_i18n = i18n.subscribe(self._retranslate)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind("<Destroy>", self._on_destroy, add="+")
+
+    def _set_message(self, key: str, *, color: str = "#9aa0b4", **kwargs: Any) -> None:
+        self._message.configure(text=tr(key, **kwargs), text_color=color)
+
+    def _on_tray_toggle(self) -> None:
+        self._on_tray_changed(bool(self.minimize_to_tray_var.get()))
+
+    def _on_startup_toggle(self) -> None:
+        requested = bool(self.startup_var.get())
+        ok = self._on_startup_changed(requested)
+        if not ok:
+            self.startup_var.set(not requested)
+
+    def _on_reset_clicked(self) -> None:
+        from tkinter import messagebox
+
+        confirm = messagebox.askyesno(
+            tr("settings.reset.confirm.title"),
+            tr("settings.reset.confirm.body"),
+            parent=self,
+        )
+        if not confirm:
+            return
+        ok, detail_key = self._on_reset_launch_records()
+        if ok:
+            self._set_message(detail_key or "settings.reset.ok", color="#81c784")
+        else:
+            self._set_message(detail_key or "settings.reset.fail", color="#ef5350")
+
+    def _retranslate(self) -> None:
+        self.title(tr("settings.title"))
+        self._heading.configure(text=tr("settings.section.app"))
+        self._app_hint.configure(text=tr("settings.section.app.hint"))
+        self.tray_switch.configure(text=tr("toolbar.minimize_to_tray"))
+        self.startup_switch.configure(text=tr("toolbar.startup"))
+        self._reset_heading.configure(text=tr("settings.reset.title"))
+        self._reset_body.configure(text=tr("settings.reset.body"))
+        self.reset_btn.configure(text=tr("settings.reset.btn"))
+        _fit_button(self.reset_btn, tr("settings.reset.btn"), min_width=140)
+        self._close_btn.configure(text=tr("settings.btn.close"))
+        _fit_button(self._close_btn, tr("settings.btn.close"), min_width=88)
+
+    def _on_destroy(self, event: Any = None) -> None:
+        if event is not None and event.widget is not self:
+            return
+        if getattr(self, "_unsub_i18n", None):
+            self._unsub_i18n()
+            self._unsub_i18n = None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Browser Settings Dialog
 # ═══════════════════════════════════════════════════════════════════════════
@@ -584,6 +774,29 @@ _VIEWER_ENGAGEMENT_TOGGLES: tuple[tuple[str, str, str], ...] = (
         "bring_to_front",
         "engagement.toggle.bring_front",
         "engagement.toggle.bring_front.hint",
+    ),
+)
+
+_PAGE_ASSIST_FEATURE_TOGGLES: tuple[tuple[str, str, str], ...] = (
+    (
+        "accept_content_gate",
+        "engagement.toggle.accept_gate",
+        "engagement.toggle.accept_gate.hint",
+    ),
+    (
+        "claim_channel_points",
+        "engagement.toggle.claim_points",
+        "engagement.toggle.claim_points.hint",
+    ),
+    (
+        "theater_mode",
+        "engagement.toggle.theater",
+        "engagement.toggle.theater.hint",
+    ),
+    (
+        "auto_refresh",
+        "engagement.toggle.auto_refresh",
+        "engagement.toggle.auto_refresh.hint",
     ),
 )
 
@@ -627,11 +840,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         self._last_test_url: str | None = None
         self._path_refresh_after: str | None = None
 
-        # Settings used to be one very tall child frame moved by a custom
-        # scrollbar.  On Windows that makes every input and card participate
-        # in a large native-child move during a drag.  Keep each section in a
-        # fixed tab instead: changing tabs only changes visibility, never the
-        # Y position of a populated form.
+        # Keep sections in separate tabs, with a local viewport so long forms
+        # remain reachable on smaller screens without scrolling every section.
         self._scroll_container = ctk.CTkFrame(self, fg_color=_CLR_BG_DARK)
         self._scroll_container.pack(padx=12, pady=(8, 0), fill="both", expand=True)
         self._settings_tabs = ctk.CTkTabview(
@@ -659,7 +869,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         for tab_id, label_key in tab_specs:
             label = tr(label_key)
             self._settings_tabs.add(label)
-            page = self._settings_tabs.tab(label)
+            tab_page = self._settings_tabs.tab(label)
+            page = ctk.CTkScrollableFrame(tab_page, fg_color=_CLR_BG_DARK)
+            page.pack(fill="both", expand=True)
+            page.bind("<Configure>", self._on_settings_page_resize, add="+")
             page.grid_columnconfigure(0, weight=1)
             self._settings_tab_names[tab_id] = label
             self._settings_pages[tab_id] = page
@@ -673,6 +886,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         default_profile_dir = default_browser_profile_dir()
         saved_profile_dir = (settings.get("user_data_dir") or "").strip()
+        if settings.get("user_data_dir_is_portable_default") and default_profile_dir:
+            saved_profile_dir = default_profile_dir
         ui_launch = bsm.infer_launch_mode(settings)
         ui_identity = bsm.infer_identity_mode(settings)
         ui_placement = bsm.infer_placement_mode(settings)
@@ -847,16 +1062,12 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self.apply_geometry_cb.grid(row=0, column=0, sticky="w")
 
-        self.reset_geometry_btn = ctk.CTkButton(
+        self.reset_geometry_btn = AppButton(
             header_frame,
             text=tr("browser.geometry.reset"),
             width=_button_width(tr("browser.geometry.reset"), min_width=72),
             height=26,
             corner_radius=6,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             font=_font(11),
             command=self._on_reset_geometry,
         )
@@ -882,12 +1093,16 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
 
         self._w_label = ctk.CTkLabel(pos_frame, text=tr("browser.geometry.width"), font=_font(12))
         self._w_label.grid(row=2, column=0, padx=(14, 4), pady=(4, 10), sticky="e")
-        self.w_entry = _make_int_entry(pos_frame, int(settings.get("width", 1280)))
+        self.w_entry = _make_int_entry(
+            pos_frame, int(settings.get("width", bsm.DEFAULT_WINDOW_WIDTH))
+        )
         self.w_entry.grid(row=2, column=1, padx=(0, 14), pady=(4, 10), sticky="w")
 
         self._h_label = ctk.CTkLabel(pos_frame, text=tr("browser.geometry.height"), font=_font(12))
         self._h_label.grid(row=2, column=2, padx=(14, 4), pady=(4, 10), sticky="e")
-        self.h_entry = _make_int_entry(pos_frame, int(settings.get("height", 720)))
+        self.h_entry = _make_int_entry(
+            pos_frame, int(settings.get("height", bsm.DEFAULT_WINDOW_HEIGHT))
+        )
         self.h_entry.grid(row=2, column=3, padx=(0, 14), pady=(4, 0), sticky="w")
 
         self._login_card = _browser_card(
@@ -971,10 +1186,13 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self.user_data_dir_entry.insert(0, saved_profile_dir or default_profile_dir)
         self.user_data_dir_entry.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+        self.user_data_dir_entry.bind(
+            "<KeyRelease>", lambda _event: self._sync_engagement_enabled_state()
+        )
 
         self.app_mode_var = ctk.BooleanVar(value=bool(settings.get("app_mode", False)))
 
-        self._signin_btn = ctk.CTkButton(
+        self._signin_btn = AppButton(
             self._identity_path_frame,
             text=tr("browser.btn.signin"),
             width=_button_width(tr("browser.btn.signin"), min_width=120),
@@ -1192,6 +1410,79 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             )
             hint.pack(padx=12, pady=(0, 4), anchor="w")
             self._engagement_sub_hints.append(hint)
+
+        self._page_assist_section_label = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.page_assist.section"),
+            font=_font(12, "bold"),
+            anchor="w",
+        )
+        self._page_assist_section_label.pack(padx=12, pady=(10, 4), anchor="w")
+        self._page_assist_unavailable_note = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.page_assist.unavailable"),
+            font=_font(10),
+            text_color="#ef9a9a",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        )
+        self._page_assist_runtime_ok = page_assist_runtime_allowed()
+        if not self._page_assist_runtime_ok:
+            self._page_assist_unavailable_note.pack(padx=12, pady=(0, 6), anchor="w")
+        self.page_assist_enabled_var = ctk.BooleanVar(
+            value=bool(ve_settings.get("page_assist_enabled"))
+            and self._page_assist_runtime_ok
+        )
+        self._page_assist_enabled_switch = ctk.CTkSwitch(
+            engagement_card,
+            text=tr("engagement.toggle.page_assist"),
+            variable=self.page_assist_enabled_var,
+            command=self._sync_engagement_enabled_state,
+            font=_font(12),
+        )
+        self._page_assist_enabled_switch.pack(padx=12, pady=(0, 2), anchor="w")
+        self._page_assist_enabled_hint = ctk.CTkLabel(
+            engagement_card,
+            text=tr("engagement.toggle.page_assist.hint"),
+            font=_font(10),
+            text_color="#9aa0b4",
+            anchor="w",
+            wraplength=470,
+            justify="left",
+        )
+        self._page_assist_enabled_hint.pack(padx=12, pady=(0, 4), anchor="w")
+        self._page_assist_availability = ctk.CTkLabel(
+            engagement_card, text="", font=_font(11), text_color="#ffb74d",
+            anchor="w", wraplength=440, justify="left",
+        )
+        self._page_assist_availability.pack(padx=12, pady=(0, 6), anchor="w")
+        self._page_assist_feature_vars: dict[str, ctk.BooleanVar] = {}
+        self._page_assist_feature_switches: list[ctk.CTkSwitch] = []
+        self._page_assist_feature_hints: list[ctk.CTkLabel] = []
+        for key, label_key, hint_key in _PAGE_ASSIST_FEATURE_TOGGLES:
+            var = ctk.BooleanVar(value=bool(ve_settings.get(key)))
+            self._page_assist_feature_vars[key] = var
+            switch = ctk.CTkSwitch(
+                engagement_card,
+                text=tr(label_key),
+                variable=var,
+                font=_font(12),
+            )
+            switch.pack(padx=12, pady=(6, 2), anchor="w")
+            self._page_assist_feature_switches.append(switch)
+            hint = ctk.CTkLabel(
+                engagement_card,
+                text=tr(hint_key),
+                font=_font(10),
+                text_color="#9aa0b4",
+                anchor="w",
+                wraplength=470,
+                justify="left",
+            )
+            hint.pack(padx=12, pady=(0, 4), anchor="w")
+            self._page_assist_feature_hints.append(hint)
+
         self._engagement_tips = ctk.CTkLabel(
             engagement_card,
             text=tr("engagement.tips"),
@@ -1311,7 +1602,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         btn_frame.pack(padx=16, pady=(8, 12), fill="x")
         btn_frame.pack_propagate(False)
 
-        self._test_btn = ctk.CTkButton(
+        self._test_btn = AppButton(
             btn_frame,
             text=tr("browser.btn.test"),
             width=_button_width(tr("browser.btn.test"), min_width=100),
@@ -1326,15 +1617,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._test_btn.pack(side="left", pady=4)
 
-        self._test_close_btn = ctk.CTkButton(
+        self._test_close_btn = AppButton(
             btn_frame,
             text=tr("browser.btn.test_close"),
             width=_button_width(tr("browser.btn.test_close"), min_width=100),
             height=40,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             font=_font(12),
             command=self._on_test_close,
         )
@@ -1342,7 +1629,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         _tooltip_tr(self._test_btn, "browser.btn.test.tooltip")
         _tooltip_tr(self._test_close_btn, "browser.btn.test_close.tooltip")
 
-        self._save_btn = ctk.CTkButton(
+        self._save_btn = AppButton(
             btn_frame,
             text=tr("browser.btn.save"),
             width=_button_width(
@@ -1356,15 +1643,11 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         )
         self._save_btn.pack(side="right", pady=4)
 
-        self._cancel_btn = ctk.CTkButton(
+        self._cancel_btn = AppButton(
             btn_frame,
             text=tr("browser.btn.cancel"),
             width=_button_width(tr("browser.btn.cancel"), min_width=96),
             height=40,
-            fg_color="transparent",
-            border_width=1,
-            border_color="#555566",
-            hover_color="#333344",
             font=_font(13),
             command=self._on_cancel,
         )
@@ -1480,7 +1763,28 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         ):
             switch.configure(text=tr(label_key))
             hint.configure(text=tr(hint_key))
+        self._page_assist_section_label.configure(
+            text=tr("engagement.page_assist.section")
+        )
+        self._page_assist_unavailable_note.configure(
+            text=tr("engagement.page_assist.unavailable")
+        )
+        self._page_assist_enabled_switch.configure(
+            text=tr("engagement.toggle.page_assist")
+        )
+        self._page_assist_enabled_hint.configure(
+            text=tr("engagement.toggle.page_assist.hint")
+        )
+        for switch, (key, label_key, hint_key), hint in zip(
+            self._page_assist_feature_switches,
+            _PAGE_ASSIST_FEATURE_TOGGLES,
+            self._page_assist_feature_hints,
+            strict=True,
+        ):
+            switch.configure(text=tr(label_key))
+            hint.configure(text=tr(hint_key))
         self._engagement_tips.configure(text=tr("engagement.tips"))
+        self._sync_engagement_enabled_state()
         self._profile_title.configure(text=tr("browser.profile.per_channel"))
         self.per_channel_profile_cb.configure(text=tr("browser.profile.per_channel"))
         self._profile_per_channel_hint.configure(text=tr("browser.profile.per_channel.hint"))
@@ -1508,6 +1812,17 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         if self._message_key is not None:
             key, kwargs = self._message_key
             self.message_label.configure(text=tr(key, **kwargs))
+
+    def _on_settings_page_resize(self, event: Any) -> None:
+        """Fit wrapped descriptions to the current tab's available width."""
+        width = max(180, event.width - 80)
+        pending = list(event.widget.winfo_children())
+        while pending:
+            widget = pending.pop()
+            pending.extend(widget.winfo_children())
+            if isinstance(widget, ctk.CTkLabel) and widget.cget("wraplength"):
+                if widget.cget("wraplength") != width:
+                    widget.configure(wraplength=width)
 
     def _on_destroy(self, event: Any = None) -> None:
         if event is not None and event.widget is not self:
@@ -1723,8 +2038,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         defaults = {
             self.x_entry: 0,
             self.y_entry: 0,
-            self.w_entry: 1280,
-            self.h_entry: 720,
+            self.w_entry: bsm.DEFAULT_WINDOW_WIDTH,
+            self.h_entry: bsm.DEFAULT_WINDOW_HEIGHT,
         }
         for entry, value in defaults.items():
             current_state = entry.cget("state")
@@ -1771,6 +2086,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self._on_path_change()
 
     def _on_path_change(self, _event: Any = None) -> None:
+        self._sync_engagement_enabled_state()
         if not self.use_custom_var.get():
             self._set_compat("browser.compat.disabled", "#ffb74d")
             executable = self.path_entry.get().strip() or "chrome"
@@ -1804,9 +2120,41 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             self._refresh_win32_management_state()
 
     def _sync_engagement_enabled_state(self) -> None:
-        state = "normal" if self.engagement_enabled_var.get() else "disabled"
+        master_on = bool(self.engagement_enabled_var.get())
+        state = "normal" if master_on else "disabled"
         for switch in self._engagement_sub_switches:
             self._set_widget_state(switch, state)
+        # Initialization builds the browser-path controls after this card.
+        # Recompute once those controls exist and on every dimension/path edit.
+        eligible = self._page_assist_runtime_ok
+        if hasattr(self, "path_entry"):
+            eligible = eligible and (
+                bool(self.use_custom_var.get())
+                and self.identity_var.get() == bsm.IDENTITY_DEDICATED
+                and bool(self.user_data_dir_entry.get().strip())
+                and self.placement_var.get() != bsm.PLACEMENT_TAB
+                and detect_browser_family(self.path_entry.get().strip() or "chrome")
+                != "firefox"
+            )
+        if hasattr(self, "_page_assist_availability"):
+            self._page_assist_availability.configure(
+                text=tr("engagement.page_assist.requirements")
+                if self._page_assist_runtime_ok and not eligible else ""
+            )
+        page_assist_master = (
+            "normal"
+            if master_on and eligible
+            else "disabled"
+        )
+        self._set_widget_state(self._page_assist_enabled_switch, page_assist_master)
+        features_on = (
+            master_on
+            and eligible
+            and bool(self.page_assist_enabled_var.get())
+        )
+        feature_state = "normal" if features_on else "disabled"
+        for switch in self._page_assist_feature_switches:
+            self._set_widget_state(switch, feature_state)
 
     def _collect_viewer_engagement(self) -> dict[str, Any]:
         # Start from the incoming (normalized) settings so any field without a
@@ -1816,6 +2164,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         data["enabled"] = self.engagement_enabled_var.get()
         for key, _label, _hint in _VIEWER_ENGAGEMENT_TOGGLES:
             data[key] = self._engagement_toggle_vars[key].get()
+        if self._page_assist_runtime_ok:
+            data["page_assist_enabled"] = bool(self.page_assist_enabled_var.get())
+        for key, _label, _hint in _PAGE_ASSIST_FEATURE_TOGGLES:
+            data[key] = self._page_assist_feature_vars[key].get()
         return data
 
     def _snapshot_viewer_engagement(self) -> dict[str, Any]:
@@ -1835,7 +2187,12 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
                 return None
             # When apply_geometry is off the fields aren't used, so silently
             # fall back to defaults so the user can save without filling them.
-            x, y, width, height = 0, 0, 1280, 720
+            x, y, width, height = (
+                0,
+                0,
+                bsm.DEFAULT_WINDOW_WIDTH,
+                bsm.DEFAULT_WINDOW_HEIGHT,
+            )
 
         if apply_geometry and (width < 100 or height < 100):
             self._set_message("browser.msg.min_size", color="#ef5350")
@@ -1853,7 +2210,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             if self.use_custom_var.get()
             else bsm.LAUNCH_SYSTEM
         )
-        return bsm.apply_ui_dimensions(
+        result = bsm.apply_ui_dimensions(
             launch=launch,
             identity=self.identity_var.get(),
             placement=self.placement_var.get(),
@@ -1871,6 +2228,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             close_off_topic_pages=bool(self.close_off_topic_var.get()),
             hide_from_taskbar=bool(self.hide_from_taskbar_var.get()),
         )
+        result["user_data_dir_is_portable_default"] = (
+            dedicated and _is_portable_default_profile(user_data_dir)
+        )
+        return result
 
     def _snapshot_browser_settings(self) -> dict[str, Any]:
         return {

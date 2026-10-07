@@ -5,6 +5,7 @@ from __future__ import annotations
 import platform
 import re
 from datetime import datetime, timezone
+from math import ceil
 from typing import Any, Callable
 
 import customtkinter as ctk
@@ -115,7 +116,13 @@ def _truncate_status_name(
 
 
 def _status_bar_text_width() -> int:
-    keys = (
+    """Fixed width for the compact status column (main + sub line).
+
+    Sized to the longest localized main/sub strings for the *current*
+    language so status and language changes cannot clip the green
+    running label inside the CompactFlowFrame acts group.
+    """
+    main_keys = (
         "status.idle",
         "status.trigger_running",
         "status.trigger_once_running",
@@ -123,15 +130,15 @@ def _status_bar_text_width() -> int:
         "status.watching_once",
         "status.stopped",
         "status.monitor_restarted",
-        "status.poll_checking",
     )
-    sample = tr("status.poll_checking", name="RunRunLuna")
-    two_line = f"{tr('status.trigger_running')}\n{sample}"
-    return max(
-        96,
-        max(_measure_text(tr(k)) for k in keys) + 16,
-        _measure_text(two_line) + 16,
+    main_w = max(_measure_text(tr(k)) for k in main_keys)
+    sub_w = max(
+        _measure_text(tr("status.awaiting_start")),
+        _measure_text(tr("status.poll_waiting")),
+        _measure_text(tr("status.poll_checking", name="RunRunLuna")),
+        _measure_text(tr("status.poll_refreshing", name="RunRunLuna")),
     )
+    return max(96, main_w, sub_w) + 16
 
 
 def _language_icon(size: int = 20) -> ctk.CTkImage:
@@ -354,17 +361,44 @@ _CLR_TEXT_SECONDARY = "#9aa0b4"
 _CLR_TEXT_MUTED = "#7f8499"
 _CLR_STATUS_DOT_IDLE = "#6d6b67"
 
+_BUTTON_DEFAULTS = {
+    "height": 34,
+    "corner_radius": 8,
+    "fg_color": "#263653",
+    "hover_color": "#354866",
+    "border_width": 1,
+    "border_color": "#465570",
+    "text_color": "#e6eaf2",
+    "text_color_disabled": "#7f8499",
+}
+
+
+class AppButton(ctk.CTkButton):
+    """Application button defaults, independent of the toolkit's theme/font.
+
+    Callers may override colors for semantic actions (start, stop, delete),
+    while close/cancel buttons share the neutral application style.
+    """
+
+    def __init__(self, master: Any, **kwargs: Any) -> None:
+        options = {**_BUTTON_DEFAULTS, **kwargs}
+        if "font" not in options:
+            options["font"] = _font(13)
+        if "width" not in options:
+            options["width"] = _button_width(options.get("text", ""), min_width=88)
+        super().__init__(master, **options)
+
 _MIN_WINDOW_WIDTH = 920
 _MIN_WINDOW_HEIGHT = 560
 _DEFAULT_WINDOW_GEOMETRY = f"{_MIN_WINDOW_WIDTH}x580"
 _COMPACT_CTRL_PAD_X = 16
-_COMPACT_CTRL_PAD_Y = 12
-_COMPACT_LINE_GAP = 10
+_COMPACT_CTRL_PAD_Y = 6
+_COMPACT_LINE_GAP = 4
 _COMPACT_ACT_BTN_HEIGHT = 34
 _COMPACT_SEG_HEIGHT = 26
 _COMPACT_FIELD_HEIGHT = 30
 _COMPACT_FLOW_HGAP = 14
-_COMPACT_FLOW_VGAP = 8
+_COMPACT_FLOW_VGAP = 4
 
 
 def layout_flow_rows(
@@ -416,18 +450,38 @@ class CompactFlowFrame(ctk.CTkFrame):
         self._vgap = vgap
         self._items: list[Any] = []
         self._reflowing = False
-        self._last_key: tuple[int, tuple[int, ...], int] | None = None
+        self._reflow_after: str | None = None
+        self._last_key: tuple[Any, ...] | None = None
         self.pack_propagate(False)
         self.bind("<Configure>", self._on_configure, add="+")
+        self.bind("<Map>", self._on_configure, add="+")
 
     def add(self, widget: Any) -> None:
         """Register ``widget`` as a wrap unit (caller must not pack it)."""
         self._items.append(widget)
+        widget.bind("<Configure>", lambda _event: self.request_reflow(), add="+")
+        self.request_reflow()
 
-    def _on_configure(self, event: Any = None) -> None:
-        if event is not None and getattr(event, "widget", None) is not self:
-            return
+    def _on_configure(self, _event: Any = None) -> None:
+        # CTkFrame.bind forwards to its internal canvas. Its Configure/Map
+        # event therefore names that canvas, not this public frame. Filtering
+        # on event.widget is self would discard the first usable size.
+        self.request_reflow()
+
+    def request_reflow(self) -> None:
+        """Coalesce layout changes after Tk has negotiated natural sizes."""
+        if self._reflow_after is None:
+            self._reflow_after = self.after_idle(self._flush_reflow)
+
+    def _flush_reflow(self) -> None:
+        self._reflow_after = None
         self.reflow()
+
+    def destroy(self) -> None:
+        if self._reflow_after is not None:
+            self.after_cancel(self._reflow_after)
+            self._reflow_after = None
+        super().destroy()
 
     def reflow(self) -> None:
         """Place children into wrapping rows for the current width."""
@@ -435,14 +489,12 @@ class CompactFlowFrame(ctk.CTkFrame):
             return
         self._reflowing = True
         try:
-            self.update_idletasks()
             avail = int(self.winfo_width())
             if avail <= 2:
                 # Not mapped / not sized yet — wait for the next Configure.
                 return
             sizes: list[tuple[int, int]] = []
             for widget in self._items:
-                widget.update_idletasks()
                 sizes.append(
                     (
                         max(int(widget.winfo_reqwidth()), 1),
@@ -450,32 +502,35 @@ class CompactFlowFrame(ctk.CTkFrame):
                     )
                 )
             widths = [w for w, _h in sizes]
-            key = (avail, tuple(widths), self._hgap)
-            rows = layout_flow_rows(widths, avail=avail, hgap=self._hgap)
+            # winfo dimensions are physical pixels; CTk configure/place accept
+            # logical dimensions. Never feed a scaled request back as a new
+            # widget size, which compounds scaling on every Configure event.
+            hgap = round(self._apply_widget_scaling(self._hgap))
+            vgap = round(self._apply_widget_scaling(self._vgap))
+            key = (avail, tuple(sizes), hgap, vgap, self._get_widget_scaling())
+            if key == self._last_key:
+                return
+            rows = layout_flow_rows(widths, avail=avail, hgap=hgap)
             y = 0
             total_h = 0
-            for row_i, row in enumerate(rows):
+            for row in rows:
                 x = 0
                 row_h = 0
                 for idx in row:
                     ww, hh = sizes[idx]
                     widget = self._items[idx]
-                    # CTk forbids width/height in place(); size via configure when
-                    # the widget supports it, otherwise rely on natural req size.
-                    try:
-                        widget.configure(width=ww, height=hh)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    widget.place(x=x, y=y)
-                    x += ww + self._hgap
+                    # Keep each child's natural request, including later font
+                    # and locale changes. Child Configure schedules a new pass.
+                    widget.place(
+                        x=self._reverse_widget_scaling(x),
+                        y=self._reverse_widget_scaling(y),
+                    )
+                    x += ww + hgap
                     row_h = max(row_h, hh)
                 total_h = y + row_h
-                y += row_h + self._vgap
-            if total_h < 1:
-                total_h = 1
-            if key != self._last_key or int(self.cget("height") or 0) != total_h:
-                self._last_key = key
-                self.configure(height=total_h)
+                y += row_h + vgap
+            self._last_key = key
+            self.configure(height=max(1, ceil(self._reverse_widget_scaling(total_h))))
         finally:
             self._reflowing = False
 

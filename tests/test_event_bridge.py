@@ -10,9 +10,12 @@ import threading
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from stream_monitor.event_bridge import MonitorEventBridge
 from stream_monitor.events import (
     ChannelWentLive,
+    ChannelWentOffline,
     MonitorEventBus,
     PartialStatusUpdate,
     PollActivity,
@@ -20,6 +23,7 @@ from stream_monitor.events import (
 )
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelEntry
+from stream_monitor.util import channel_key
 
 
 class _FakeRow:
@@ -60,6 +64,7 @@ class _RecordingSink:
             window=SimpleNamespace(
                 tracking_available=lambda _settings, _url="": False,
                 prune_off_topic=lambda: 0,
+                release_keep_awake_for_closed=lambda: 0,
             )
         )
 
@@ -73,6 +78,21 @@ class _RecordingSink:
 
     def iter_channel_rows(self) -> list[_FakeRow]:
         return self._channel_rows
+
+    def is_channel_active(self, entry: ChannelEntry) -> bool:
+        channels = self.config.get("channels")
+        if not isinstance(channels, list):
+            # Older lightweight sinks in integrations did not expose the
+            # channel list; retain their historical permissive behavior.
+            return True
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            if channel_key(
+                channel.get("platform", ""), channel.get("name", "")
+            ) == entry.key:
+                return bool(channel.get("enabled", True))
+        return False
 
     def set_poll_waiting(self) -> None:
         self.poll_waiting += 1
@@ -209,6 +229,65 @@ def test_trigger_mode_notify_entry_dispatches_notification_only() -> None:
     assert sink.monitor_cycle_complete_calls == 0
 
 
+@pytest.mark.parametrize(
+    "old_mode,new_mode",
+    [(old, new) for old in ("trigger", "monitor", "notify")
+     for new in ("trigger", "monitor", "notify") if old != new],
+)
+def test_queued_live_event_uses_current_channel_mode(old_mode, new_mode):
+    bus = MonitorEventBus()
+    sink = _RecordingSink()
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(ChannelWentLive(entry=_entry(channel_mode=old_mode), info=_live_info()))
+    sink.config["channels"] = [
+        {"platform": "twitch", "name": "Hello", "channel_mode": new_mode},
+    ]
+
+    bridge.tick()
+
+    plans = [action.key for action, *_ in sink.executed_actions]
+    assert plans == {"trigger": ["open_and_stop"], "notify": ["notify_only"], "monitor": []}[new_mode]
+    assert len(sink.live_row_updates) == 1
+
+
+def test_queued_live_event_respects_current_legacy_monitor_only():
+    bus = MonitorEventBus()
+    sink = _RecordingSink()
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(ChannelWentLive(entry=_entry(), info=_live_info()))
+    sink.config["channels"] = [
+        {"platform": "twitch", "name": "hello", "monitor_only": True},
+    ]
+
+    bridge.tick()
+
+    assert sink.executed_actions == []
+    assert len(sink.live_row_updates) == 1
+
+
+@pytest.mark.parametrize(
+    "old_mode,new_mode",
+    [(old, new) for old in ("trigger", "monitor", "notify")
+     for new in ("trigger", "monitor", "notify") if old != new],
+)
+def test_queued_offline_event_uses_current_channel_mode(old_mode, new_mode):
+    bus = MonitorEventBus()
+    sink = _RecordingSink()
+    sink.current_browser_settings = lambda: SimpleNamespace(close_on_offline=True)
+    sink.platform_services.window.tracking_available = lambda _: True
+    bridge = MonitorEventBridge(sink, bus)
+    entry = _entry(channel_mode=old_mode)
+    offline_info = SimpleNamespace(url="https://www.twitch.tv/hello")
+    bus.publish(ChannelWentOffline(entry=entry, offline_info=offline_info))
+    sink.config["channels"] = [
+        {"platform": "twitch", "name": "hello", "channel_mode": new_mode},
+    ]
+
+    bridge.tick()
+
+    assert sink.offline_calls == ([(entry, offline_info)] if new_mode == "trigger" else [])
+
+
 def test_completed_poll_consumes_global_one_shot_mode() -> None:
     bus = MonitorEventBus()
     sink = _RecordingSink(mode="watch_once")
@@ -234,6 +313,44 @@ def test_trigger_once_dispatches_actions_then_consumes_global_mode() -> None:
     assert sink.monitor_cycle_complete_calls == 1
 
 
+@pytest.mark.parametrize("mode", ["watch_once", "trigger_once"])
+@pytest.mark.parametrize("defer_repaints", [False, True])
+def test_one_shot_finishes_painting_all_rows_after_returning_to_idle(
+    mode: str, defer_repaints: bool,
+) -> None:
+    class CompletingSink(_RecordingSink):
+        def on_monitor_cycle_complete(self) -> None:
+            super().on_monitor_cycle_complete()
+            self._monitor_mode = "idle"
+
+    bus = MonitorEventBus()
+    sink = CompletingSink(mode=mode)
+    sink.defer_channel_row_repaints = defer_repaints
+    rows = [_FakeRow(f"twitch:c{i}") for i in range(8)]
+    sink._channel_rows = rows
+    bridge = MonitorEventBridge(sink, bus)
+    names = {row.key: row.key.upper() for row in rows}
+    bus.publish(PollStatusUpdate(
+        statuses={row.key: True for row in rows}, display_names=names,
+    ))
+
+    bridge.tick()
+    assert sink.monitor_mode == "idle"
+    assert sum(bool(row.applied) for row in rows) == (0 if defer_repaints else 3)
+
+    # Releasing a drag must also allow the completed cycle to finish painting.
+    sink.defer_channel_row_repaints = False
+    bus.publish(ChannelWentLive(entry=_entry("late"), info=_live_info("late")))
+    for _ in range(3):
+        bridge.tick()
+
+    assert [row.applied for row in rows] == [[True]] * len(rows)
+    assert sink.applied_display_names == [names]
+    assert sink.monitor_cycle_complete_calls == 1
+    assert sink.executed_actions == []
+    assert bus.drain() == []
+
+
 def test_one_shot_ignores_events_from_the_cycle_already_in_progress() -> None:
     bus = MonitorEventBus()
     sink = _RecordingSink(mode="trigger_once", action="open_and_stop")
@@ -252,6 +369,25 @@ def test_one_shot_ignores_events_from_the_cycle_already_in_progress() -> None:
     bridge.tick()
 
     assert [info.channel for _, info, _ in sink.executed_actions] == ["new"]
+    assert sink.monitor_cycle_complete_calls == 1
+
+
+def test_one_shot_does_not_dispatch_a_second_buffered_cycle() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger_once", action="open_and_keep")
+    bridge = MonitorEventBridge(sink, bus)
+    for cycle in (1, 2):
+        name = f"c{cycle}"
+        bus.publish(ChannelWentLive(
+            entry=_entry(name), info=_live_info(name), cycle_id=cycle,
+        ))
+        bus.publish(PollStatusUpdate(
+            statuses={}, display_names={}, cycle_id=cycle,
+        ))
+
+    bridge.tick()
+
+    assert [info.channel for _, info, _ in sink.executed_actions] == ["c1"]
     assert sink.monitor_cycle_complete_calls == 1
 
 
@@ -433,3 +569,71 @@ def test_deferred_display_names_flush_when_repaints_resume() -> None:
 
     assert sink.applied_display_names == [{"twitch:hello": "Hello"}]
     assert len(row.applied) == 1
+
+def test_poll_complete_releases_keep_awake_when_blank_tab_cleanup_disabled() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger")
+    released: list[int] = []
+    pruned: list[int] = []
+    sink.config["browser_settings"] = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "user_data_dir": "C:/tmp/profile",
+        "app_mode": True,
+        "close_off_topic_pages": False,
+    }
+    sink.platform_services = SimpleNamespace(
+        window=SimpleNamespace(
+            tracking_available=lambda *_a, **_k: True,
+            prune_off_topic=lambda: pruned.append(1) or 0,
+            release_keep_awake_for_closed=lambda: released.append(1) or 1,
+        )
+    )
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(PollStatusUpdate(statuses={}, display_names={}))
+    bridge.tick()
+    assert released == [1]
+    assert pruned == []
+
+
+def test_poll_complete_uses_prune_path_when_blank_tab_cleanup_enabled() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger")
+    released: list[int] = []
+    pruned: list[int] = []
+    sink.config["browser_settings"] = {
+        "enabled": True,
+        "browser_path": "chrome",
+        "user_data_dir": "C:/tmp/profile",
+        "app_mode": True,
+        "close_off_topic_pages": True,
+    }
+    sink.platform_services = SimpleNamespace(
+        window=SimpleNamespace(
+            tracking_available=lambda *_a, **_k: True,
+            prune_off_topic=lambda: pruned.append(1) or 1,
+            release_keep_awake_for_closed=lambda: released.append(1) or 1,
+        )
+    )
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(PollStatusUpdate(statuses={}, display_names={}))
+    bridge.tick()
+    assert pruned == [1]
+    # Keep-awake sync is owned by prune when cleanup is enabled.
+    assert released == []
+
+
+def test_removed_channel_live_event_is_ignored_before_side_effects() -> None:
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="trigger", action="open_and_stop")
+    sink.config["channels"] = [
+        {"platform": "twitch", "name": "still-configured", "enabled": True}
+    ]
+    bridge = MonitorEventBridge(sink, bus)
+    removed = _entry("removed")
+    bus.publish(ChannelWentLive(entry=removed, info=_live_info("removed")))
+
+    bridge.tick()
+
+    assert sink.live_row_updates == []
+    assert sink.executed_actions == []

@@ -13,6 +13,7 @@ from typing import Any
 
 from stream_monitor.channel_policy import (
     GLOBAL_ACTIVE_MODES,
+    GLOBAL_TRIGGER_MODES,
     TRIGGER_ONCE_MODE,
     WATCH_ONCE_MODE,
     is_one_shot_monitor_mode,
@@ -45,6 +46,11 @@ class MonitorController:
         return self._mode
 
     @property
+    def event_bus(self) -> MonitorEventBus:
+        """Expose the monitor bus for diagnostic subscribers (opt-in only)."""
+        return self._bus
+
+    @property
     def is_running(self) -> bool:
         return self._monitor is not None and self._monitor.is_running
 
@@ -56,6 +62,26 @@ class MonitorController:
     @property
     def wake_verify_active(self) -> bool:
         return self._monitor is not None and self._monitor.wake_verify_active
+
+    def is_settled_idle(self) -> bool:
+        """True when mode is idle, nothing is polling, and stop has finished."""
+        if self._mode != "idle" or self.is_running:
+            return False
+        t = self._stopping_thread
+        if t is not None and t.is_alive():
+            return False
+        return self._monitor is None
+
+    def purge_pending_for_reset(self) -> None:
+        """Drop queued/pre-reset status updates and invalidate generation.
+
+        Call only after a settled-idle guard succeeds. Advancing generation
+        prevents delayed pre-reset status/action work from refilling row
+        caches after launch-records reset.
+        """
+        self._generation += 1
+        self._bus.clear()
+        self._bridge.reset()
 
     def tick(self) -> None:
         """Drain queued monitor events on the UI thread."""
@@ -83,6 +109,12 @@ class MonitorController:
         """Enter ``mode`` and ensure the monitor is polling. False if no channels."""
         if not channels:
             return False
+        # A stopped session may have closed its windows while retaining LIVE
+        # status for display. Every explicit entry into trigger mode must
+        # freshly confirm those streams and restore their requested actions.
+        recheck_live = mode in GLOBAL_TRIGGER_MODES and (
+            self._mode not in GLOBAL_TRIGGER_MODES or not self.is_running
+        )
         self._generation += 1
         if is_one_shot_monitor_mode(mode):
             current_cycle = (
@@ -92,12 +124,15 @@ class MonitorController:
         else:
             self._bridge.disarm_one_shot()
         self._mode = mode
-        self._ensure_running(
+        recheck_boundary = self._ensure_running(
             channels,
             interval,
             initial_statuses=initial_statuses,
             last_activity_epoch=last_activity_epoch,
+            recheck_live=recheck_live,
         )
+        if recheck_boundary is not None:
+            self._bridge.defer_live_actions_until_after(recheck_boundary)
         return True
 
     def stop(self) -> None:
@@ -181,18 +216,28 @@ class MonitorController:
         interval: int,
         initial_statuses: dict[str, Any] | None = None,
         last_activity_epoch: float = 0.0,
-    ) -> None:
+        recheck_live: bool = False,
+    ) -> int | None:
         # Do not create a new monitor while the previous poll thread is still
         # unwinding network work or using the shared SQLite connection.
         self._join_stopping_thread(timeout=None)
+        recheck_boundary = None
         if self._monitor is not None and self._monitor.is_running:
             self._monitor.update_interval(interval)
             self._monitor.update_channels(channels)
+            if recheck_live:
+                recheck_boundary = self._monitor.request_live_recheck()
         elif self._monitor is not None:
             self._monitor.update_interval(interval)
             self._monitor.update_channels(channels)
+            if recheck_live:
+                recheck_boundary = self._monitor.request_live_recheck()
             self._monitor.restart_thread()
         else:
+            # An in-flight publication can race with stop() clearing the bus.
+            # The old producer has now exited, so clear once more before the
+            # new monitor can publish events for this session.
+            self._bus.clear()
             self._monitor = Monitor(
                 channels=channels,
                 interval=interval,
@@ -201,7 +246,10 @@ class MonitorController:
                 initial_statuses=initial_statuses,
                 last_activity_epoch=last_activity_epoch,
             )
+            if recheck_live:
+                recheck_boundary = self._monitor.request_live_recheck()
             self._monitor.start()
+        return recheck_boundary
 
     def _join_stopping_thread(self, *, timeout: float | None) -> None:
         """Block until any previous monitor-stop thread has finished."""

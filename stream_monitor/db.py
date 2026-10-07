@@ -154,3 +154,46 @@ class SeenVideoDB:
         if removed:
             logger.info("Cleaned up %d old seen_videos records", removed)
         return removed
+
+    def backup_to(self, dest: Path) -> Path:
+        """Online-backup the open database to *dest* (connection stays valid)."""
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("database is closed")
+            # sqlite3.Connection.backup keeps the live connection usable; we
+            # deliberately do not recreate or replace the open handle.
+            with sqlite3.connect(str(dest)) as target:
+                self._conn.backup(target)
+        return dest
+
+    def clear_dedupe_table(self) -> int:
+        """Delete every row from the seen_videos dedupe table in one transaction.
+
+        Schema and the open connection are preserved — the database file is
+        not deleted or recreated.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("database is closed")
+            self._conn.execute("BEGIN")
+            try:
+                cursor = self._conn.execute("DELETE FROM seen_videos")
+                removed = cursor.rowcount
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        logger.info("Cleared %d seen_videos dedupe rows", removed)
+        return removed
+
+    def count_seen(self) -> int:
+        """Return the number of rows currently in seen_videos."""
+        with self._lock:
+            if self._closed:
+                return 0
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM seen_videos"
+            ).fetchone()
+            return int(row[0]) if row else 0

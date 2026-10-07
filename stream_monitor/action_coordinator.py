@@ -149,6 +149,13 @@ class ActionCoordinator:
         with self._lock:
             self._cancelled_generations.add(generation)
 
+    def has_active_work(self) -> bool:
+        """True while any action worker or pending queue entry is still live."""
+        with self._lock:
+            if self._pending_keys:
+                return True
+            return any(worker.is_alive() for worker in self._workers)
+
     def _run(
         self,
         plan: ActionPlan,
@@ -159,8 +166,9 @@ class ActionCoordinator:
     ) -> None:
         current = threading.current_thread()
         result: ActionResult | None = None
+        lifecycle_scheduled = threading.Event()
         try:
-            if not self._generation_is_current(generation):
+            if self._is_cancelled(generation):
                 return
 
             result = self._runner(
@@ -169,10 +177,12 @@ class ActionCoordinator:
                 stop_fn=self._lifecycle_callback(
                     generation,
                     LifecycleEffect.STOP_MONITOR,
+                    lifecycle_scheduled,
                 ),
                 exit_fn=self._lifecycle_callback(
                     generation,
                     LifecycleEffect.EXIT_APP,
+                    lifecycle_scheduled,
                 ),
                 browser_settings=browser_settings,
                 is_cancelled=lambda: self._is_cancelled(generation),
@@ -200,10 +210,12 @@ class ActionCoordinator:
                 if (
                     plan.is_terminal
                     and (result is None or not result.succeeded)
+                    and not lifecycle_scheduled.is_set()
                     and not self._closed
                 ):
                     # A failed terminal action should not permanently block a
-                    # later event in the same generation from recovering.
+                    # later event from recovering, unless its stop/exit is
+                    # already queued (e.g. only the notification failed).
                     self._terminal_generations.discard(generation)
 
     def _is_cancelled(self, generation: int) -> bool:
@@ -215,8 +227,11 @@ class ActionCoordinator:
         self,
         generation: int,
         effect: LifecycleEffect,
+        scheduled: threading.Event,
     ) -> LifecycleCallback:
         def callback() -> None:
+            if self._is_cancelled(generation):
+                return
             if effect is LifecycleEffect.STOP_MONITOR:
                 target = self._on_stop
                 label = "stop"
@@ -227,25 +242,18 @@ class ActionCoordinator:
                 return
 
             def invoke() -> None:
-                with self._lock:
-                    if self._closed:
-                        return
-                if not self._generation_is_current(generation):
+                if self._is_cancelled(generation):
                     logger.debug(
-                        "Skipped stale lifecycle effect: generation=%s effect=%s",
+                        "Skipped cancelled lifecycle effect: generation=%s effect=%s",
                         generation,
                         label,
                     )
                     return
                 target()
 
-            try:
-                self._schedule_ui(invoke)
-            except Exception:
-                logger.exception(
-                    "Could not schedule lifecycle effect: generation=%s effect=%s",
-                    generation,
-                    label,
-                )
+            # Propagate scheduler errors so the executor reports failure and
+            # the terminal claim can be released for a later retry.
+            self._schedule_ui(invoke)
+            scheduled.set()
 
         return callback

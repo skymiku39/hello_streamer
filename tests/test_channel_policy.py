@@ -14,12 +14,19 @@ from stream_monitor.channel_policy import (
     apply_channel_mode,
     channel_mode_for,
     effective_action,
+    mode_for_silent_start,
     resolve_live_action,
     should_close_on_offline,
     should_prune_blank_tabs,
 )
 
 _ACTIONS = ("open_and_stop", "open_and_keep", "notify_only", "open_and_exit")
+
+
+def test_mode_for_silent_start_recovers_one_shot_modes() -> None:
+    assert mode_for_silent_start(TRIGGER_ONCE_MODE) == "trigger"
+    assert mode_for_silent_start(WATCH_ONCE_MODE) == "watch"
+    assert mode_for_silent_start("trigger") == "trigger"
 
 
 def test_effective_action_narrows_by_stream_status() -> None:

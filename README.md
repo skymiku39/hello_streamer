@@ -32,17 +32,21 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 ## 下載
 
-**請只下載最新版（Latest）**，舊版安裝檔已從 Release 移除，因為過去版本有已知問題（例如下播關窗、離線 VOD 顯示、啟動開窗等），不建議繼續使用。
+**請只下載最新版（Latest）**。較舊 Release 的可執行檔已自 GitHub 移除，僅保留版本說明與 tag 供查閱；過去版本有已知問題（例如下播關窗、離線 VOD 顯示、啟動開窗等），不建議繼續使用。
 
 請到 [GitHub Releases · Latest](https://github.com/skymiku39/hello_streamer/releases/latest) 下載：
 
 | 平台 | 檔案 |
 | --- | --- |
-| Windows x64 | `HelloStreamer-v1.2.1-windows-x64.zip`（解壓後執行資料夾內的 `HelloStreamer.exe`） |
-| Linux x64 | `HelloStreamer-v1.2.1-linux-x64.tar.gz` |
-| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v1.2.1-linux-arm64.tar.gz` |
+| Windows x64 | `HelloStreamer-v1.3.0-windows-x64.zip`（解壓後執行資料夾內的 `HelloStreamer.exe`） |
+| Linux x64 | `HelloStreamer-v1.3.0-linux-x64.tar.gz` |
+| Linux ARM64 / Raspberry Pi 64-bit | `HelloStreamer-v1.3.0-linux-arm64.tar.gz` |
+
+發佈檔名由 tag 驅動：`HelloStreamer-${tag}-windows-x64.zip`、`HelloStreamer-${tag}-linux-x64.tar.gz`、`HelloStreamer-${tag}-linux-arm64.tar.gz`（`${tag}` 為推送的 `v*` tag，例如 `v1.3.0`）。
 
 Windows 請**整包解壓後再執行**，不要只抽出單一 `.exe`（同層還有 `_internal` 等相依檔）。第一次執行時 SmartScreen 仍可能顯示安全提示，請確認來源是本專案的 GitHub Release。v1.2.1 起改為資料夾版（onedir）打包，以降低 Windows Defender 對「單檔自解」的誤判。
+
+瀏覽器設定中的「觀看認定」僅為 best-effort 嘗試維持本程式開啟的直播持續播放，不保證 Twitch 會將觀看計入。依 [Twitch 官方觀看人數 FAQ](https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat)：靜音的播放器／分頁只要直播影片持續播放仍會計入；觀看人數更新可能需要數分鐘。另見 [Twitch：處理觀看與追蹤機器人](https://help.twitch.tv/s/article/how-to-handle-view-follow-bots)。
 
 ## 快速開始
 
@@ -52,6 +56,8 @@ Windows 請**整包解壓後再執行**，不要只抽出單一 `.exe`（同層�
 4. 貼上 Twitch 或 YouTube 頻道網址。
 5. 設定開播時是否通知、是否開啟直播頁，以及開啟成功後要不要停止監聽。
 6. 按「開始監聽」。
+
+若要從原始碼啟動，Windows 可執行專案根目錄的 `run_hello_streamer.bat`。它會優先使用 `uv`，找不到時才建立或使用 `.venv`；這是開發用啟動器，不是 Release 內的可攜版啟動檔。啟動前會以程序名稱阻止它與 `HelloStreamer.exe` 同時執行；若兩者都沒有啟動，請改用解壓後資料夾內的 `HelloStreamer.exe`。
 
 支援的網址範例：
 
@@ -91,6 +97,8 @@ YouTube 預定直播目前預設只通知、不自動開啟播放器，避免尚
 | 僅監聽一次 | 從按下按鈕後的下一個完整輪詢開始，完成一輪後停止；本輪只更新狀態，不通知、不開啟瀏覽器。 |
 
 每個頻道列的眼睛按鈕維持三態循環：監聽＋觸發 → 僅監聽 → 僅監聽含通知 → 監聽＋觸發。它只控制該頻道是否通知／開啟，不會改變全域輪詢是否只執行一次；按鈕顏色與懸停提示會說明目前模式。
+
+從停止啟動觸發，或由只監測切換到觸發時，程式會在新一輪查詢確認仍在直播後補開播放器，不必重置記錄。Windows 上仍開著的受管視窗會保留，不重複開啟；已關閉或未開過的視窗依目前觸發設定開啟。僅監聽的頻道與已下播頻道不會因此開窗。
 
 ## 監控穩定性
 
@@ -134,7 +142,7 @@ Hello Streamer 內建多國語言介面，可透過主視窗左上方的語言�
 
 ## 瀏覽器設定
 
-主視窗的「瀏覽器設定」為單頁流程。頂部「**使用自訂設定開啟直播頁**」勾選後，由 Hello Streamer 啟動 Chrome / Edge 並套用下方選項；取消勾選則改用 Windows 預設瀏覽器。
+主視窗的「瀏覽器設定」分為基本、視窗、帳號、自動整理、觀看認定與更多選項六個頁籤，每頁可獨立捲動，說明文字會隨視窗寬度換行。「**使用自訂設定開啟直播頁**」勾選後，由 Hello Streamer 啟動 Chrome / Edge 並套用選項；取消勾選則改用 Windows 預設瀏覽器。
 
 ### 如何開啟直播頁
 
@@ -167,6 +175,21 @@ Hello Streamer 內建多國語言介面，可透過主視窗左上方的語言�
 | 開啟後先最小化 | 視窗開啟後最小化。 |
 | 從工作列與 Alt+Tab 隱藏 | Windows 上將播放視窗設為 tool window。 |
 
+### 觀看認定與頁內輔助（Twitch）
+
+瀏覽器設定中的「觀看認定」僅為 best-effort 嘗試維持本程式開啟的直播持續播放（強制可見、防休眠、Chrome 省電白名單、短暫前景），不保證 Twitch 會將觀看計入。依 [Twitch 官方觀看人數 FAQ](https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat)：背景或未聚焦的分頁只要直播影片持續播放仍會計入；觀看人數更新可能需要數分鐘。
+
+另有可選的 **頁內輔助（CDP）**：內容分級確認、Channel Points 寶箱、劇院模式（Alt+T）、定時刷新。此功能：
+
+- 原始碼版與打包的 `HelloStreamer.exe` 均可使用；打包自檢會確認 CDP 傳輸元件已包含。
+- 需自訂 Chromium、程式專用 Profile、受管獨立視窗。
+- 開啟方式或帳號不符合條件時，設定頁會提示原因並停用頁內輔助控制項，既有偏好仍保留。
+- 若專用 Profile 已由沒有 remote debugging 的瀏覽器使用，輔助會略過，主視窗會提示先關閉該瀏覽器並由本程式重開直播。連線失敗或工作中斷也會顯示提示；直播頁可能仍開啟。
+- 寶箱輔助只領取頻道點數的額外獎勵，不支援 Drops、使用點數兌換獎勵或確認 Twitch 連續觀看獎勵入帳。按鈕消失的驗證也不等於伺服器入帳證明。
+- 同時開啟劇院模式與寶箱時，需要讓聊天室保持可見。實測 350×400 小視窗會在劇院模式中強制收合聊天室，無法領取寶箱；請放大視窗或關閉劇院模式。1280×720 頁面尺寸已實測劇院模式、聊天室與重新整理恢復流程；這是當次頁面驗證，並非所有 Twitch 版面的最低尺寸保證。
+- 每個受管 Twitch 頁面每 30 秒重新確認內容提示、播放狀態、劇院模式與聊天室，依已啟用的選項展開聊天室；寶箱依其設定間隔另行檢查。劇院模式在本次輔助首次確認開啟後，就只讀取狀態，不再主動切換；手動關閉、重新整理或重連後也保留這個紀錄，直到該頁輔助重新啟動。播放暫停只記錄狀態，頁面檢查不會強制播放或重新整理。CDP 連線中斷時會對同一頻道重試連線。
+- 領取 Channel Points 為 best-effort，可能牴觸 Twitch 服務條款，請自行承擔風險。
+
 ### 更多選項
 
 | 設定 | 說明 |
@@ -193,7 +216,19 @@ Chrome 與 Edge 會共用長駐的 master process。若瀏覽器已經開著，�
 | `config.json` | 使用者設定、頻道清單、瀏覽器設定與語言偏好。 |
 | `seen_videos.db` | SQLite 資料庫，記錄已看過的 YouTube 影片與直播。 |
 | `logs/stream_monitor.log` | 執行 log；單檔上限 2 MB、保留 5 份備份，總計約 12 MB 後自動輪替，適合長期常駐。 |
+| `logs/watch_streak_observation.ndjson` | 可選 Watch Streak 跨場次診斷（需 `--watch-observation`；預設關閉）。 |
 | `browser_profile/` | 預設獨立瀏覽器 Profile 位置。 |
+
+### Watch Streak 診斷觀察（opt-in）
+
+預設關閉。來源碼啟動可加上 `--watch-observation`（`run_hello_streamer.bat` 會轉發 `%*`）：
+
+```bat
+run_hello_streamer.bat --watch-observation
+python -m stream_monitor --watch-observation
+```
+
+僅追加診斷 NDJSON，不改動監控／開窗決策，也不寫入設定、資料庫或 browser profile。詳見 [`docs/watch-streak-observation.md`](docs/watch-streak-observation.md) 與空白對照表 [`docs/watch-streak-external-checklist.csv`](docs/watch-streak-external-checklist.csv)。
 
 可攜版的路徑由 `portable_storage.py` 統一管理；原始碼執行時的根目錄是專案根目錄，打包後則是執行檔所在目錄（與 `_internal` 同層）。請不要只複製 `.exe` 或單一執行檔，需連同 `_internal`、`config.json`、`seen_videos.db` 與需要的資料夾一起搬移。
 
@@ -203,8 +238,8 @@ Chrome 與 Edge 會共用長駐的 master process。若瀏覽器已經開著，�
 
 | log 關鍵字 | 意義 |
 | --- | --- |
-| `went_live_suppressed` | 程式仍認為該頻道已在 LIVE，因此不會再觸發開播動作。常見於下播後狀態未正確落地；v0.9.3 已將 `fetch returned None` 計入離線防抖以緩解。 |
-| `fetch returned None` | Twitch GQL 或 YouTube fallback 查詢失敗；若連續兩次發生且先前為 LIVE，會確認下播。 |
+| `went_live_suppressed` | 程式仍認為該頻道已在 LIVE，因此不會重複觸發開播動作。若實際已下播，請查看後續輪詢是否取得有效的 offline 回應。 |
+| `fetch returned None` | 查詢未取得有效結果。Twitch 保留先前狀態且不累計下播次數；YouTube 依 fallback／暫時不可用的判定處理，不能只憑這一行判斷已下播。 |
 | `ignoring transient offline reading` | 單次 API 回報 offline，防抖中尚未確認下播（`(1/2)` 表示還需再 1 次）。 |
 | `Poll complete` | 每輪輪詢摘要；含 `tier1=`（觸發梯次耗時）與 `total=`（整輪耗時）。 |
 
@@ -338,7 +373,7 @@ uv run python build.py
 | Windows | `dist/HelloStreamer/HelloStreamer.exe`（整包 onedir） |
 | Linux | `dist/HelloStreamer/HelloStreamer`（整包 onedir） |
 
-推送 `v*` tag 後，release workflow 會建立 GitHub Release：Windows 上傳 zip、Linux 上傳含整包目錄的 tar.gz。
+推送 `v*` tag 後，release workflow 會建立 GitHub Release，並依 tag 產生：`HelloStreamer-${tag}-windows-x64.zip`、`HelloStreamer-${tag}-linux-x64.tar.gz`、`HelloStreamer-${tag}-linux-arm64.tar.gz`。
 
 ## Linux / Raspberry Pi
 

@@ -39,8 +39,17 @@ class TwitchPlatformProbe:
             info = fetcher.get_stream_info(entry.name)
             if info is not None and not info.is_live and prev_status is True:
                 retry = fetcher.get_stream_info(entry.name)
-                if retry is not None:
-                    info = retry
+                if retry is None:
+                    # First sample was non-LIVE but the confirm retry is missing:
+                    # that is unavailable evidence, not a second offline strike.
+                    logger.warning(
+                        "Twitch %s: offline confirm retry unavailable, "
+                        "keeping prev_status=True (no strike)",
+                        entry.key,
+                    )
+                    snap.fetcher = fetcher
+                    return []
+                info = retry
         except Exception:
             logger.exception("Error fetching %s", entry.key)
             return facade.handle_fetch_unavailable(
@@ -48,9 +57,17 @@ class TwitchPlatformProbe:
             )
 
         if info is None:
-            return facade.handle_fetch_unavailable(
-                entry, label="Twitch", snap=snap
+            # Primary get_stream_info None is unavailable evidence only:
+            # do not strike, commit OFFLINE, mutate cache, or emit offline.
+            # (Exceptions still use the shared handle_fetch_unavailable path.)
+            logger.warning(
+                "Twitch %s: fetch returned None (unavailable), "
+                "keeping prev_status=%s (no strike)",
+                entry.key,
+                prev_status,
             )
+            snap.fetcher = fetcher
+            return []
 
         live_key = _live_cache_key(entry.key)
 
@@ -105,7 +122,7 @@ class TwitchPlatformProbe:
         snap.twitch_info = info
         snap.fetcher = fetcher
 
-        if facade.wake_verify_mode:
+        if facade.wake_verify_mode and prev_status is True:
             return []
 
         went_live = info.is_live and prev_status is not True

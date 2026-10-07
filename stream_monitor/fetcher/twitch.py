@@ -117,8 +117,12 @@ class TwitchFetcher(StreamFetcher):
                     return None
                 resp.raise_for_status()
                 data = resp.json()
-                if "errors" in data:
+                if not isinstance(data, dict):
+                    logger.warning("Invalid Twitch response object for %s", channel_name)
+                    return None
+                if data.get("errors"):
                     logger.warning("Twitch GQL errors for %s: %s", channel_name, data["errors"])
+                    return None
                 return data
             except requests.Timeout:
                 logger.warning("Twitch request timed out for %s (attempt %d)", channel_name, attempt + 1)
@@ -164,18 +168,26 @@ class TwitchFetcher(StreamFetcher):
             if not edges:
                 return None
             node = edges[0]["node"]
+            if not isinstance(node, dict):
+                return None
             video_id = node.get("id")
-            if not video_id:
+            if (
+                not isinstance(video_id, (str, int))
+                or isinstance(video_id, bool)
+                or not str(video_id).strip()
+                or not video_id
+            ):
                 return None
             created_at = node.get("createdAt", "") or ""
             length_raw = node.get("lengthSeconds")
             length_seconds = int(length_raw) if length_raw is not None else None
+            title = node.get("title", "")
             return FinishedVod(
                 url=f"https://www.twitch.tv/videos/{video_id}",
                 ended_at=self._archive_ended_at(created_at, length_seconds),
-                title=node.get("title", "") or "",
+                title=title if isinstance(title, str) else "",
             )
-        except (KeyError, TypeError, IndexError, ValueError) as exc:
+        except (KeyError, TypeError, IndexError, ValueError, OverflowError) as exc:
             logger.warning(
                 "Failed to parse Twitch archive response for %s: %s",
                 channel_name,
@@ -204,19 +216,30 @@ class TwitchFetcher(StreamFetcher):
             user = data["data"]["user"]
             if user is None:
                 return None
-            stream = user.get("stream")
-            is_live = stream is not None and stream.get("type") == "live"
+            if not isinstance(user, dict):
+                raise ValueError("invalid user object")
+            # A missing field or an invalid stream object is unavailable
+            # evidence, not the explicit null stream used for offline.
+            stream = user["stream"]
+            if stream is not None and (
+                not isinstance(stream, dict)
+                or not isinstance(stream.get("type"), str)
+                or not stream["type"].strip()
+            ):
+                raise ValueError("invalid stream object or missing stream type")
+            is_live = stream is not None and stream["type"] == "live"
             title = stream.get("title", "") if stream else ""
             started_at = stream.get("createdAt", "") if stream else ""
+            display_name = user.get("displayName", "")
             return StreamInfo(
                 channel=channel_name,
                 platform="twitch",
                 is_live=is_live,
-                title=title,
+                title=title if isinstance(title, str) else "",
                 url=f"https://www.twitch.tv/{channel_name}",
-                display_name=user.get("displayName", ""),
-                started_at=started_at,
+                display_name=display_name if isinstance(display_name, str) else "",
+                started_at=started_at if isinstance(started_at, str) else "",
             )
-        except (KeyError, TypeError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             logger.warning("Failed to parse Twitch response for %s: %s", channel_name, exc)
             return None

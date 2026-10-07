@@ -6,6 +6,7 @@ import json
 import logging
 import logging.handlers
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from stream_monitor.action_plan import (
 )
 from stream_monitor.app_dialogs import (
     AddChannelDialog,
+    AppSettingsDialog,
     BrowserSettingsDialog,
     LanguageDialog,
 )
@@ -53,6 +55,7 @@ from stream_monitor.app_ui import (
     _COMPACT_SEG_HEIGHT,
     _MIN_WINDOW_HEIGHT,
     _MIN_WINDOW_WIDTH,
+    AppButton,
     CompactFlowFrame,
     _button_width,
     _clamped_window_geometry,
@@ -60,6 +63,7 @@ from stream_monitor.app_ui import (
     _fit_option_menu,
     _font,
     _language_icon,
+    _status_bar_text_width,
     _tooltip_tr,
     _truncate_status_name,
     compact_control_button_states,
@@ -78,6 +82,7 @@ from stream_monitor.channel_policy import (
     WATCH_ONCE_MODE,
     base_monitor_mode,
     is_one_shot_monitor_mode,
+    mode_for_silent_start,
 )
 from stream_monitor.channel_reorder import apply_list_move
 from stream_monitor.channel_reorder_ui import ChannelReorderMode
@@ -85,6 +90,7 @@ from stream_monitor.channel_row import ChannelRow
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
+from stream_monitor.launch_records import reset_launch_records
 from stream_monitor.monitor import ChannelEntry, ChannelStatus
 from stream_monitor.monitor_controller import MonitorController
 from stream_monitor.notifier import (
@@ -92,6 +98,7 @@ from stream_monitor.notifier import (
     execute_action_plan,
     platform_services,
 )
+from stream_monitor.page_assist_status import drain_page_assist_status
 from stream_monitor.platform_ports import PlatformServices
 from stream_monitor.portable_storage import portable_paths
 from stream_monitor.scroll_guard import ScrollRepaintGuard
@@ -174,9 +181,16 @@ class App(ctk.CTk):
         # first monitor start (a long gap there means a stale cache that should
         # be wake-verified); later restarts seed from live row state instead.
         self._status_cache_consumed = False
-        # Keep Run key / XDG Exec pointing at this build (versioned .exe names).
-        if self.config.get("run_on_startup") and getattr(sys, "frozen", False):
-            heal_startup_command_if_enabled()
+        # Keep Run key / XDG Exec pointing at this build (versioned .exe names)
+        # and reconcile the persisted switch with the actual OS entry.
+        startup_config_needs_save = False
+        if getattr(sys, "frozen", False):
+            startup_enabled = is_startup_enabled()
+            if startup_enabled:
+                heal_startup_command_if_enabled()
+            if self.config.get("run_on_startup") != startup_enabled:
+                self.config["run_on_startup"] = startup_enabled
+                startup_config_needs_save = True
         self._reorder_mode: ChannelReorderMode | None = None
         self._preview_pack_order: list[int] | None = None
         self._pending_preview_order: list[int] | None = None
@@ -184,6 +198,12 @@ class App(ctk.CTk):
         self._config_save_after: str | None = None
         # Owns the event bus, bridge, monitor thread, and idle/trigger/watch mode.
         self._controller = MonitorController(self, self._db)
+        try:
+            from stream_monitor.watch_observation import attach_monitor_bus
+
+            attach_monitor_bus(self._controller.event_bus)
+        except Exception:
+            logger.exception("Watch observation bus attach failed")
         self._platform = platform_services()
         self._action_coordinator = ActionCoordinator(
             runner=execute_action_plan,
@@ -230,17 +250,45 @@ class App(ctk.CTk):
         )
         self._tray.start()
 
+        if startup_config_needs_save:
+            self._save_config()
+
         if silent:
             self.withdraw()
             channels = self.config.get("channels", [])
             if channels:
                 saved_mode = self.config.get("monitor_mode", TRIGGER_MODE)
+                if not isinstance(saved_mode, str):
+                    saved_mode = TRIGGER_MODE
+                recovered_mode = mode_for_silent_start(saved_mode)
+                if recovered_mode != saved_mode:
+                    # A one-shot mode can survive a crash before its completion
+                    # callback persists the reusable mode. Do not replay it on
+                    # every silent launch; recover to the reusable mode once.
+                    self.config["monitor_mode"] = recovered_mode
+                    self._save_config()
+                    saved_mode = recovered_mode
                 starter = {
                     WATCH_MODE: self._on_watch,
                     TRIGGER_ONCE_MODE: self._on_start_once,
                     WATCH_ONCE_MODE: self._on_watch_once,
                 }.get(saved_mode, self._on_start)
                 self.after(500, starter)
+
+    def report_callback_exception(self, exc, value, tb) -> None:
+        """Keep Tk callback failures in the application log.
+
+        Tk normally prints callback exceptions to stderr only. A windowed
+        build has no visible stderr, which can make a callback failure look
+        like a spontaneous close or a frozen tray app.
+        """
+        if exc is KeyboardInterrupt:
+            logger.info("Application interrupted by user")
+            return
+        logger.critical(
+            "Unhandled Tk callback exception",
+            exc_info=(exc, value, tb),
+        )
 
     # ------------------------------------------------------------------
     # Window visibility
@@ -280,6 +328,12 @@ class App(ctk.CTk):
         if getattr(self, "_unsub_i18n", None):
             self._unsub_i18n()
             self._unsub_i18n = None
+        try:
+            from stream_monitor.watch_observation import disable_watch_observation
+
+            disable_watch_observation(emit_close=True)
+        except Exception:
+            logger.exception("Watch observation shutdown failed")
         self.after(0, self.destroy)
 
     # ------------------------------------------------------------------
@@ -325,6 +379,25 @@ class App(ctk.CTk):
     def iter_channel_rows(self) -> list[CanvasChannelRowAdapter]:
         return self._channel_rows
 
+    def is_channel_active(self, entry: ChannelEntry) -> bool:
+        """Return whether a queued monitor event still targets a live row.
+
+        A background poll may finish after the user removes or disables a
+        channel.  The event bridge checks this on the UI thread immediately
+        before dispatching browser/notification side effects, so an in-flight
+        stale probe cannot act on a channel that is no longer configured.
+        """
+        for channel in self.config.get("channels", []):
+            if not isinstance(channel, dict):
+                continue
+            try:
+                same_key = channel_key(channel["platform"], channel["name"]) == entry.key
+            except (KeyError, TypeError):
+                continue
+            if same_key:
+                return bool(channel.get("enabled", True))
+        return False
+
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
@@ -333,16 +406,16 @@ class App(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
 
         outer = ctk.CTkFrame(self, fg_color="transparent")
-        outer.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
+        outer.grid(row=0, column=0, sticky="nsew", padx=16, pady=10)
         outer.grid_rowconfigure(1, weight=1)
         outer.grid_columnconfigure(0, weight=1)
 
         # ── Title bar ──
         title_bar = ctk.CTkFrame(outer, fg_color="transparent")
-        title_bar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        title_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
         self.language_icon = _language_icon()
-        self.language_btn = ctk.CTkButton(
+        self.language_btn = AppButton(
             title_bar,
             text="",
             image=self.language_icon,
@@ -375,7 +448,7 @@ class App(ctk.CTk):
         )
         self._title_en_label.pack(side="left", padx=(10, 0), pady=(6, 0))
 
-        self.add_btn = ctk.CTkButton(
+        self.add_btn = AppButton(
             title_bar,
             text=tr("toolbar.add_channel"),
             width=_button_width(
@@ -391,7 +464,7 @@ class App(ctk.CTk):
         self.add_btn.pack(side="right")
         _tooltip_tr(self.add_btn, "tooltip.add_channel")
 
-        self.browser_settings_btn = ctk.CTkButton(
+        self.browser_settings_btn = AppButton(
             title_bar,
             text=tr("toolbar.browser_settings"),
             width=_button_width(
@@ -412,6 +485,24 @@ class App(ctk.CTk):
         )
         self.browser_settings_btn.pack(side="right", padx=(0, 8))
         _tooltip_tr(self.browser_settings_btn, "tooltip.browser_settings")
+
+        self.settings_btn = AppButton(
+            title_bar,
+            text=tr("toolbar.settings"),
+            width=_button_width(
+                tr("toolbar.settings"), min_width=88, size=13, weight="bold"
+            ),
+            height=36,
+            corner_radius=8,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#555566",
+            hover_color="#333344",
+            font=_font(13, "bold"),
+            command=self._on_app_settings,
+        )
+        self.settings_btn.pack(side="right", padx=(0, 8))
+        _tooltip_tr(self.settings_btn, "tooltip.settings.reset")
 
         self.startup_var = ctk.BooleanVar(value=is_startup_enabled())
         self.startup_switch = ctk.CTkSwitch(
@@ -455,7 +546,7 @@ class App(ctk.CTk):
                 row, y_root=y_root
             ),
         )
-        self.scroll_frame.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self.scroll_frame.grid(row=0, column=0, sticky="nsew", padx=6, pady=4)
         self._scroll_guard = ScrollRepaintGuard(
             self.scroll_frame,
             self,
@@ -491,7 +582,7 @@ class App(ctk.CTk):
             border_width=1,
             border_color=_CLR_PANEL_BORDER,
         )
-        self._compact_ctrl.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self._compact_ctrl.grid(row=2, column=0, sticky="ew", pady=(6, 0))
 
         panel = ctk.CTkFrame(self._compact_ctrl, fg_color="transparent")
         panel.pack(
@@ -500,7 +591,9 @@ class App(ctk.CTk):
             pady=_COMPACT_CTRL_PAD_Y,
         )
 
-        saved_mode = str(self.config.get("monitor_mode") or TRIGGER_MODE)
+        saved_mode = self.config.get("monitor_mode", TRIGGER_MODE)
+        if not isinstance(saved_mode, str):
+            saved_mode = TRIGGER_MODE
         kind, once = decompose_monitor_mode(saved_mode)
         self._monitor_kind = kind
         self._monitor_once = once
@@ -513,7 +606,7 @@ class App(ctk.CTk):
         acts = ctk.CTkFrame(self._run_flow, fg_color="transparent")
         self._run_flow.add(acts)
 
-        self.start_btn = ctk.CTkButton(
+        self.start_btn = AppButton(
             acts,
             text=tr("toolbar.run"),
             width=_button_width(
@@ -529,7 +622,7 @@ class App(ctk.CTk):
         self.start_btn.pack(side="left", padx=(0, 8))
         _tooltip_tr(self.start_btn, "tooltip.run")
 
-        self.stop_btn = ctk.CTkButton(
+        self.stop_btn = AppButton(
             acts,
             text=tr("toolbar.stop"),
             width=_button_width(
@@ -558,6 +651,7 @@ class App(ctk.CTk):
             width=14,
         )
         self.status_dot.pack(side="left", padx=(0, 6))
+        status_w = _status_bar_text_width()
         self.status_text = ctk.CTkLabel(
             status_row,
             text=tr("status.idle"),
@@ -565,6 +659,7 @@ class App(ctk.CTk):
             text_color=_CLR_TEXT_SECONDARY,
             anchor="w",
             justify="left",
+            width=status_w,
         )
         self.status_text.pack(side="left")
         self.status_sub_text = ctk.CTkLabel(
@@ -574,8 +669,10 @@ class App(ctk.CTk):
             text_color=_CLR_TEXT_MUTED,
             anchor="w",
             justify="left",
+            width=status_w,
         )
         self.status_sub_text.pack(anchor="w")
+        self._status_label_width = status_w
         self._status_text_key = "status.idle"
         self._status_text_color = _CLR_OFFLINE
         self._status_subline_key = "status.awaiting_start"
@@ -671,6 +768,11 @@ class App(ctk.CTk):
             settings_block, hgap=_COMPACT_FLOW_HGAP, vgap=_COMPACT_LINE_GAP
         )
         self._settings_flow.pack(fill="x")
+        self._page_assist_failures: dict[str, str] = {}
+        self._page_assist_notice = ctk.CTkLabel(
+            settings_block, text="", font=_font(11), text_color="#ffb74d",
+            anchor="w", justify="left", wraplength=440,
+        )
 
         trigger_settings = TriggerSettings.from_mapping(
             self.config.get("trigger_settings")
@@ -801,20 +903,6 @@ class App(ctk.CTk):
             size=13,
         )
 
-        self._trigger_hint_btn = ctk.CTkButton(
-            after_fld,
-            text="i",
-            width=28,
-            height=28,
-            corner_radius=8,
-            fg_color="transparent",
-            hover_color="#2a2a40",
-            text_color=_CLR_TEXT_MUTED,
-            font=_font(14, "bold"),
-        )
-        self._trigger_hint_btn.pack(side="left", padx=(6, 0))
-        _tooltip_tr(self._trigger_hint_btn, "toolbar.trigger_hint")
-
         self._compact_ctrl.bind(
             "<Configure>", self._on_compact_ctrl_configure, add="+"
         )
@@ -897,9 +985,8 @@ class App(ctk.CTk):
         """Reflow compact wrap rows after resize / i18n text width changes."""
         if not hasattr(self, "_run_flow"):
             return
-        self.update_idletasks()
-        self._run_flow.reflow()
-        self._settings_flow.reflow()
+        self._run_flow.request_reflow()
+        self._settings_flow.request_reflow()
 
     def _fit_main_toolbar_i18n(self) -> None:
         """Resize toolbar widgets so localized labels are not clipped."""
@@ -941,6 +1028,7 @@ class App(ctk.CTk):
         self._sync_monitor_segments()
         self._render_status_text()
         self._refresh_trigger_controls()
+        self._render_page_assist_notice()
         self._reflow_compact_panel()
 
     # ------------------------------------------------------------------
@@ -1008,12 +1096,16 @@ class App(ctk.CTk):
     def save_status_cache(self) -> None:
         """AppEventSink hook: refresh in-memory cache after each poll cycle."""
         self._save_status_cache()
+        # Keep abnormal termination from discarding the newest completed poll.
+        # The existing coalescer limits this to one atomic write per burst.
+        self._schedule_config_save(delay_ms=500)
 
     def _monitor_seed_args(self) -> tuple[dict[str, Any], float]:
         """Build (initial_statuses, last_activity_epoch) for a monitor start.
 
-        Statuses come from the live rows so a stream that was already live is
-        not re-triggered as a fresh edge. The persisted ``saved_at`` gap only
+        Statuses preserve row continuity. The controller requests a fresh
+        live recheck when entering trigger mode so cached LIVE rows cannot
+        suppress reopening missing windows. The persisted ``saved_at`` gap
         feeds wake-verification on the first start after launch.
         """
         initial_statuses = {
@@ -1460,14 +1552,26 @@ class App(ctk.CTk):
 
     def _render_status_text(self) -> None:
         main = tr(self._status_text_key)
-        self.status_text.configure(text=main, text_color=self._status_text_color)
+        width = _status_bar_text_width()
+        self.status_text.configure(
+            text=main,
+            text_color=self._status_text_color,
+            width=width,
+        )
         if hasattr(self, "status_dot"):
             self.status_dot.configure(text_color=self._status_text_color)
         if self._status_subline_key:
             sub = tr(self._status_subline_key, **self._status_subline_kwargs)
-            self.status_sub_text.configure(text=sub)
+            self.status_sub_text.configure(text=sub, width=width)
         else:
-            self.status_sub_text.configure(text="")
+            self.status_sub_text.configure(text="", width=width)
+        prev_width = getattr(self, "_status_label_width", None)
+        self._status_label_width = width
+        # Language changes (and first paint) resize the reserved column; reflow
+        # so CompactFlowFrame does not keep a too-narrow acts place width.
+        if prev_width != width and hasattr(self, "_run_flow"):
+            self._reflow_compact_panel()
+
 
     def _set_status_text(self, key: str, color: str) -> None:
         """Update the bottom-toolbar status text + cache for retranslation."""
@@ -1633,6 +1737,62 @@ class App(ctk.CTk):
         self._monitor_once = once
         self._sync_monitor_segments()
 
+    def _on_app_settings(self) -> None:
+        dialog = AppSettingsDialog(
+            self,
+            minimize_to_tray=bool(self.minimize_to_tray_var.get()),
+            run_on_startup=bool(self.startup_var.get()),
+            on_tray_changed=self._set_minimize_to_tray,
+            on_startup_changed=self._set_run_on_startup,
+            on_reset_launch_records=self._reset_launch_records_action,
+        )
+        self.wait_window(dialog)
+
+    def _set_minimize_to_tray(self, enabled: bool) -> None:
+        self.minimize_to_tray_var.set(enabled)
+        self._on_tray_switch_toggle()
+
+    def _set_run_on_startup(self, enabled: bool) -> bool:
+        self.startup_var.set(enabled)
+        self._on_startup_toggle()
+        return bool(self.startup_var.get()) == bool(enabled)
+
+    def _reset_launch_records_action(self) -> tuple[bool, str]:
+        """UI callback for Settings → reset launch records."""
+        # Cancel any coalesced save so a stale pre-reset callback cannot
+        # rewrite channel_status_cache after a successful clear.
+        self._cancel_scheduled_config_save()
+
+        def after_guard() -> None:
+            self._cancel_scheduled_config_save()
+            self._controller.purge_pending_for_reset()
+
+        def persist_config(config: dict[str, Any]) -> None:
+            # Must propagate OSError — never report success if disk still
+            # holds the old channel_status_cache.
+            try:
+                config["window_geometry"] = self.geometry()
+            except Exception:
+                pass
+            self.config = config_manager.save(config)
+
+        result = reset_launch_records(
+            db=self._db,
+            config=self.config,
+            paths=portable_paths(),
+            controller=self._controller,
+            coordinator=self._action_coordinator,
+            persist_config=persist_config,
+            after_guard=after_guard,
+        )
+        if not result.ok:
+            return False, result.error_key or "settings.reset.fail"
+        # Clear row snapshots only after durable persistence + DB clear.
+        for row in self._channel_rows:
+            row.raw.clear_launch_status()
+        self.scroll_frame.redraw_all()
+        return True, "settings.reset.ok"
+
     def _on_browser_settings(self) -> None:
         dialog = BrowserSettingsDialog(
             self,
@@ -1721,7 +1881,10 @@ class App(ctk.CTk):
         """Restart the background monitor if its thread died unexpectedly."""
         if self._truly_quitting:
             return
-        self.maybe_restart_dead_monitor()
+        try:
+            self.maybe_restart_dead_monitor()
+        except Exception:
+            logger.exception("Monitor health check failed; continuing")
         self.after(10_000, self._monitor_health_check)
 
     def maybe_restart_dead_monitor(self) -> None:
@@ -1746,7 +1909,45 @@ class App(ctk.CTk):
         if self._truly_quitting:
             return
         self.after(80, self._poll_events)
-        self._controller.tick()
+        try:
+            self._controller.tick()
+        except Exception:
+            logger.exception("UI event bridge tick failed; continuing")
+        try:
+            self._poll_page_assist_status()
+        except Exception:
+            logger.exception("Page-assist status update failed; continuing")
+
+    def _poll_page_assist_status(self) -> None:
+        notices = drain_page_assist_status()
+        for url, reason in notices:
+            if url == "*" and not reason:
+                self._page_assist_failures.clear()
+                continue
+            if reason:
+                self._page_assist_failures.pop(url, None)
+                self._page_assist_failures[url] = reason
+                if len(self._page_assist_failures) > 32:
+                    self._page_assist_failures.pop(next(iter(self._page_assist_failures)))
+            else:
+                self._page_assist_failures.pop(url, None)
+        if notices:
+            self._render_page_assist_notice()
+
+    def _render_page_assist_notice(self) -> None:
+        if not self._page_assist_failures:
+            self._page_assist_notice.pack_forget()
+            return
+        url = next(reversed(self._page_assist_failures))
+        reason = self._page_assist_failures[url]
+        key = (
+            "engagement.page_assist.profile_busy"
+            if reason in {"profile_nondebug", "profile_busy"}
+            else "engagement.page_assist.failed"
+        )
+        self._page_assist_notice.configure(text=tr(key, url=url))
+        if not self._page_assist_notice.winfo_manager():
+            self._page_assist_notice.pack(fill="x", pady=(6, 0))
 
     def handle_channel_offline(
         self, entry: ChannelEntry, offline_info: Any
@@ -1857,7 +2058,13 @@ class App(ctk.CTk):
             self.config["window_geometry"] = self.geometry()
         except Exception:
             pass
-        self.config = config_manager.save(self.config)
+        try:
+            self.config = config_manager.save(self.config)
+        except OSError:
+            # A transient Windows file lock must not terminate a Tk callback
+            # or leave the application half-closed. The atomic temp file is
+            # retained for recovery on the next launch.
+            logger.exception("Config save failed; keeping application alive")
 
     def _on_close(self) -> None:
         # Legacy entry point kept for callers outside the WM_DELETE_WINDOW
@@ -1904,11 +2111,51 @@ def _check_writable(directory: Path) -> None:
         sys.exit(1)
 
 
+def _run_frozen_self_check() -> None:
+    """Import platform-specific frozen dependencies without opening the UI."""
+    if not getattr(sys, "frozen", False):
+        return
+    __import__("websocket")
+    if sys.platform == "win32":
+        # These imports are intentionally lazy in normal runtime paths.  The
+        # release smoke command makes missing PyInstaller hidden imports fail
+        # at build time instead of on the first toast/tray action.
+        __import__("pystray._win32")
+        __import__("winotify")
+
+
 def main() -> None:
+    if "--self-check" in sys.argv:
+        _run_frozen_self_check()
+        return
+
     if getattr(sys, "frozen", False) and sys.platform != "win32":
         _fix_linux_frozen_env()
 
     log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+    # Install logging before config preload. A corrupt config or interrupted
+    # atomic save must be diagnosable in a windowed build as well.
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    if not root_logger.handlers:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(logging.Formatter(log_fmt))
+        root_logger.addHandler(stream_handler)
+
+    data_dir = portable_paths().root
+    log_dir = portable_paths().logs_dir
+    log_file = portable_paths().application_log
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8",
+        )
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter(log_fmt))
+        root_logger.addHandler(file_handler)
+    except OSError:
+        root_logger.exception("Failed to initialize application file logging")
 
     # Apply the saved language as early as possible so the writable-check
     # error dialog (and any boot-time messages) also respect the user choice.
@@ -1921,24 +2168,21 @@ def main() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("Failed to preload language; falling back to default")
 
-    data_dir = portable_paths().root
     _check_writable(data_dir)
 
-    log_dir = portable_paths().logs_dir
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = portable_paths().application_log
+    previous_thread_excepthook = threading.excepthook
 
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=2 * 1024 * 1024, backupCount=5, encoding="utf-8",
-    )
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter(log_fmt))
+    def _log_thread_exception(args: threading.ExceptHookArgs) -> None:
+        if args.exc_type is KeyboardInterrupt:
+            previous_thread_excepthook(args)
+            return
+        logger.critical(
+            "Unhandled exception in thread %s",
+            args.thread.name if args.thread is not None else "<unknown>",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format=log_fmt,
-        handlers=[logging.StreamHandler(), file_handler],
-    )
+    threading.excepthook = _log_thread_exception
 
     silent = "--silent" in sys.argv
 
@@ -1956,11 +2200,42 @@ def main() -> None:
         logger.info("Another instance is already running — activating it")
         sys.exit(0)
 
-    app = App(silent=silent)
+    # Enable only after lock acquisition so a second instance cannot leave an
+    # orphan app.lifecycle open event when try_lock fails.
+    try:
+        from stream_monitor.watch_observation import (
+            enable_watch_observation,
+            is_watch_observation_requested,
+        )
+
+        if is_watch_observation_requested(sys.argv[1:]):
+            enable_watch_observation(paths=portable_paths())
+            logger.info(
+                "Watch observation enabled → %s",
+                portable_paths().observation_log,
+            )
+    except Exception:
+        logger.exception("Watch observation enable failed (non-fatal)")
 
     try:
+        app = App(silent=silent)
         app.mainloop()
+    except KeyboardInterrupt:
+        logger.info("Application interrupted by user")
+    except Exception:
+        logger.critical("Fatal application exception", exc_info=True)
+        raise
     finally:
+        try:
+            from stream_monitor.watch_observation import (
+                disable_watch_observation,
+                is_watch_observation_enabled,
+            )
+
+            if is_watch_observation_enabled():
+                disable_watch_observation(emit_close=True)
+        except Exception:
+            logger.exception("Watch observation final shutdown failed")
         lock.release()
 
 

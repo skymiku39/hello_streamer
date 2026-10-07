@@ -51,6 +51,11 @@ def base_monitor_mode(mode: str) -> str:
         return WATCH_MODE
     return mode
 
+
+def mode_for_silent_start(mode: str) -> str:
+    """Recover a persisted one-shot mode as its reusable mode after a crash."""
+    return base_monitor_mode(mode) if is_one_shot_monitor_mode(mode) else mode
+
 # Per-channel side-effect modes. These are intentionally separate from the
 # global monitor mode above: a channel can be observed while either allowing
 # notifications or suppressing every side-effect.
@@ -194,6 +199,42 @@ def should_close_on_offline(
         and resolved_channel_mode == CHANNEL_MODE_TRIGGER
         and not wake_verify_active
     )
+
+
+def should_suppress_terminal_after_open(
+    *,
+    mode: str,
+    close_on_offline: bool,
+    tracking_available: bool,
+) -> bool:
+    """Whether stop/exit after open must yield so offline close can run.
+
+    Only persistent ``trigger`` keeps polling until the offline edge.
+    ``trigger_once``, watch/monitor-only modes, and runs without tracking leave
+    the configured after-open effect unchanged.
+    """
+    return (
+        mode == TRIGGER_MODE
+        and close_on_offline
+        and tracking_available
+    )
+
+
+def with_close_on_offline_lifecycle(
+    plan: ActionPlan,
+    *,
+    mode: str,
+    close_on_offline: bool,
+    tracking_available: bool,
+) -> ActionPlan:
+    """Clear terminal after-open effects when close-on-offline needs them."""
+    if plan.is_terminal and should_suppress_terminal_after_open(
+        mode=mode,
+        close_on_offline=close_on_offline,
+        tracking_available=tracking_available,
+    ):
+        return replace(plan, after_open=LifecycleEffect.NONE)
+    return plan
 
 
 def should_prune_blank_tabs(

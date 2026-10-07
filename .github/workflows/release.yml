@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  UV_VERSION: "0.12.20"
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -19,6 +22,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
+          version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
@@ -26,7 +30,10 @@ jobs:
         run: uv python install 3.11
 
       - name: Install Dependencies
-        run: uv sync --extra dev
+        run: |
+          uv --version
+          uv sync --locked --extra dev
+          uv tree --locked --extra dev --depth 2
 
       - name: Ruff
         run: uv run ruff check .
@@ -37,16 +44,20 @@ jobs:
       - name: Pytest
         run: uv run pytest -q
 
+      - name: Verify release tag matches package version
+        run: uv run python build.py --check-release-tag "${{ github.ref_name }}"
+
       - name: Build Executable
         run: uv run python build.py
+
+      - name: Frozen Windows smoke check
+        run: .\dist\HelloStreamer\HelloStreamer.exe --self-check
 
       - name: Package Windows onedir zip
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release
-          if (-not (Test-Path -LiteralPath "dist/HelloStreamer/HelloStreamer.exe")) {
-            throw "Expected onedir exe at dist/HelloStreamer/HelloStreamer.exe"
-          }
+          uv run python build.py --validate-windows-onedir dist/HelloStreamer
           Compress-Archive -Path "dist/HelloStreamer" -DestinationPath "release/HelloStreamer-${{ github.ref_name }}-windows-x64.zip"
 
       - name: Upload Release Artifact
@@ -83,14 +94,17 @@ jobs:
           docker run --rm --platform "${{ matrix.platform }}" \
             -v "${{ github.workspace }}:/src" \
             -w /src \
+            -e RELEASE_TAG="${{ github.ref_name }}" \
+            -e UV_VERSION="${{ env.UV_VERSION }}" \
             debian:bookworm \
             bash -c '
               set -euo pipefail
               apt-get update
               apt-get install -y --no-install-recommends \
+                curl \
+                ca-certificates \
                 python3 \
                 python3-venv \
-                python3-pip \
                 python3-tk \
                 python3-gi \
                 python3-gi-cairo \
@@ -105,18 +119,28 @@ jobs:
                 libc-dev \
                 file
               rm -rf .venv build dist
-              python3 -m venv --system-site-packages .venv
+              # Install uv CLI into an isolated tool prefix (not the app venv).
+              curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+              export PATH="$HOME/.local/bin:$PATH"
+              uv --version
+              # Keep Debian GTK / system-site packages visible to the build venv.
+              uv venv --python python3 --system-site-packages
+              uv sync --locked --extra dev
+              uv tree --locked --extra dev --depth 2
               . .venv/bin/activate
-              python -m pip install --upgrade pip
-              python -m pip install -e ".[dev]"
               python -m ruff check .
               python -m compileall -f stream_monitor build.py
               python -m pytest -q
+              python build.py --check-release-tag "$RELEASE_TAG"
               python build.py
               echo "=== Build output ==="
+              python build.py --validate-linux-onedir dist/HelloStreamer
               test -x dist/HelloStreamer/HelloStreamer
+              test -s dist/HelloStreamer/HelloStreamer
               file dist/HelloStreamer/HelloStreamer
               ls -la dist/HelloStreamer
+              echo "=== Frozen Linux smoke check ==="
+              dist/HelloStreamer/HelloStreamer --self-check
             '
 
       - name: Fix file ownership
@@ -124,6 +148,26 @@ jobs:
 
       - name: Package Linux executable
         run: |
+          set -euo pipefail
+          bundle="dist/HelloStreamer"
+          exe="${bundle}/HelloStreamer"
+          internal="${bundle}/_internal"
+          if [[ ! -f "$exe" || ! -s "$exe" ]]; then
+            echo "Linux onedir bundle incomplete; missing or empty executable: $exe" >&2
+            exit 1
+          fi
+          if [[ ! -x "$exe" ]]; then
+            echo "Linux onedir bundle incomplete; not executable: $exe" >&2
+            exit 1
+          fi
+          if [[ ! -d "$internal" ]]; then
+            echo "Linux onedir bundle incomplete; missing _internal: $internal" >&2
+            exit 1
+          fi
+          if [[ -z "$(ls -A "$internal")" ]]; then
+            echo "Linux onedir bundle incomplete; empty _internal: $internal" >&2
+            exit 1
+          fi
           mkdir -p release
           tar -czf "release/HelloStreamer-${{ github.ref_name }}-${{ matrix.artifact }}.tar.gz" -C dist HelloStreamer
 

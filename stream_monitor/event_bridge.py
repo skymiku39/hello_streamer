@@ -7,9 +7,11 @@ from typing import Any
 
 from stream_monitor.browser_settings_model import coerce_browser_settings
 from stream_monitor.channel_policy import (
+    channel_mode_for,
     resolve_live_action,
     should_close_on_offline,
     should_prune_blank_tabs,
+    with_close_on_offline_lifecycle,
 )
 from stream_monitor.domain import ChannelEntry, ChannelStatus
 from stream_monitor.event_sink import AppEventSink, ChannelRowView
@@ -24,6 +26,7 @@ from stream_monitor.events import (
     PollWaiting,
 )
 from stream_monitor.fetcher.base import StreamInfo
+from stream_monitor.util import channel_key
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +108,18 @@ class MonitorEventBridge:
         self._pending = PendingStatusStore()
         self._pending_display_names = PendingDisplayNamesStore()
         self._one_shot_after_cycle: int | None = None
+        self._live_actions_after_cycle: int | None = None
 
     def reset(self) -> None:
         """Drop buffered status updates (called when monitoring stops)."""
         self._pending.clear()
         self._pending_display_names.clear()
         self._one_shot_after_cycle = None
+        self._live_actions_after_cycle = None
+
+    def defer_live_actions_until_after(self, cycle: int) -> None:
+        """Do not launch queued watch-cycle events before the fresh recheck."""
+        self._live_actions_after_cycle = cycle
 
     def arm_one_shot(self, *, after_cycle: int) -> None:
         """Accept only events from the next monitor cycle onward.
@@ -130,6 +139,12 @@ class MonitorEventBridge:
         sink = self._sink
         if sink.monitor_mode == "idle":
             self._bus.clear()
+            # A completed one-shot leaves its UI batch intact. Finish painting
+            # it over later ticks, including after a drag releases repaints.
+            # Explicit stop/reset already discards this pending state.
+            if not sink.defer_channel_row_repaints:
+                self._pending_display_names.flush(sink)
+                self._pending.flush(sink.iter_channel_rows(), limit=3)
             return
 
         live_events: list[tuple[ChannelEntry, StreamInfo]] = []
@@ -150,12 +165,29 @@ class MonitorEventBridge:
 
         other_events: list[MonitorEvent] = []
         for event in buffered:
-            if isinstance(event, PollActivity):
-                latest_poll_activity = (
-                    event.entry,
-                    event.phase,
-                    event.display_name,
+            if (
+                isinstance(event, ChannelWentLive)
+                and event.info.is_live
+                and self._live_actions_after_cycle is not None
+                and event.cycle_id <= self._live_actions_after_cycle
+            ):
+                logger.info(
+                    "Waiting for fresh trigger poll: channel=%s cycle=%d",
+                    event.entry.key, event.cycle_id,
                 )
+                continue
+            if isinstance(event, PollActivity):
+                if sink.is_channel_active(event.entry):
+                    latest_poll_activity = (
+                        event.entry,
+                        event.phase,
+                        event.display_name,
+                    )
+                else:
+                    logger.debug(
+                        "Ignoring stale poll activity for removed/disabled channel %s",
+                        event.entry.key,
+                    )
             else:
                 other_events.append(event)
 
@@ -165,9 +197,21 @@ class MonitorEventBridge:
                 break
             events_processed += 1
             if isinstance(event, ChannelWentLive):
-                live_events.append((event.entry, event.info))
+                if sink.is_channel_active(event.entry):
+                    live_events.append((event.entry, event.info))
+                else:
+                    logger.info(
+                        "Ignoring stale live event for removed/disabled channel %s",
+                        event.entry.key,
+                    )
             elif isinstance(event, ChannelWentOffline):
-                offline_events.append((event.entry, event.offline_info))
+                if sink.is_channel_active(event.entry):
+                    offline_events.append((event.entry, event.offline_info))
+                else:
+                    logger.info(
+                        "Ignoring stale offline event for removed/disabled channel %s",
+                        event.entry.key,
+                    )
             elif isinstance(event, PollWaiting):
                 sink.set_poll_waiting()
             elif isinstance(event, PartialStatusUpdate):
@@ -182,6 +226,11 @@ class MonitorEventBridge:
                     elif row._status_state in ("live", "offline", "upcoming"):
                         self._pending.set(row.key, None)
                 poll_complete = True
+                # Keep each completed cycle's effects together. In particular,
+                # a one-shot must not dispatch another cycle already queued
+                # while the UI was busy.
+                self._bus.requeue(other_events[index + 1:])
+                break
 
         for entry, info in live_events:
             if info.display_name:
@@ -234,54 +283,37 @@ class MonitorEventBridge:
                         )
                 except Exception:
                     logger.exception("blank-tab prune failed")
-            elif (
-                mode in ("trigger", "trigger_once")
-                and close_off_topic
-                and not tracking_available
-            ):
-                logger.debug(
-                    "Skipped blank-tab prune: HWND window tracking unavailable "
-                    "(need dedicated profile and app mode or separate window)"
-                )
+            else:
+                # Keep-awake release must not depend on blank-tab cleanup.
+                # When prune is skipped (cleanup off / non-trigger mode), still
+                # sync engagement URLs against surviving tracked HWNDs.
+                if tracking_available or mode in ("trigger", "trigger_once"):
+                    try:
+                        released = (
+                            sink.platform_services.window.release_keep_awake_for_closed()
+                        )
+                        if released:
+                            logger.info(
+                                "keep-awake released for %d closed Twitch "
+                                "window(s)",
+                                released,
+                            )
+                    except Exception:
+                        logger.exception("keep-awake closed-window sync failed")
+                if (
+                    mode in ("trigger", "trigger_once")
+                    and close_off_topic
+                    and not tracking_available
+                ):
+                    logger.debug(
+                        "Skipped blank-tab prune: HWND window tracking unavailable "
+                        "(need dedicated profile and app mode or separate window)"
+                    )
 
 
         configured_action = sink.config.get("action", "open_and_stop")
         trigger_settings = sink.config.get("trigger_settings")
         browser_settings = sink.current_browser_settings()
-        generation = sink.monitor_generation
-        for entry, info in live_events:
-            if not poll_complete and not sink.defer_channel_row_repaints:
-                sink.apply_live_row_status(entry, info)
-
-            decision = resolve_live_action(
-                mode=mode,
-                monitor_only=getattr(entry, "monitor_only", False),
-                channel_mode=getattr(entry, "channel_mode", None),
-                configured_action=configured_action,
-                stream_status=info.stream_status or "live",
-                trigger_settings=trigger_settings,
-            )
-            if decision.action is None:
-                if decision.suppressed_reason == "monitor_only":
-                    logger.info(
-                        "Skipped action for %s (monitor_only)", entry.key
-                    )
-                continue
-            if decision.plan is None:
-                logger.warning(
-                    "Live action policy returned no plan for %s (action=%s)",
-                    entry.key,
-                    decision.action,
-                )
-                continue
-
-            # The bridge only submits the pure plan.  ActionCoordinator owns
-            # worker lifetime and post-launch lifecycle transitions, keeping
-            # the event drain independent from desktop side-effects.
-            sink.execute_live_action(
-                decision.plan, info, browser_settings, generation
-            )
-
         close_on_offline = bool(
             browser_settings is not None and browser_settings.close_on_offline
         )
@@ -291,11 +323,77 @@ class MonitorEventBridge:
                 browser_settings
             )
         )
+        generation = sink.monitor_generation
+        # A probe captures its ChannelEntry before network I/O. Resolve policy
+        # from the current UI settings so a mode change takes effect even for
+        # events which were already in flight or queued.
+        current_channel_modes: dict[str, str] = {}
+        channels = sink.config.get("channels")
+        if isinstance(channels, list):
+            for channel in channels:
+                if (
+                    isinstance(channel, dict)
+                    and isinstance(channel.get("platform"), str)
+                    and isinstance(channel.get("name"), str)
+                ):
+                    key = channel_key(channel["platform"], channel["name"])
+                    current_channel_modes[key] = channel_mode_for(channel)
+        for entry, info in live_events:
+            if not poll_complete and not sink.defer_channel_row_repaints:
+                sink.apply_live_row_status(entry, info)
+
+            decision = resolve_live_action(
+                mode=mode,
+                monitor_only=getattr(entry, "monitor_only", False),
+                channel_mode=current_channel_modes.get(
+                    entry.key, getattr(entry, "channel_mode", None),
+                ),
+                configured_action=configured_action,
+                stream_status=info.stream_status or "live",
+                trigger_settings=trigger_settings,
+            )
+            if decision.action is None:
+                logger.info(
+                    "Skipped action for %s (%s, mode=%s)",
+                    entry.key, decision.suppressed_reason, mode,
+                )
+                continue
+            if decision.plan is None:
+                logger.warning(
+                    "Live action policy returned no plan for %s (action=%s)",
+                    entry.key,
+                    decision.action,
+                )
+                continue
+
+            # Persistent trigger + close_on_offline needs the monitor to stay
+            # alive until the offline edge; suppress stop/exit after open only
+            # in that case. trigger_once / watch / flag-off stay unchanged.
+            plan = with_close_on_offline_lifecycle(
+                decision.plan,
+                mode=mode,
+                close_on_offline=close_on_offline,
+                tracking_available=offline_tracking_available,
+            )
+
+            # The bridge only submits the pure plan.  ActionCoordinator owns
+            # worker lifetime and post-launch lifecycle transitions, keeping
+            # the event drain independent from desktop side-effects.
+            logger.info(
+                "Submitting live action: channel=%s action=%s generation=%s",
+                entry.key, plan.key, generation,
+            )
+            sink.execute_live_action(
+                plan, info, browser_settings, generation
+            )
+
         for entry, offline_info in offline_events:
             if should_close_on_offline(
                 mode=mode,
                 monitor_only=getattr(entry, "monitor_only", False),
-                channel_mode=getattr(entry, "channel_mode", None),
+                channel_mode=current_channel_modes.get(
+                    entry.key, getattr(entry, "channel_mode", None),
+                ),
                 wake_verify_active=sink.wake_verify_active,
                 close_on_offline=close_on_offline,
                 tracking_available=offline_tracking_available,

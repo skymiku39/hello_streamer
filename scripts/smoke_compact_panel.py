@@ -29,7 +29,6 @@ _INTERACTIVE = (
     "open_on_live_switch",
     "open_on_upcoming_switch",
     "after_open_menu",
-    "_trigger_hint_btn",
 )
 
 
@@ -145,7 +144,7 @@ def main() -> int:
         assert app._notify_group_label.cget("text")
         assert app._open_group_label.cget("text")
         assert _COMPACT_CTRL_PAD_X == 16
-        assert _COMPACT_CTRL_PAD_Y == 12
+        assert _COMPACT_CTRL_PAD_Y == 6
         assert _MIN_WINDOW_WIDTH == 920
         assert _MIN_WINDOW_HEIGHT == 560
 

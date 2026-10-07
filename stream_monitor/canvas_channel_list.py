@@ -39,8 +39,8 @@ from stream_monitor.channel_row import ChannelRow, is_live_state
 from stream_monitor.i18n import tr
 from stream_monitor.monitor import ChannelStatus
 
-ROW_BODY_HEIGHT = 58
-ROW_SLOT_HEIGHT = 64
+ROW_BODY_HEIGHT = 50
+ROW_SLOT_HEIGHT = 52
 ROW_CONTROL_HEIGHT = 30
 ROW_CONTROL_HALF = ROW_CONTROL_HEIGHT // 2
 ROW_CONTROL_GAP = 8
@@ -139,6 +139,7 @@ class CanvasChannelRowAdapter:
         self._can_move_up = False
         self._can_move_down = False
         self._reorder_highlight = False
+        self._truncated_display_name = ""
 
     @property
     def channel(self) -> dict[str, str]:
@@ -270,6 +271,9 @@ class CanvasChannelList(ctk.CTkFrame):
         self._scrollbar = ctk.CTkScrollbar(
             self,
             orientation="vertical",
+            width=10,
+            border_spacing=4,
+            corner_radius=8,
             command=self.canvas.yview,
             button_color=scrollbar_button_color,
             button_hover_color=scrollbar_button_hover_color,
@@ -283,8 +287,9 @@ class CanvasChannelList(ctk.CTkFrame):
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
-        self.canvas.grid(row=0, column=0, sticky="nsew")
-        self._scrollbar.grid(row=0, column=1, sticky="ns")
+        self.canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
+        # Interior padding between list content and the thin scrollbar track.
+        self._scrollbar.grid(row=0, column=1, sticky="ns", padx=(2, 4), pady=4)
 
         self.canvas.configure(yscrollcommand=self._on_canvas_scroll)
         self.canvas.bind("<Configure>", self._on_canvas_configure, add="+")
@@ -330,7 +335,7 @@ class CanvasChannelList(ctk.CTkFrame):
         try:
             visual_index = self._visual_order.index(self._rows.index(row))
             offset = int(self.canvas.canvasy(0))
-            return self.canvas.winfo_rooty() + visual_index * ROW_SLOT_HEIGHT + 3 - offset
+            return self.canvas.winfo_rooty() + visual_index * ROW_SLOT_HEIGHT + 2 - offset
         except (ValueError, tk.TclError):
             return self.canvas.winfo_rooty()
 
@@ -356,7 +361,7 @@ class CanvasChannelList(ctk.CTkFrame):
         self._cursor_mode = ""
         self.canvas.delete("all")
         width = max(1, self.canvas.winfo_width())
-        content_height = max(1, len(self._visual_order) * ROW_SLOT_HEIGHT + 6)
+        content_height = max(1, len(self._visual_order) * ROW_SLOT_HEIGHT + 4)
         self.canvas.configure(scrollregion=(0, 0, width, content_height))
         for visual_index, row_index in enumerate(self._visual_order):
             self._draw_row(self._rows[row_index], visual_index, width)
@@ -368,57 +373,37 @@ class CanvasChannelList(ctk.CTkFrame):
         enabled = bool(channel.get("enabled", True))
         channel_mode = channel_mode_for(channel)
         active_mode = channel_mode if enabled else CHANNEL_MODE_TRIGGER
-        top = visual_index * ROW_SLOT_HEIGHT + 3
+        top = visual_index * ROW_SLOT_HEIGHT + 2
         left = 6
         right = max(left + 320, width - 6)
         card_color = _CLR_CARD if enabled else _CLR_CARD_DISABLED
         tag = f"row:{id(row)}"
+        mid_y = top + ROW_BODY_HEIGHT // 2
 
         self._rounded_rectangle(
             left,
             top,
             right,
             top + ROW_BODY_HEIGHT,
-            radius=10,
+            radius=8,
             fill=card_color,
             outline="#2196F3" if row._reorder_highlight else card_color,
             width=2 if row._reorder_highlight else 1,
             tags=(tag,),
         )
 
-        # Left move controls and drag handle.
-        if enabled and row._can_move_up:
-            self._draw_hover_slot(22, top + 13, tag, "up", card_color, "#243052")
-        self._draw_text(
-            22,
-            top + 13,
-            "▲",
-            fill="#b8bfd8" if row._can_move_up and enabled else _CLR_TEXT_DISABLED,
-            anchor="center",
-            size=10,
-            tags=(tag, "action:up"),
-        )
+        # Left drag handle only (▲/▼ arrow controls removed).
+        handle_y = mid_y
         if enabled:
-            self._draw_hover_slot(22, top + 29, tag, "drag", card_color, "#243052")
+            self._draw_hover_slot(22, handle_y, tag, "drag", card_color, "#243052")
         self._draw_text(
             22,
-            top + 29,
+            handle_y,
             "⠿",
             fill="#d8d8e5" if enabled else _CLR_TEXT_DISABLED,
             anchor="center",
-            size=13,
+            size=14,
             tags=(tag, "action:drag"),
-        )
-        if enabled and row._can_move_down:
-            self._draw_hover_slot(22, top + 45, tag, "down", card_color, "#243052")
-        self._draw_text(
-            22,
-            top + 45,
-            "▼",
-            fill="#b8bfd8" if row._can_move_down and enabled else _CLR_TEXT_DISABLED,
-            anchor="center",
-            size=10,
-            tags=(tag, "action:down"),
         )
 
         platform = str(channel.get("platform", "")).upper()
@@ -502,6 +487,7 @@ class CanvasChannelList(ctk.CTkFrame):
             self._font_for(15, "bold"),
             name_width,
         )
+        name_truncated = name != display_name
         id_text = (
             self._truncate_to_width(
                 tr("channel.id.prefix", id=channel_id),
@@ -512,26 +498,31 @@ class CanvasChannelList(ctk.CTkFrame):
             else ""
         )
         name_color = ("#d8d8e5" if enabled else _CLR_TEXT_DISABLED)
+        name_tags: tuple[str, ...] = (tag,)
+        if name_truncated:
+            name_tags = (tag, "action:name")
+        name_y = mid_y - 8 if id_text else mid_y
         self._draw_text(
             140,
-            top + 20,
+            name_y,
             name,
             fill=name_color,
             anchor="w",
             size=15,
             weight="bold",
-            tags=(tag,),
+            tags=name_tags,
         )
         if id_text:
             self._draw_text(
                 140,
-                top + 40,
+                mid_y + 10,
                 id_text,
-                fill="#9aa0b4" if enabled else _CLR_TEXT_DISABLED,
+                fill="#c0c6d8" if enabled else _CLR_TEXT_DISABLED,
                 anchor="w",
                 size=11,
                 tags=(tag,),
             )
+        row._truncated_display_name = display_name if name_truncated else ""
 
         time_text, status_text, status_fill, status_text_color, status_action = (
             self._status_paint(row, enabled)
@@ -543,7 +534,7 @@ class CanvasChannelList(ctk.CTkFrame):
         )
         self._draw_text(
             time_right,
-            top + 29,
+            mid_y,
             time_text,
             fill="#aab3d5" if enabled else _CLR_TEXT_DISABLED,
             anchor="e",
@@ -574,7 +565,7 @@ class CanvasChannelList(ctk.CTkFrame):
 
         self._draw_button(
             action_delete_x,
-            top + 29,
+            mid_y,
             "✕",
             tag,
             "delete",
@@ -589,7 +580,7 @@ class CanvasChannelList(ctk.CTkFrame):
         toggle_hover = "#1976d2" if mode_active else "#2f4c73"
         self._draw_button(
             action_toggle_x,
-            top + 29,
+            mid_y,
             toggle_text,
             tag,
             "toggle",
@@ -615,7 +606,7 @@ class CanvasChannelList(ctk.CTkFrame):
             monitor_hover = "#2f4c73" if enabled else "#2b3c5a"
         self._draw_button(
             action_monitor_x,
-            top + 29,
+            mid_y,
             "👁",
             tag,
             "monitor",
@@ -628,7 +619,7 @@ class CanvasChannelList(ctk.CTkFrame):
         )
         self._draw_button(
             action_link_x,
-            top + 29,
+            mid_y,
             "🔗",
             tag,
             "link",
@@ -907,10 +898,6 @@ class CanvasChannelList(ctk.CTkFrame):
             self._arm_drag_pending(row, int(event.y_root))
         elif action == "delete" and self._on_delete is not None:
             self._on_delete(row.channel)
-        elif action == "up" and row._can_move_up and self._on_move is not None:
-            self._on_move(row.channel, -1)
-        elif action == "down" and row._can_move_down and self._on_move is not None:
-            self._on_move(row.channel, 1)
         elif action == "toggle":
             row.toggle()
         elif action == "monitor":
@@ -921,6 +908,8 @@ class CanvasChannelList(ctk.CTkFrame):
             row.open_channel_page()
         elif action == "status":
             row.open_active_page()
+        elif action == "name":
+            return None
         else:
             return None
         return "break"
@@ -977,10 +966,11 @@ class CanvasChannelList(ctk.CTkFrame):
     def _tooltip_text(self, row: CanvasChannelRowAdapter, action: str) -> str:
         channel = row.channel
         enabled = bool(channel.get("enabled", True))
-        if action == "up":
-            return tr("tooltip.row.up")
-        if action == "down":
-            return tr("tooltip.row.down")
+        if action == "name":
+            return row._truncated_display_name or (
+                (channel.get("display_name") or "").strip()
+                or str(channel.get("name", ""))
+            )
         if action == "drag":
             return tr("tooltip.row.drag")
         if action == "delete":

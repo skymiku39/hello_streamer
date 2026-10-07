@@ -52,6 +52,21 @@ def test_bus_requeue_preserves_order() -> None:
     assert bus.drain() == [second]
 
 
+def test_bus_requeue_precedes_events_published_after_drain() -> None:
+    bus = MonitorEventBus()
+    older = [PollWaiting(cycle_id=1), PollWaiting(cycle_id=2)]
+    for event in older:
+        bus.publish(event)
+    drained = bus.drain()
+
+    # A producer can publish the next cycle while the UI processes its batch.
+    newer = PollWaiting(cycle_id=3)
+    bus.publish(newer)
+    bus.requeue(drained)
+
+    assert bus.drain() == [*older, newer]
+
+
 def test_bus_subscribe_notifies_synchronously() -> None:
     bus = MonitorEventBus()
     seen: list[str] = []

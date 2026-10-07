@@ -194,6 +194,9 @@ class YouTubeFetcher(StreamFetcher):
     def __init__(self) -> None:
         super().__init__()
         self._thread_local = threading.local()
+        # Last get_channel_items failure reason (empty when the call succeeded).
+        self.last_unavailable_reason = ""
+        self._last_fetch_failure_reason = ""
 
     def _session_for_thread(self) -> requests.Session:
         session = getattr(self._thread_local, "session", None)
@@ -212,17 +215,21 @@ class YouTubeFetcher(StreamFetcher):
     # HTTP helpers
     # ------------------------------------------------------------------
     def _fetch_page(self, url: str, *, timeout: float = 15) -> str | None:
+        self._last_fetch_failure_reason = ""
         if not self._wait_for_request_slot():
             logger.debug("YouTube HTTP skipped (backoff) for %s", url)
+            self._last_fetch_failure_reason = "http backoff"
             return None
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 resp = self._session_for_thread().get(url, timeout=timeout)
                 if resp.status_code == 404:
                     logger.warning("YouTube page not found: %s", url)
+                    self._last_fetch_failure_reason = "http 404"
                     return None
                 if resp.status_code == 429:
                     self._note_rate_limited()
+                    self._last_fetch_failure_reason = "http backoff"
                     logger.warning(
                         "YouTube rate limited (429) for %s, skipping",
                         url,
@@ -237,6 +244,7 @@ class YouTubeFetcher(StreamFetcher):
                     if attempt < _MAX_RETRIES:
                         time.sleep(_RETRY_DELAY)
                         continue
+                    self._last_fetch_failure_reason = "http 5xx"
                     return None
                 resp.raise_for_status()
                 return resp.text
@@ -248,6 +256,8 @@ class YouTubeFetcher(StreamFetcher):
                 )
                 if attempt < _MAX_RETRIES:
                     time.sleep(_RETRY_DELAY)
+                else:
+                    self._last_fetch_failure_reason = "request timeout"
             except requests.RequestException as exc:
                 logger.warning(
                     "YouTube request failed for %s: %s (attempt %d/%d)",
@@ -259,6 +269,11 @@ class YouTubeFetcher(StreamFetcher):
                 if attempt < _MAX_RETRIES:
                     time.sleep(_RETRY_DELAY)
                     continue
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code in (403, 408):
+                    self._last_fetch_failure_reason = f"http {status_code}"
+                else:
+                    self._last_fetch_failure_reason = "request error"
                 return None
         return None
 
@@ -579,17 +594,29 @@ class YouTubeFetcher(StreamFetcher):
         fill_timing: bool = True,
         timeout: float | None = None,
     ) -> list[VideoItem] | None:
+        self.last_unavailable_reason = ""
         base = channel_page_url("youtube", channel_name)
         fetch_timeout = timeout if timeout is not None else 15
         if not fill_timing:
             fetch_timeout = min(fetch_timeout, _TIER1_PROBE_TIMEOUT)
         html = self._fetch_page(f"{base}/streams", timeout=fetch_timeout)
         if html is None:
+            self.last_unavailable_reason = self._last_fetch_failure_reason or (
+                "http backoff"
+                if self.http_backoff_active()
+                else "fetch returned None"
+            )
             return None
 
         data = self._extract_json_var(html, "ytInitialData")
         if not isinstance(data, dict):
-            return []
+            # Missing/invalid bootstrap JSON is unavailable, not an empty feed.
+            self.last_unavailable_reason = "ytInitialData parse failure"
+            logger.warning(
+                "YouTube ytInitialData missing or invalid for %s",
+                channel_name,
+            )
+            return None
 
         items, _display_name = self._parse_channel_items(data, channel_name)
         if fill_timing:

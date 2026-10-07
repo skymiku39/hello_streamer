@@ -89,6 +89,26 @@ def test_successful_terminal_action_reports_each_effect() -> None:
     assert lifecycle == ["exit"]
 
 
+
+def test_open_action_reports_notification_failure_after_browser_open() -> None:
+    notifications = _Notifications(False)
+    browser = _Browser(True)
+    lifecycle: list[str] = []
+
+    result = _executor(notifications, browser).execute(
+        action_plan_for("open_and_stop"),
+        _info(),
+        stop_fn=lambda: lifecycle.append("stop"),
+    )
+
+    assert result.status == ActionStatus.NOTIFICATION_FAILED
+    assert result.succeeded is False
+    assert result.notification_sent is False
+    assert result.browser_opened is True
+    assert result.detail == "browser opened; notification failed"
+    assert lifecycle == ["stop"]
+
+
 def test_terminal_action_without_lifecycle_callback_is_not_reported_complete() -> None:
     result = _executor(_Notifications(), _Browser()).execute(
         action_plan_for("open_and_stop"), _info()

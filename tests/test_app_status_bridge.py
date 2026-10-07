@@ -15,29 +15,66 @@ from stream_monitor.event_bridge import (
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import ChannelStatus
 
+# One hidden CTk root for this module; keep alive until pytest process exits.
+# Prefer an already-live default root over creating a second top-level CTk.
+_CTK_ROOT = None
+_CTK_ROOT_ERROR: BaseException | None = None
 
-def _make_row():
+
+def _module_ctk_root():
+    """Return a live CTk/Tk root, creating one only when none exists yet."""
+    global _CTK_ROOT, _CTK_ROOT_ERROR
+    if _CTK_ROOT is not None:
+        try:
+            if int(_CTK_ROOT.winfo_exists()):
+                return _CTK_ROOT
+        except Exception:  # noqa: BLE001
+            _CTK_ROOT = None
+
+    try:
+        import tkinter as tk
+
+        existing = tk._default_root
+        if existing is not None and int(existing.winfo_exists()):
+            _CTK_ROOT = existing
+            _CTK_ROOT_ERROR = None
+            return _CTK_ROOT
+    except Exception:  # noqa: BLE001
+        pass
+
+    if _CTK_ROOT_ERROR is not None:
+        pytest.skip(f"Tk unavailable in this environment: {_CTK_ROOT_ERROR}")
     try:
         import customtkinter as ctk
 
         root = ctk.CTk()
         root.withdraw()
     except Exception as exc:  # noqa: BLE001 — Tcl/Tk missing on headless CI
+        _CTK_ROOT_ERROR = exc
         pytest.skip(f"Tk unavailable in this environment: {exc}")
+    _CTK_ROOT = root
+    return root
+
+
+def _make_row():
+    import customtkinter as ctk
+
+    root = _module_ctk_root()
+    host = ctk.CTkFrame(root)
     channel = {"platform": "twitch", "name": "hello", "enabled": True}
     row = ChannelRow(
-        root,
+        host,
         channel,
         on_delete=lambda: None,
         on_move_up=lambda: None,
         on_move_down=lambda: None,
         on_toggle_enabled=lambda: None,
     )
-    return root, row
+    return host, row
 
 
 def test_channel_row_live_status() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.set_status(
             ChannelStatus(
@@ -50,11 +87,11 @@ def test_channel_row_live_status() -> None:
         assert row._status_state == "live"
         assert row._status_title == "Live title"
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_channel_row_offline_status() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.set_status(
             ChannelStatus(
@@ -66,11 +103,11 @@ def test_channel_row_offline_status() -> None:
         )
         assert row._status_state == "offline"
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_channel_row_upcoming_status() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.set_status(
             ChannelStatus(
@@ -82,17 +119,17 @@ def test_channel_row_upcoming_status() -> None:
         )
         assert row._status_state == "upcoming"
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_channel_row_none_resets_placeholder() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         assert row._status_state is None
         row.set_status(None)
         assert row._status_state is None
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def _label_colors(row) -> tuple[str, str]:
@@ -104,7 +141,7 @@ def _label_colors(row) -> tuple[str, str]:
 
 
 def test_status_badge_live_uses_green_filled_badge() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.set_status(ChannelStatus(status=True, url="u", title="t"))
         text_color, fg_color = _label_colors(row)
@@ -112,33 +149,33 @@ def test_status_badge_live_uses_green_filled_badge() -> None:
         assert fg_color == "#1b5e20"
         assert str(row.status_label.cget("cursor")) == "hand2"
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_status_badge_upcoming_uses_orange_filled_badge() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.set_status(ChannelStatus(status="upcoming", url="u", title="t"))
         text_color, fg_color = _label_colors(row)
         assert text_color == "white"
         assert fg_color == "#e65100"
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_status_badge_offline_is_muted_transparent() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.set_status(ChannelStatus(status=False))
         text_color, fg_color = _label_colors(row)
         assert text_color == "#999999"
         assert fg_color == "transparent"
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_status_badge_idle_is_placeholder_transparent() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.set_status(None)
         row._render_status_visuals()
@@ -146,24 +183,24 @@ def test_status_badge_idle_is_placeholder_transparent() -> None:
         assert text_color == "#666677"
         assert fg_color == "transparent"
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_paused_row_shows_disabled_visual() -> None:
     from stream_monitor.app_ui import _CLR_TEXT_DISABLED
 
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.channel["enabled"] = False
         row._apply_enabled_visual()
         text_color, _ = _label_colors(row)
         assert text_color == _CLR_TEXT_DISABLED
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_monitor_only_keeps_channel_enabled_and_flags_suppression() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.channel["enabled"] = True
         row.channel["monitor_only"] = False
@@ -174,7 +211,7 @@ def test_monitor_only_keeps_channel_enabled_and_flags_suppression() -> None:
         row._on_monitor_only_click()
         assert row.channel["monitor_only"] is False
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_channel_status_from_stream_info_maps_live_fields() -> None:
@@ -256,17 +293,17 @@ def test_prefer_richer_offline_status_keeps_vod_over_pending() -> None:
 
 
 def test_row_skips_pending_downgrade_when_resolved_empty() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.set_status(ChannelStatus(status=False, ended_at="", ended_at_source=""))
         pending = ChannelStatus(status=False, ended_at_source="pending")
         assert row_has_richer_offline_detail(row, pending) is True
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_row_skips_pending_downgrade_when_vod_detail_present() -> None:
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.set_status(
             ChannelStatus(
@@ -279,12 +316,12 @@ def test_row_skips_pending_downgrade_when_vod_detail_present() -> None:
         pending = ChannelStatus(status=False, ended_at_source="pending")
         assert row_has_richer_offline_detail(row, pending) is True
     finally:
-        root.destroy()
+        host.destroy()
 
 
 def test_status_snapshot_guard_preserves_existing_state() -> None:
     """Mimic _poll_events: missing snapshot key must not wipe a painted row."""
-    root, row = _make_row()
+    host, row = _make_row()
     try:
         row.set_status(
             ChannelStatus(
@@ -303,4 +340,4 @@ def test_status_snapshot_guard_preserves_existing_state() -> None:
             row.set_status(status)
         assert row._status_state == "offline"
     finally:
-        root.destroy()
+        host.destroy()

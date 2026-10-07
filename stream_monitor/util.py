@@ -29,12 +29,16 @@ def channel_page_url(platform: str, name: str) -> str:
 
 
 def parse_iso_datetime(value: str) -> datetime | None:
-    if not value:
+    """Parse an aware timestamp; date-only/legacy naive values use UTC."""
+    if not isinstance(value, str) or not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # Monitor/UI callers compare with UTC now. YouTube's compact upload dates
+    # already use UTC; apply the same rule to ISO dates and legacy snapshots.
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def youtube_upcoming_schedule_is_surfacable(scheduled_start: str) -> bool:

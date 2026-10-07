@@ -6,6 +6,8 @@ without spawning polling threads.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from stream_monitor import monitor_controller
@@ -35,6 +37,7 @@ class _FakeMonitor:
         self.started = 0
         self.request_stops = 0
         self.restarts = 0
+        self.live_rechecks = 0
         self.poll_cycle = 0
         self.updated_channels: list = []
         self.updated_intervals: list = []
@@ -42,6 +45,10 @@ class _FakeMonitor:
     def start(self) -> None:
         self.is_running = True
         self.started += 1
+
+    def request_live_recheck(self) -> int:
+        self.live_rechecks += 1
+        return self.poll_cycle
 
     def stop(self, timeout=None) -> None:
         self.is_running = False
@@ -106,6 +113,52 @@ def test_start_again_reuses_running_monitor(controller) -> None:
     monitor = controller._created[0]
     assert monitor.updated_intervals[-1] == 45
     assert monitor.updated_channels[-1] == channels
+
+
+@pytest.mark.parametrize("watch_mode", ["watch", "watch_once"])
+@pytest.mark.parametrize("trigger_mode", ["trigger", "trigger_once"])
+@pytest.mark.parametrize("stop_first", [False, True])
+def test_watch_to_trigger_rechecks_live_after_observation(
+    controller, watch_mode, trigger_mode, stop_first,
+) -> None:
+    channels = [{"platform": "twitch", "name": "a"}]
+    controller.start(watch_mode, channels, 30)
+    if stop_first:
+        controller.stop()
+    controller.start(trigger_mode, channels, 30)
+    assert controller._created[-1].live_rechecks == 1
+    controller.start(trigger_mode, channels, 30)
+    assert controller._created[-1].live_rechecks == 1
+
+
+@pytest.mark.parametrize("mode", ["trigger", "trigger_once"])
+@pytest.mark.parametrize("previous_run", ["none", "stopped", "completed_once"])
+def test_entering_trigger_from_idle_rechecks_cached_live(controller, mode, previous_run):
+    channels = [{"platform": "twitch", "name": "a"}]
+    if previous_run != "none":
+        controller.start("trigger_once" if previous_run == "completed_once" else "trigger", channels, 30)
+        if previous_run == "completed_once":
+            controller.finish_one_shot()
+        else:
+            controller.stop()
+    controller.start(mode, channels, 30, initial_statuses={"twitch:a": {"is_live": True}})
+    assert controller._created[-1].live_rechecks == 1
+    controller.start(mode, channels, 30)
+    assert controller._created[-1].live_rechecks == 1
+    controller.shutdown()
+
+
+def test_watch_and_health_restart_do_not_replay_live_actions(controller):
+    channels = [{"platform": "twitch", "name": "a"}]
+    controller.start("watch", channels, 30)
+    assert controller._created[-1].live_rechecks == 0
+    controller.start("trigger", channels, 30)
+    monitor = controller._created[-1]
+    assert monitor.live_rechecks == 1
+    monitor.is_running = False
+    controller.restart_if_dead(channels, 30)
+    assert monitor.live_rechecks == 1
+    controller.shutdown()
 
 
 def test_start_one_shot_sets_a_cycle_boundary_when_reusing_monitor(controller) -> None:
@@ -173,3 +226,39 @@ def test_snapshot_display_names_passthrough(controller) -> None:
     assert controller.snapshot_display_names() == {}
     controller.start("trigger", [{"platform": "twitch", "name": "a"}], 30)
     assert controller.snapshot_display_names() == {"twitch:a": "A"}
+
+
+@pytest.mark.parametrize("mode", ["trigger", "watch", "trigger_once", "watch_once"])
+def test_restart_discards_events_published_while_old_monitor_stops(controller, monkeypatch, mode):
+    channels = [{"platform": "twitch", "name": "a"}]
+    controller.start("watch", channels, 30)
+    old_monitor = controller._created[0]
+    release_stop = threading.Event()
+
+    def late_stop(timeout=None):
+        assert release_stop.wait(2)
+        old_monitor.event_bus.publish(PollWaiting(cycle_id=99))
+        old_monitor.is_running = False
+
+    monkeypatch.setattr(old_monitor, "stop", late_stop)
+    controller.stop()
+    real_join = controller._join_stopping_thread
+
+    def join_after_mode_switch(*, timeout):
+        release_stop.set()
+        real_join(timeout=timeout)
+
+    def start_new(monitor):
+        monitor.is_running = True
+        monitor.event_bus.publish(PollWaiting(cycle_id=1))
+
+    monkeypatch.setattr(controller, "_join_stopping_thread", join_after_mode_switch)
+    monkeypatch.setattr(_FakeMonitor, "start", start_new)
+    try:
+        controller.start(mode, channels, 30)
+        assert controller._bus.drain() == [PollWaiting(cycle_id=1)]
+        if mode.endswith("_once"):
+            assert controller._bridge._one_shot_after_cycle == 0
+    finally:
+        release_stop.set()
+        controller.shutdown()

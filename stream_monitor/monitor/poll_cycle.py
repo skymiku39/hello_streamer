@@ -15,6 +15,7 @@ from stream_monitor.monitor.types import (
     _YOUTUBE_MAX_CONCURRENT,
     ChannelEntry,
     _ProbeSnapshot,
+    _video_item_to_stream_info,
     poll_rest_overshoot_seconds,
     split_platform_entries,
 )
@@ -77,7 +78,7 @@ class PollCycleMixin:
         the Twitch queue (e.g. YT1 + TW1/TW2/TW3 together, then YT2).
         Secondary: ▲▼ list order within each platform queue.
         """
-        if not entries:
+        if not entries or self._stop_event.is_set():
             return []
         youtube_pending, twitch_pending = split_platform_entries(entries)
         youtube_pending = list(youtube_pending)
@@ -119,6 +120,8 @@ class PollCycleMixin:
             while not self._stop_event.is_set():
                 with cond:
                     while True:
+                        if self._stop_event.is_set():
+                            return
                         entry = _claim()
                         if entry is not None:
                             break
@@ -126,6 +129,8 @@ class PollCycleMixin:
                             return
                         cond.wait(timeout=0.25)
                 try:
+                    if self._stop_event.is_set():
+                        return
                     item = work_fn(entry)
                     with results_lock:
                         results.append(item)
@@ -170,6 +175,17 @@ class PollCycleMixin:
             return True
         return False
 
+    def _dispatch_pending_offline_events(self) -> int:
+        """Emit each queued went-offline edge once, then clear the queue."""
+        with self._lock:
+            offline_batch = list(self._pending_offline_events)
+            self._pending_offline_events.clear()
+        for entry, offline_info in offline_batch:
+            if self._stop_event.is_set():
+                break
+            self._emit_went_offline(entry, offline_info)
+        return len(offline_batch)
+
     def _execute_poll_cycle(self, poll_started: float) -> float:
         wall_now = time.time()
         run_wake_verify = self._should_run_wake_verification(wall_now)
@@ -183,9 +199,25 @@ class PollCycleMixin:
 
         if run_wake_verify and enabled_entries:
             elapsed = self._run_wake_verification(enabled_entries, poll_started)
-            return self._maybe_run_startup_refresh(
-                enabled_entries, poll_started, elapsed
+            # Restrict startup refresh to wake-confirmed keys so a deferred
+            # secondary YouTube row cannot overwrite wake results.
+            refresh_entries = enabled_entries
+            deferred = getattr(self, "_wake_deferred_keys", None)
+            if deferred:
+                refresh_entries = [
+                    entry for entry in enabled_entries if entry.key not in deferred
+                ]
+            elapsed = self._maybe_run_startup_refresh(
+                refresh_entries, poll_started, elapsed
             )
+            if not self._stop_event.is_set():
+                # Wake verification and startup refresh are one logical cycle.
+                # Dispatch offline edges before the single completion boundary
+                # so one-shot consumers cannot stop between edges and complete.
+                self._dispatch_pending_offline_events()
+                self._emit_poll_complete()
+                self._run_maintenance()
+            return elapsed
 
         with self._lock:
             self._pending_offline_events.clear()
@@ -239,22 +271,25 @@ class PollCycleMixin:
         if self._stop_event.is_set():
             return time.monotonic() - poll_started
 
-        # Dispatch went-offline events *after* went-live so the UI sees
-        # transitions in a sensible order if both occur in the same poll.
-        with self._lock:
-            offline_batch = list(self._pending_offline_events)
-        offline_count = len(offline_batch)
-        for entry, offline_info in offline_batch:
-            if self._stop_event.is_set():
-                break
-            self._emit_went_offline(entry, offline_info)
+        # Keep startup refresh inside the same cycle boundary as tier-1/2 so
+        # LIVE/OFFLINE edges commit and dispatch exactly once before complete.
+        elapsed = time.monotonic() - poll_started
+        elapsed = self._maybe_run_startup_refresh(
+            enabled_entries, poll_started, elapsed
+        )
 
         if self._stop_event.is_set():
-            return time.monotonic() - poll_started
+            return elapsed
+
+        # Dispatch went-offline events *after* went-live so the UI sees
+        # transitions in a sensible order if both occur in the same poll.
+        offline_count = self._dispatch_pending_offline_events()
+
+        if self._stop_event.is_set():
+            return elapsed
 
         self._emit_poll_complete()
 
-        elapsed = time.monotonic() - poll_started
         with self._lock:
             snapshot_keys = len(self._last_status)
         logger.info(
@@ -274,9 +309,7 @@ class PollCycleMixin:
                 self._interval,
             )
         self._run_maintenance()
-        return self._maybe_run_startup_refresh(
-            enabled_entries, poll_started, elapsed
-        )
+        return elapsed
 
     def _check_channel(
         self, entry: ChannelEntry
@@ -289,9 +322,13 @@ class PollCycleMixin:
         self, events: list[tuple[ChannelEntry, StreamInfo]]
     ) -> int:
         """Notify listeners as soon as tier-1 confirms a new live edge."""
+        dispatched = 0
         for entry, info in events:
+            if self._stop_event.is_set():
+                break
             self._emit_went_live(entry, info)
-        return len(events)
+            dispatched += 1
+        return dispatched
 
     def _tier1_probe_entries(
         self,
@@ -331,6 +368,29 @@ class PollCycleMixin:
         probe = get_platform_probe(entry.platform)
         events = probe.probe_live(self._facade, entry, snap)
         probe.finalize_tier1_probe(self._facade, entry, snap)
+        with self._lock:
+            boundary = self._live_recheck_after.get(entry.key)
+            if boundary is None or self._poll_cycle <= boundary:
+                return events
+            # Only fresh, available probe payloads may satisfy a recheck.
+            # Missing responses and held fallback state retain the request.
+            info = snap.twitch_info or snap.youtube_fallback_info
+            if info is not None:
+                confirmed = [info] if info.is_live else []
+            elif snap.youtube_items and not snap.youtube_fallback:
+                confirmed = [
+                    _video_item_to_stream_info(item, entry.name)
+                    for item in snap.youtube_items if item.style == "LIVE"
+                ]
+            else:
+                return events
+            self._live_recheck_after.pop(entry.key, None)
+        existing = {info.url for _entry, info in events}
+        for info in confirmed:
+            if info.url and info.url not in existing:
+                events.append((entry, info))
+                existing.add(info.url)
+                logger.info("Trigger-mode live recheck: %s url=%s", entry.key, info.url)
         return events
 
     def _refresh_details(self, entry: ChannelEntry) -> Callable[[], None]:

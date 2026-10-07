@@ -50,6 +50,46 @@ from stream_monitor.action_plan import action_plan_for
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
 
+# One hidden CTk root for this module; keep alive until pytest process exits.
+# Prefer an already-live default root over creating a second top-level CTk.
+_CTK_ROOT = None
+_CTK_ROOT_ERROR: BaseException | None = None
+
+
+def _module_ctk_root():
+    """Return a live CTk/Tk root, creating one only when none exists yet."""
+    global _CTK_ROOT, _CTK_ROOT_ERROR
+    if _CTK_ROOT is not None:
+        try:
+            if int(_CTK_ROOT.winfo_exists()):
+                return _CTK_ROOT
+        except Exception:  # noqa: BLE001
+            _CTK_ROOT = None
+
+    try:
+        import tkinter as tk
+
+        existing = tk._default_root
+        if existing is not None and int(existing.winfo_exists()):
+            _CTK_ROOT = existing
+            _CTK_ROOT_ERROR = None
+            return _CTK_ROOT
+    except Exception:  # noqa: BLE001
+        pass
+
+    if _CTK_ROOT_ERROR is not None:
+        pytest.skip(f"Tk unavailable in this environment: {_CTK_ROOT_ERROR}")
+    try:
+        import customtkinter as ctk
+
+        root = ctk.CTk()
+        root.withdraw()
+    except Exception as exc:  # noqa: BLE001 — Tk missing on headless CI
+        _CTK_ROOT_ERROR = exc
+        pytest.skip(f"Tk unavailable in this environment: {exc}")
+    _CTK_ROOT = root
+    return root
+
 
 def _execute(action: str, info, **kwargs):
     plan = action_plan_for(action)
@@ -146,8 +186,8 @@ def _settings(**overrides: Any) -> dict[str, Any]:
         "apply_geometry": True,
         "x": 0,
         "y": 0,
-        "width": 1280,
-        "height": 720,
+        "width": 190,
+        "height": 500,
         "minimized": False,
         "user_data_dir": "",
         "per_channel_profile": False,
@@ -2221,28 +2261,93 @@ def test_dialog_preserves_foreground_hold_seconds_without_ui() -> None:
     so the dialog has to carry the incoming value through rather than reset it
     to the default on every save.
     """
+    from stream_monitor.app_dialogs import BrowserSettingsDialog
+
+    root = _module_ctk_root()
+    dialog = BrowserSettingsDialog(
+        root,
+        {"enabled": True},
+        {"enabled": True, "foreground_hold_seconds": 30},
+    )
     try:
-        import customtkinter as ctk
-
-        from stream_monitor.app_dialogs import BrowserSettingsDialog
-
-        root = ctk.CTk()
-        root.withdraw()
-    except Exception as exc:  # noqa: BLE001 — Tk missing on headless CI
-        import pytest
-
-        pytest.skip(f"Tk unavailable in this environment: {exc}")
-    try:
-        dialog = BrowserSettingsDialog(
-            root,
-            {"enabled": True},
-            {"enabled": True, "foreground_hold_seconds": 30},
-        )
-        try:
-            collected = dialog._collect_viewer_engagement()
-            assert collected["foreground_hold_seconds"] == 30
-            assert collected["enabled"] is True
-        finally:
-            dialog.destroy()
+        collected = dialog._collect_viewer_engagement()
+        assert collected["foreground_hold_seconds"] == 30
+        assert collected["enabled"] is True
     finally:
-        root.destroy()
+        dialog.destroy()
+
+
+def test_unavailable_transport_preserves_page_assist_preferences(monkeypatch):
+    from stream_monitor import app_dialogs
+
+    monkeypatch.setattr(app_dialogs, "page_assist_runtime_allowed", lambda: False)
+    dialog = app_dialogs.BrowserSettingsDialog(
+        _module_ctk_root(), {"enabled": False},
+        {"enabled": True, "page_assist_enabled": True, "theater_mode": True},
+    )
+    try:
+        assert dialog._page_assist_enabled_switch.cget("state") == "disabled"
+        dialog._on_save()
+        assert dialog.viewer_engagement_result["page_assist_enabled"] is True
+        assert dialog.viewer_engagement_result["theater_mode"] is True
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+def test_page_assist_controls_follow_launch_requirements_without_losing_preferences(monkeypatch, frozen):
+    import sys
+
+    from stream_monitor import app_dialogs
+    from stream_monitor import browser_settings_model as bsm
+
+    monkeypatch.setattr(sys, "frozen", frozen, raising=False)
+    dialog = app_dialogs.BrowserSettingsDialog(
+        _module_ctk_root(),
+        {"enabled": True, "user_data_dir": "C:/test/profile", "new_window": True},
+        {"enabled": True, "page_assist_enabled": True},
+    )
+    try:
+        assert dialog._page_assist_enabled_switch.cget("state") == "normal"
+        dialog.placement_var.set(bsm.PLACEMENT_TAB)
+        dialog._on_dimension_change()
+        assert dialog._page_assist_enabled_switch.cget("state") == "disabled"
+        assert dialog._page_assist_availability.cget("text")
+        assert dialog._collect_viewer_engagement()["page_assist_enabled"] is True
+        dialog.placement_var.set(bsm.PLACEMENT_WINDOW)
+        dialog._on_dimension_change()
+        dialog.path_entry.delete(0, "end")
+        dialog.path_entry.insert(0, "firefox")
+        dialog._on_path_change()
+        assert dialog._page_assist_enabled_switch.cget("state") == "disabled"
+        dialog.path_entry.delete(0, "end")
+        dialog.path_entry.insert(0, "chrome")
+        dialog._on_path_change()
+        assert dialog._page_assist_enabled_switch.cget("state") == "normal"
+    finally:
+        dialog.destroy()
+
+
+def test_engagement_bottom_is_reachable_at_minimum_dialog_height():
+    from stream_monitor.app_dialogs import BrowserSettingsDialog
+
+    dialog = BrowserSettingsDialog(_module_ctk_root(), {}, {})
+    try:
+        dialog.geometry("500x540")
+        dialog._settings_tabs.set(dialog._settings_tab_names["engagement"])
+        dialog.update()
+        canvas = dialog._settings_pages["engagement"]._parent_canvas
+        assert canvas.yview()[1] < 1.0
+        tips_bottom = (
+            dialog._engagement_tips.winfo_y()
+            + dialog._engagement_card.winfo_y()
+            + dialog._engagement_tips.winfo_height()
+        )
+        assert tips_bottom > canvas.canvasy(canvas.winfo_height())
+        canvas.yview_moveto(1.0)
+        dialog.update()
+        assert canvas.yview()[0] > 0.0
+        assert tips_bottom <= canvas.canvasy(canvas.winfo_height())
+    finally:
+        dialog.destroy()

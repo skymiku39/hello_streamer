@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-# ChannelRow height (58) + pack pady (3 + 3).
-ROW_BODY_HEIGHT = 58
-ROW_SLOT_HEIGHT = 64
+# ChannelRow height (50) + pack pady (1 + 1).
+ROW_BODY_HEIGHT = 50
+ROW_SLOT_HEIGHT = 52
 LONG_PRESS_MS = 400
 # Vertical pointer movement before a drag session may change the insert target.
 DRAG_ENGAGE_PX = 12

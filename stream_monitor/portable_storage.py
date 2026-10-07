@@ -38,6 +38,11 @@ class PortablePaths:
         return self.logs_dir / "stream_monitor.log"
 
     @property
+    def observation_log(self) -> Path:
+        """Opt-in Watch Streak diagnostic NDJSON (separate from application_log)."""
+        return self.logs_dir / "watch_streak_observation.ndjson"
+
+    @property
     def diagnostics_log(self) -> Path:
         return self.root / "debug-reorder.log"
 
@@ -48,6 +53,11 @@ class PortablePaths:
     @property
     def browser_profile_dir(self) -> Path:
         return self.root / "browser_profile"
+
+    @property
+    def backups_dir(self) -> Path:
+        """App-owned backups root (never inside ``browser_profile/``)."""
+        return self.root / "backups"
 
 
 def portable_paths(root: Path | None = None) -> PortablePaths:

@@ -68,6 +68,8 @@
 
 一次性模式的消費點是「按下按鈕後的下一個 `cycle_id` 對應的 `PollStatusUpdate`」，不會把按鈕按下前已在佇列中的輪詢當成這一次；且在本輪 LIVE／離線事件都派送完成後才停止，避免漏掉本輪事件。若程式在本輪完成前關閉，設定會保留一次性模式，下一次以靜默啟動時會繼續執行一次；完成後則保存為對應的持續模式，避免每次啟動重複執行。
 
+> YouTube soft-unavailable（429／backoff／parse failure 等）在仍為 LIVE 時不累積 offline strikes；詳見 `tests/test_rate_limit_resilience.py`。
+
 ### 1.4 狀態與「未知」
 
 `ChannelStatus.status` 仍接受舊版的 `True`、`False` 與字串，以便既有資料和
@@ -179,6 +181,15 @@
 **測試佐證**：`tests/test_app_status_bridge.py::test_monitor_only_keeps_channel_enabled_and_flags_suppression`。
 
 ---
+
+### 4.4 重置啟動紀錄
+
+應用設定對話框提供「重置啟動紀錄」：僅在 `monitor` 為 idle、無進行中的 action worker 時允許。流程為：settled-idle guard → 取消待寫入的 coalesced config save → purge controller event bus／bridge 並推進 generation → app-owned `backups/launch_records_<utc>/` 備份（`seen_videos.db` + `channel_status_cache.json`，不在 `browser_profile/` 內）→ 清除 in-memory `channel_status_cache` 並以**會傳播錯誤**的原子寫入持久化 config → 成功後才以 SQLite 交易清空 `seen_videos`（保留開啟中的連線）→ 呼叫端再清列上狀態快取。config 持久化失敗時不刪 DB、回滾記憶體快取；DB 清空失敗時回滾快取並盡力重新持久化。頻道清單、其餘 config、登入 Profile 不變。禁止在持久化成功前記報成功或清空列快取。
+
+**測試佐證**：`tests/test_launch_records_reset.py`。
+
+---
+
 
 ## 5. 設定對話框：狀態 → UI 呈現（漸進揭露）
 

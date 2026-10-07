@@ -15,6 +15,10 @@ from stream_monitor.action_plan import (
     LifecycleEffect,
     TriggerSettings,
 )
+from stream_monitor.browser_settings_model import (
+    DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH,
+)
 from stream_monitor.channel_policy import CHANNEL_MODES, normalize_channel_mode
 from stream_monitor.portable_storage import portable_paths
 
@@ -22,7 +26,7 @@ from stream_monitor.portable_storage import portable_paths
 # (or with a lower number) receive :func:`_migrate_iso_features_without_profile`
 # once on load.  Save never runs that migration so explicit UI choices such as
 # "local identity + app mode" are not overwritten.
-CONFIG_FORMAT_VERSION = 3
+CONFIG_FORMAT_VERSION = 4
 
 DEFAULT_TRIGGER_SETTINGS: dict[str, Any] = TriggerSettings().as_dict()
 
@@ -36,8 +40,8 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     "apply_geometry": True,
     "x": 0,
     "y": 0,
-    "width": 1280,
-    "height": 720,
+    "width": DEFAULT_WINDOW_WIDTH,
+    "height": DEFAULT_WINDOW_HEIGHT,
     "minimized": False,
     # Empty = use browser's default profile (subject to Chrome master-process
     # restrictions). Set to a folder path to force a dedicated Chrome /
@@ -45,6 +49,10 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
     # --window-position / --window-size / --app= work when the browser is
     # already running.
     "user_data_dir": "",
+    # Internal portability marker. A true value means the path above is the
+    # app-owned ``<portable root>/browser_profile`` rather than a user-chosen
+    # external folder; it is re-resolved after the portable folder moves.
+    "user_data_dir_is_portable_default": False,
     # When True (default) we append "<platform>_<channel>" to user_data_dir
     # so each channel gets its own browser master process. This is the only
     # reliable way to keep --app= working across multiple stream triggers,
@@ -82,6 +90,20 @@ DEFAULT_VIEWER_ENGAGEMENT: dict[str, Any] = {
     "whitelist_performance": True,
     "bring_to_front": True,
     "foreground_hold_seconds": 15,
+    # Optional CDP page assist for source and packaged builds.
+    "page_assist_enabled": False,
+    "accept_content_gate": True,
+    "claim_channel_points": False,
+    "claim_delay_seconds_min": 2,
+    "claim_delay_seconds_max": 12,
+    "claim_click_offset_px": 10,
+    "claim_poll_seconds_min": 45,
+    "claim_poll_seconds_max": 90,
+    "theater_mode": False,
+    "theater_delay_seconds": 8,
+    "auto_refresh": False,
+    "refresh_minutes_min": 45,
+    "refresh_minutes_max": 75,
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -186,7 +208,7 @@ def _normalize_channels(value: Any) -> list[dict[str, str]]:
 def _normalize_interval(value: Any) -> int:
     try:
         interval = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return DEFAULT_CONFIG["check_interval"]
     return max(MIN_CHECK_INTERVAL, interval)
 
@@ -194,7 +216,7 @@ def _normalize_interval(value: Any) -> int:
 def _coerce_int(value: Any, default: int) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -235,6 +257,7 @@ def _heal_orphan_per_channel_profile(settings: dict[str, Any]) -> None:
         default_root = _default_browser_profile_path()
         if default_root:
             settings["user_data_dir"] = default_root
+            settings["user_data_dir_is_portable_default"] = True
 
 
 def _migrate_iso_features_without_profile(settings: dict[str, Any]) -> None:
@@ -251,6 +274,45 @@ def _migrate_iso_features_without_profile(settings: dict[str, Any]) -> None:
         if default_root:
             settings["user_data_dir"] = default_root
             settings["per_channel_profile"] = True
+            settings["user_data_dir_is_portable_default"] = True
+
+
+def _relocate_portable_default_profile(settings: dict[str, Any]) -> None:
+    """Resolve the app-owned browser profile against the current portable root.
+
+    New configs carry an explicit marker. For older configs, only perform a
+    conservative one-time inference when the old ``browser_profile`` path is
+    gone and the current portable profile already exists; arbitrary custom
+    profile paths are left untouched.
+    """
+    raw = (settings.get("user_data_dir") or "").strip()
+    default_root = _default_browser_profile_path()
+    if not default_root:
+        return
+
+    current = Path(default_root).resolve()
+    if settings.get("user_data_dir_is_portable_default") and raw:
+        settings["user_data_dir"] = str(current)
+        return
+    if not raw:
+        return
+
+    try:
+        configured = Path(os.path.expandvars(os.path.expanduser(raw))).resolve()
+    except (OSError, RuntimeError, TypeError):
+        return
+
+    if configured == current:
+        settings["user_data_dir_is_portable_default"] = True
+        return
+
+    if (
+        configured.name.casefold() == "browser_profile"
+        and not configured.exists()
+        and current.is_dir()
+    ):
+        settings["user_data_dir"] = str(current)
+        settings["user_data_dir_is_portable_default"] = True
 
 
 def _migrate_browser_settings(settings: dict[str, Any]) -> None:
@@ -278,6 +340,7 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
         "apply_geometry",
         "minimized",
         "per_channel_profile",
+        "user_data_dir_is_portable_default",
         "close_on_offline",
         "close_on_stop",
         "close_off_topic_pages",
@@ -300,11 +363,36 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
     normalized["width"] = max(100, normalized["width"])
     normalized["height"] = max(100, normalized["height"])
 
+    _relocate_portable_default_profile(normalized)
     _heal_orphan_per_channel_profile(normalized)
     return normalized
 
 
-_VIEWER_ENGAGEMENT_INT_KEYS = ("foreground_hold_seconds",)
+_VIEWER_ENGAGEMENT_INT_KEYS = frozenset(
+    {
+        "foreground_hold_seconds",
+        "claim_delay_seconds_min",
+        "claim_delay_seconds_max",
+        "claim_click_offset_px",
+        "claim_poll_seconds_min",
+        "claim_poll_seconds_max",
+        "theater_delay_seconds",
+        "refresh_minutes_min",
+        "refresh_minutes_max",
+    }
+)
+
+_VIEWER_ENGAGEMENT_MIN_BOUNDS: dict[str, int] = {
+    "foreground_hold_seconds": 0,
+    "claim_delay_seconds_min": 0,
+    "claim_delay_seconds_max": 1,
+    "claim_click_offset_px": 0,
+    "claim_poll_seconds_min": 5,
+    "claim_poll_seconds_max": 10,
+    "theater_delay_seconds": 0,
+    "refresh_minutes_min": 5,
+    "refresh_minutes_max": 5,
+}
 
 
 def _normalize_viewer_engagement(value: Any) -> dict[str, Any]:
@@ -314,9 +402,19 @@ def _normalize_viewer_engagement(value: Any) -> dict[str, Any]:
             if key not in value:
                 continue
             if key in _VIEWER_ENGAGEMENT_INT_KEYS:
-                normalized[key] = _coerce_int(value[key], normalized[key])
+                floor = _VIEWER_ENGAGEMENT_MIN_BOUNDS.get(key, 0)
+                normalized[key] = max(
+                    floor, _coerce_int(value[key], normalized[key])
+                )
             else:
                 normalized[key] = _coerce_bool(value[key], normalized[key])
+    # Keep fuzzy ranges ordered so callers can sample without clamping again.
+    if normalized["claim_delay_seconds_max"] < normalized["claim_delay_seconds_min"]:
+        normalized["claim_delay_seconds_max"] = normalized["claim_delay_seconds_min"]
+    if normalized["claim_poll_seconds_max"] < normalized["claim_poll_seconds_min"]:
+        normalized["claim_poll_seconds_max"] = normalized["claim_poll_seconds_min"]
+    if normalized["refresh_minutes_max"] < normalized["refresh_minutes_min"]:
+        normalized["refresh_minutes_max"] = normalized["refresh_minutes_min"]
     return normalized
 
 
@@ -399,7 +497,7 @@ def _stored_format_version(stored: dict[str, Any]) -> int:
     raw = stored.get("config_format_version", 0)
     try:
         return int(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -435,22 +533,24 @@ def load() -> dict[str, Any]:
 
     logger = logging.getLogger(__name__)
     path = _config_path()
+    temp_path = path.with_name(f".{path.name}.tmp")
     stored: dict[str, Any] = {}
     disk_existed = False
     corrupt = False
     corrupt_backed_up = False
     read_succeeded = False
+    temp_recovered = False
     if path.exists():
         disk_existed = True
         try:
-            with path.open("r", encoding="utf-8") as f:
+            with path.open("r", encoding="utf-8-sig") as f:
                 raw = json.load(f)
             read_succeeded = True
             if isinstance(raw, dict):
                 stored = raw
             else:
                 corrupt = True
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             corrupt = True
             backup = _next_corrupt_backup_path(path)
             try:
@@ -492,6 +592,39 @@ def load() -> dict[str, Any]:
             "Skipping config self-heal because the invalid file was not backed up"
         )
 
+    # A previous process may have been terminated after fsyncing the atomic
+    # temporary file but before ``replace`` completed.  Prefer that complete,
+    # newer JSON over an older main file and let the normal save path promote
+    # it.  This preserves the user's last setting change after a crash or
+    # forced shutdown without ever accepting an invalid temp file.
+    if temp_path.exists():
+        try:
+            temp_is_newer = not path.exists() or (
+                temp_path.stat().st_mtime_ns > path.stat().st_mtime_ns
+            )
+            if temp_is_newer:
+                with temp_path.open("r", encoding="utf-8-sig") as f:
+                    temp_raw = json.load(f)
+                if isinstance(temp_raw, dict):
+                    stored = temp_raw
+                    disk_existed = True
+                    read_succeeded = True
+                    # Recovery must not erase the fact that an invalid main
+                    # file could not be backed up; keep that copy untouched.
+                    temp_recovered = True
+                    logger.warning(
+                        "Recovered newer config from interrupted atomic save: %s",
+                        temp_path,
+                    )
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            # Keep the temp file for forensic recovery; the valid main config
+            # remains authoritative when the candidate cannot be read.
+            logger.warning(
+                "Could not recover temporary config candidate: %s",
+                temp_path,
+                exc_info=True,
+            )
+
     merged = deepcopy(DEFAULT_CONFIG)
     merged.update(stored)
     # ``merged`` contains the new default mapping, so explicitly substitute the
@@ -507,9 +640,9 @@ def load() -> dict[str, Any]:
         not corrupt or corrupt_backed_up
     )
     if (
-        (disk_existed or corrupt)
+        (disk_existed or corrupt or temp_recovered)
         and can_self_heal
-        and (corrupt or _needs_self_heal(stored, finalized))
+        and (temp_recovered or corrupt or _needs_self_heal(stored, finalized))
     ):
         try:
             save(finalized)
