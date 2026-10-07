@@ -984,9 +984,8 @@ class App(ctk.CTk):
         """Reflow compact wrap rows after resize / i18n text width changes."""
         if not hasattr(self, "_run_flow"):
             return
-        self.update_idletasks()
-        self._run_flow.reflow()
-        self._settings_flow.reflow()
+        self._run_flow.request_reflow()
+        self._settings_flow.request_reflow()
 
     def _fit_main_toolbar_i18n(self) -> None:
         """Resize toolbar widgets so localized labels are not clipped."""
