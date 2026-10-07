@@ -236,8 +236,8 @@ python -m stream_monitor --watch-observation
 
 | log 關鍵字 | 意義 |
 | --- | --- |
-| `went_live_suppressed` | 程式仍認為該頻道已在 LIVE，因此不會再觸發開播動作。常見於下播後狀態未正確落地；v0.9.3 已將 `fetch returned None` 計入離線防抖以緩解。 |
-| `fetch returned None` | Twitch GQL 或 YouTube fallback 查詢失敗；若連續兩次發生且先前為 LIVE，會確認下播。 |
+| `went_live_suppressed` | 程式仍認為該頻道已在 LIVE，因此不會重複觸發開播動作。若實際已下播，請查看後續輪詢是否取得有效的 offline 回應。 |
+| `fetch returned None` | 查詢未取得有效結果。Twitch 保留先前狀態且不累計下播次數；YouTube 依 fallback／暫時不可用的判定處理，不能只憑這一行判斷已下播。 |
 | `ignoring transient offline reading` | 單次 API 回報 offline，防抖中尚未確認下播（`(1/2)` 表示還需再 1 次）。 |
 | `Poll complete` | 每輪輪詢摘要；含 `tier1=`（觸發梯次耗時）與 `total=`（整輪耗時）。 |
 
