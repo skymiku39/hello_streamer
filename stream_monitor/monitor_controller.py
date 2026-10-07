@@ -13,7 +13,6 @@ from typing import Any
 
 from stream_monitor.channel_policy import (
     GLOBAL_ACTIVE_MODES,
-    GLOBAL_MONITOR_MODES,
     GLOBAL_TRIGGER_MODES,
     TRIGGER_ONCE_MODE,
     WATCH_ONCE_MODE,
@@ -39,7 +38,6 @@ class MonitorController:
         self._bridge = MonitorEventBridge(sink, self._bus)
         self._monitor: Monitor | None = None
         self._mode = "idle"
-        self._last_started_mode = "idle"
         self._generation = 0
         self._stopping_thread: threading.Thread | None = None
 
@@ -111,9 +109,11 @@ class MonitorController:
         """Enter ``mode`` and ensure the monitor is polling. False if no channels."""
         if not channels:
             return False
-        recheck_live = (
-            self._last_started_mode in GLOBAL_MONITOR_MODES
-            and mode in GLOBAL_TRIGGER_MODES
+        # A stopped session may have closed its windows while retaining LIVE
+        # status for display. Every explicit entry into trigger mode must
+        # freshly confirm those streams and restore their requested actions.
+        recheck_live = mode in GLOBAL_TRIGGER_MODES and (
+            self._mode not in GLOBAL_TRIGGER_MODES or not self.is_running
         )
         self._generation += 1
         if is_one_shot_monitor_mode(mode):
@@ -133,7 +133,6 @@ class MonitorController:
         )
         if recheck_boundary is not None:
             self._bridge.defer_live_actions_until_after(recheck_boundary)
-        self._last_started_mode = mode
         return True
 
     def stop(self) -> None:

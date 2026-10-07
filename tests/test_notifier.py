@@ -2044,6 +2044,59 @@ def _install_fake_user32(monkeypatch, titles: dict[int, str]) -> _FakeUser32:
     return user32
 
 
+def test_managed_recheck_reuses_open_window_and_reopens_manually_closed_window(monkeypatch):
+    _reset_tracked_hwnds()
+    url = "https://www.twitch.tv/hello"
+    user32 = _install_fake_user32(monkeypatch, {111: "hello - Twitch"})
+    launches = []
+    monkeypatch.setattr(notifier, "_open_with_browser_settings", lambda url, *_a, **_kw: launches.append(url) or True)
+    settings = {"enabled": True, "browser_path": "chrome", "new_window": True}
+    try:
+        notifier._register_tracked_hwnd(url, 111)
+        notifier._register_tracked_hwnd(url, 222)  # old, already closed HWND
+        assert notifier.open_url(url, settings)
+        assert launches == []
+        assert notifier.tracked_hwnds_for_url(url) == {111}
+        user32.titles.clear()  # user closes the surviving window
+        assert notifier.open_url(url, settings)
+        assert launches == [url]
+        assert not notifier.tracked_hwnds_for_url(url)
+    finally:
+        _reset_tracked_hwnds()
+
+
+def test_explicit_manual_open_still_launches_when_managed_window_exists(monkeypatch):
+    _reset_tracked_hwnds()
+    url = "https://www.twitch.tv/hello"
+    _install_fake_user32(monkeypatch, {111: "hello - Twitch"})
+    launches = []
+    monkeypatch.setattr(notifier, "_open_with_browser_settings", lambda url, *_a, **_kw: launches.append(url) or True)
+    try:
+        notifier._register_tracked_hwnd(url, 111)
+        assert notifier.open_url(url, {"enabled": True}, manage=False)
+        assert launches == [url]
+    finally:
+        _reset_tracked_hwnds()
+
+
+def test_restart_opens_after_stop_requested_window_close(monkeypatch):
+    _reset_tracked_hwnds()
+    url = "https://www.twitch.tv/hello"
+    _install_fake_user32(monkeypatch, {111: "hello - Twitch"})
+    launches, closes = [], []
+    monkeypatch.setattr(notifier, "_open_with_browser_settings", lambda url, *_a, **_kw: launches.append(url) or True)
+    monkeypatch.setattr(notifier, "_post_close_window", lambda hwnd: closes.append(hwnd) or True)
+    try:
+        notifier._register_tracked_hwnd(url, 111)
+        assert notifier.close_all_tracked_windows() == 1
+        assert closes == [111]
+        # WM_CLOSE is asynchronous: even while the old HWND exists, reopen.
+        assert notifier.open_url(url, {"enabled": True})
+        assert launches == [url]
+    finally:
+        _reset_tracked_hwnds()
+
+
 def test_prune_off_topic_closes_window_with_blacklisted_title(monkeypatch) -> None:
     _reset_tracked_hwnds()
     _install_fake_user32(monkeypatch, {111: "New Tab"})

@@ -742,6 +742,30 @@ def tracked_hwnds_for_url(url: str) -> set[int]:
     return {t.hwnd for t in _REGISTRY.snapshot(url)}
 
 
+def managed_window_is_open(url: str) -> bool:
+    """Check surviving managed windows, dropping handles closed by the user."""
+    if not _is_windows() or _REGISTRY.is_closing(url):
+        return False
+    windows = _REGISTRY.snapshot(url)
+    if not windows:
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        _configure_user32_signatures(user32)
+        alive = False
+        for window in windows:
+            if user32.IsWindow(window.hwnd):
+                alive = True
+            else:
+                _REGISTRY.remove_hwnd(url, window.hwnd)
+        return alive
+    except (AttributeError, OSError):
+        logger.debug("Could not check managed windows for %s", url, exc_info=True)
+        return False
+
+
 def _all_tracked_urls() -> list[str]:
     return _REGISTRY.all_urls()
 

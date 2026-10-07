@@ -122,6 +122,7 @@ from stream_monitor.browser_win32 import (  # noqa: E402, F401
     _unmark_url_closing,
     close_all_tracked_windows,
     close_browser_window_for_url,
+    managed_window_is_open,
     prune_off_topic_tracked_windows,
     set_system_keep_awake,
     tracked_hwnds_for_url,
@@ -1180,12 +1181,17 @@ def open_url(
 
     ``manage`` decides whether the opened window joins the auto-close
     lifecycle. Monitor-triggered opens use ``manage=True`` (tracked, closable
-    on offline/stop). User-initiated opens use ``manage=False`` so the window
+    on offline/stop); an existing managed window satisfies a repeated request.
+    User-initiated opens use ``manage=False`` so the window
     is launched but never tracked or auto-closed.
     """
     if not url:
         logger.warning("Cannot open empty URL")
         return False
+
+    if manage and managed_window_is_open(url):
+        logger.info("Reusing open managed window for %s", url)
+        return True
 
     hints_tuple = tuple(title_hints or ())
     coerced = coerce_browser_settings(browser_settings)

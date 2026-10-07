@@ -1103,8 +1103,9 @@ class App(ctk.CTk):
     def _monitor_seed_args(self) -> tuple[dict[str, Any], float]:
         """Build (initial_statuses, last_activity_epoch) for a monitor start.
 
-        Statuses come from the live rows so a stream that was already live is
-        not re-triggered as a fresh edge. The persisted ``saved_at`` gap only
+        Statuses preserve row continuity. The controller requests a fresh
+        live recheck when entering trigger mode so cached LIVE rows cannot
+        suppress reopening missing windows. The persisted ``saved_at`` gap
         feeds wake-verification on the first start after launch.
         """
         initial_statuses = {

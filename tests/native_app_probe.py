@@ -26,7 +26,7 @@ from stream_monitor.app_dialogs import (
 from stream_monitor.app_ui import _FONT_FAMILY, AppButton
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
-from stream_monitor.monitor import Monitor
+from stream_monitor.monitor import ChannelStatus, Monitor
 from stream_monitor.monitor import deps as monitor_deps
 
 
@@ -157,10 +157,46 @@ def test_live_event_reaches_browser_through_real_app(native_app):
         channel="testchannel", platform="twitch", is_live=True,
         url="https://www.twitch.tv/testchannel", title="Live", stream_status="live",
     )
+    monitor._poll_cycle = 1
     monitor._dispatch_went_live_events([(monitor._entries[0], info)])
     _pump(app)
     services.browser.open.assert_called_once_with(info, None)
     services.notification.send.assert_not_called()
+
+
+def test_start_and_restart_restore_live_actions_despite_cached_status(native_app):
+    app, services = native_app(config_overrides={"browser_settings": {"close_on_stop": True}})
+    info = StreamInfo(
+        channel="testchannel", platform="twitch", is_live=True,
+        url="https://www.twitch.tv/testchannel", title="Live", stream_status="live",
+    )
+    app._channel_rows[0].set_status(ChannelStatus(status=True, url=info.url), pending=True)
+    fetcher = SimpleNamespace(get_stream_info=lambda _name: info)
+    with patch.object(monitor_deps, "get_fetcher", return_value=fetcher):
+        for expected_opens in (1, 2):
+            app._on_start()
+            monitor = app._controller._monitor
+            assert monitor._last_status["twitch:testchannel"].status is True
+            _pump(app)
+            assert services.browser.open.call_count == expected_opens - 1
+            monitor._poll_cycle = 1
+            monitor._tier1_probe_entries(monitor._entries)
+            _pump(app)
+            assert services.browser.open.call_count == expected_opens
+            monitor._poll_cycle = 2
+            monitor._tier1_probe_entries(monitor._entries)
+            _pump(app)
+            assert services.browser.open.call_count == expected_opens
+            app.on_stop()
+            assert services.window.close_all.call_count == expected_opens
+        # A retained LIVE row must never open a stream that is now offline.
+        info = StreamInfo(channel="testchannel", platform="twitch", is_live=False)
+        app._on_start()
+        monitor = app._controller._monitor
+        monitor._poll_cycle = 1
+        monitor._tier1_probe_entries(monitor._entries)
+        _pump(app)
+        assert services.browser.open.call_count == 2
 
 
 def test_watch_to_trigger_opens_current_live_once(native_app, *, pending_event=False):
@@ -243,6 +279,8 @@ if __name__ == "__main__":
             test_watch_to_trigger_opens_current_live_once(create)
         elif sys.argv[1] == "watch_to_trigger_pending":
             test_watch_to_trigger_opens_current_live_once(create, pending_event=True)
+        elif sys.argv[1] == "trigger_restart":
+            test_start_and_restart_restore_live_actions_despite_cached_status(create)
         elif sys.argv[1] == "dialogs":
             test_dialog_buttons_use_application_style(create)
         else:

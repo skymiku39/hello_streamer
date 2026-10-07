@@ -131,6 +131,36 @@ def test_watch_to_trigger_rechecks_live_after_observation(
     assert controller._created[-1].live_rechecks == 1
 
 
+@pytest.mark.parametrize("mode", ["trigger", "trigger_once"])
+@pytest.mark.parametrize("previous_run", ["none", "stopped", "completed_once"])
+def test_entering_trigger_from_idle_rechecks_cached_live(controller, mode, previous_run):
+    channels = [{"platform": "twitch", "name": "a"}]
+    if previous_run != "none":
+        controller.start("trigger_once" if previous_run == "completed_once" else "trigger", channels, 30)
+        if previous_run == "completed_once":
+            controller.finish_one_shot()
+        else:
+            controller.stop()
+    controller.start(mode, channels, 30, initial_statuses={"twitch:a": {"is_live": True}})
+    assert controller._created[-1].live_rechecks == 1
+    controller.start(mode, channels, 30)
+    assert controller._created[-1].live_rechecks == 1
+    controller.shutdown()
+
+
+def test_watch_and_health_restart_do_not_replay_live_actions(controller):
+    channels = [{"platform": "twitch", "name": "a"}]
+    controller.start("watch", channels, 30)
+    assert controller._created[-1].live_rechecks == 0
+    controller.start("trigger", channels, 30)
+    monitor = controller._created[-1]
+    assert monitor.live_rechecks == 1
+    monitor.is_running = False
+    controller.restart_if_dead(channels, 30)
+    assert monitor.live_rechecks == 1
+    controller.shutdown()
+
+
 def test_start_one_shot_sets_a_cycle_boundary_when_reusing_monitor(controller) -> None:
     channels = [{"platform": "twitch", "name": "a"}]
     controller.start("watch", channels, 30)
