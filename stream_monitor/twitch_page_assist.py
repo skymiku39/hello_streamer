@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 from stream_monitor.cdp_client import DEFAULT_CDP_ATTACH_TIMEOUT_S, CdpClient
 from stream_monitor.page_assist_status import publish_page_assist_status
+from stream_monitor.twitch_player_recovery import PlayerRecovery
 from stream_monitor.viewer_engagement_model import (
     ViewerEngagementSettings,
     coerce_viewer_engagement,
@@ -751,6 +752,8 @@ class _PageAssistWorker:
         self.settings = settings
         self._theater_confirmed_once = False
         self._stop = threading.Event()
+        self._confirmed_offline = threading.Event()
+        self._player_recovery = PlayerRecovery(url, self._stop, self._confirmed_offline)
         self._thread = threading.Thread(
             target=self._run,
             name=f"twitch-page-assist-{_url_key(url)[-24:]}",
@@ -861,10 +864,11 @@ class _PageAssistWorker:
             claim_deadline = time.monotonic()
             while not self._stop.is_set():
                 self._run_gate_and_theater(client)
-                next_page_check_at = time.monotonic() + _PAGE_CHECK_INTERVAL_S
+                next_page_check_at = self._next_page_check_at()
                 while not self._stop.is_set():
                     now = time.monotonic()
                     if not client.connected:
+                        self._player_recovery.disconnected()
                         client.close()
                         client = CdpClient()
                         try:
@@ -878,12 +882,16 @@ class _PageAssistWorker:
                             if not self._sleep(_PAGE_CHECK_INTERVAL_S):
                                 return
                             continue
-                        publish_page_assist_status(self.url, "")
+                        if self._stop.is_set():
+                            return
+                        publish_page_assist_status(self.url, self._player_recovery.notice)
                         logger.info("Twitch page assist reconnected for %s", self.url)
                         next_page_check_at = now
                     self._maybe_observe_snapshot(client, cdp="connected")
                     if (
                         self.settings.auto_refresh
+                        and not self._player_recovery.active
+                        and not self._confirmed_offline.is_set()
                         and next_refresh_at is not None
                         and now >= next_refresh_at
                     ):
@@ -901,9 +909,10 @@ class _PageAssistWorker:
 
                     if now >= next_page_check_at:
                         self._check_page(client)
-                        next_page_check_at = time.monotonic() + _PAGE_CHECK_INTERVAL_S
+                        next_page_check_at = self._next_page_check_at()
 
-                    if self.settings.claim_channel_points and now >= claim_deadline:
+                    if (self.settings.claim_channel_points and now >= claim_deadline
+                            and not self._player_recovery.active):
                         self._try_claim(client)
                         # Continue observing at the configured interval after
                         # success too; a new visible bonus must not be held by
@@ -917,9 +926,9 @@ class _PageAssistWorker:
                         self.settings.claim_poll_seconds_max,
                     )
                     wait_s = min(wait_s, max(0.1, next_page_check_at - time.monotonic()))
-                    if self.settings.claim_channel_points:
+                    if self.settings.claim_channel_points and not self._player_recovery.active:
                         wait_s = min(wait_s, max(0.1, claim_deadline - time.monotonic()))
-                    if next_refresh_at is not None:
+                    if next_refresh_at is not None and not self._player_recovery.active:
                         wait_s = min(wait_s, max(1.0, next_refresh_at - time.monotonic()))
                     # Opt-in observation only: wake for 30s snapshots without
                     # changing claim/refresh deadlines or disabled-path waits.
@@ -967,9 +976,13 @@ class _PageAssistWorker:
                     _assist_by_url.pop(_url_key(self.url), None)
 
     def _check_page(self, client: CdpClient) -> None:
-        """Periodically reconcile this page without reloading or blind toggles."""
+        """Reconcile the page, with bounded recovery only for confirmed #2000."""
         if self._stop.is_set():
             return
+        if self.settings.page_assist_active():
+            self._player_recovery.step(client)
+            if self._player_recovery.active or self._stop.is_set():
+                return
         ready = self._probe_page_ready(client)
         if ready.get("gatePresent") and self.settings.accept_content_gate:
             self._try_accept_gate(client)
@@ -998,6 +1011,13 @@ class _PageAssistWorker:
         logger.info("Twitch page assist periodic page check for %s: "
                     "playback=%s theater=%s chat=%s", self.url, playback, theater, chat)
 
+    def _next_page_check_at(self) -> float:
+        now = time.monotonic()
+        if self._player_recovery.active:
+            return min(now + _PAGE_CHECK_INTERVAL_S,
+                       max(now + 0.1, self._player_recovery.next_check_at))
+        return now + _PAGE_CHECK_INTERVAL_S
+
     def _schedule_refresh(self) -> float | None:
         if not self.settings.auto_refresh:
             return None
@@ -1008,6 +1028,10 @@ class _PageAssistWorker:
         return time.monotonic() + minutes * 60.0
 
     def _run_gate_and_theater(self, client: CdpClient) -> None:
+        if self.settings.page_assist_active():
+            self._player_recovery.step(client)
+            if self._player_recovery.active or self._stop.is_set():
+                return
         if self.settings.accept_content_gate:
             if not self._wait_for_gate_or_ready(client):
                 return
@@ -1418,6 +1442,17 @@ def stop_page_assist(url: str) -> None:
     if worker is not None:
         worker.stop()
         worker.join(timeout=2.0)
+
+
+def set_page_assist_live(url: str, *, is_live: bool) -> None:
+    """Apply confirmed monitor edges even when close-on-offline is disabled."""
+    with _assist_lock:
+        worker = _assist_by_url.get(_url_key(url))
+        if worker is not None:
+            if is_live:
+                worker._confirmed_offline.clear()
+            else:
+                worker._confirmed_offline.set()
 
 
 def stop_all_page_assist() -> None:

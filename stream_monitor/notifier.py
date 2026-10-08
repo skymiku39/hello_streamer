@@ -165,6 +165,9 @@ def configure_viewer_engagement(
     """Install the active viewer-engagement settings for subsequent launches."""
     global _VIEWER_ENGAGEMENT
     _VIEWER_ENGAGEMENT = coerce_viewer_engagement(settings)
+    if _VIEWER_ENGAGEMENT is None or not _VIEWER_ENGAGEMENT.page_assist_active():
+        stop_all_page_assist()
+        publish_page_assist_status("*", "")
 
 
 def _active_viewer_engagement() -> ViewerEngagementSettings | None:
@@ -225,6 +228,8 @@ def sync_observed_closes_for_tracked_windows(*, min_age_s: float = 6.0) -> int:
                 continue
             _OBS_MANAGED_URLS.discard(url)
             _OBS_MANAGED_SINCE.pop(url, None)
+        stop_page_assist(url)
+        publish_page_assist_status(url, "")
         noted += 1
         try:
             from stream_monitor.watch_observation import observe_window_action
@@ -1108,9 +1113,14 @@ def _open_with_browser_settings(
     except Exception:
         logger.exception("Watch observation window open hook failed")
 
-    if cdp_port and manage and engagement_for_assist is not None:
+    current_engagement = _active_viewer_engagement()
+    if (cdp_port and manage and current_engagement is not None
+            and current_engagement.page_assist_active()):
         try:
-            start_page_assist(url, cdp_port, engagement_for_assist)
+            # Track closure even when keep-awake and diagnostic observation are
+            # disabled. Re-read settings because launch may outlast a UI toggle.
+            _register_obs_managed_url(url)
+            start_page_assist(url, cdp_port, current_engagement)
         except Exception:
             publish_page_assist_status(url, "unavailable")
             logger.exception("Failed to start Twitch page assist for %s", url)

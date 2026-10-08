@@ -62,7 +62,8 @@ def test_failure_messages_exist_and_format_in_every_locale():
     from stream_monitor import i18n
 
     for table in i18n._TRANSLATIONS.values():
-        for key in ("profile_busy", "failed"):
+        for key in ("profile_busy", "failed", "player_2000_retrying",
+                    "player_2000_unverified", "player_2000_exhausted"):
             text = table[f"engagement.page_assist.{key}"].format(url="https://www.twitch.tv/test")
             assert "https://www.twitch.tv/test" in text
 
@@ -100,3 +101,15 @@ def test_failure_banner_gives_profile_recovery_action_and_hides_on_recovery():
     probe._page_assist_failures.clear()
     App._render_page_assist_notice(probe)
     assert label.manager == ""
+
+
+@pytest.mark.parametrize("reason", ["player_2000_retrying", "player_2000_unverified", "player_2000_exhausted"])
+def test_player_recovery_outcome_reaches_localized_banner(reason):
+    from unittest.mock import Mock
+
+    from stream_monitor import i18n
+
+    label = Mock()
+    probe = SimpleNamespace(_page_assist_failures={"test-url": reason}, _page_assist_notice=label)
+    App._render_page_assist_notice(probe)
+    label.configure.assert_called_once_with(text=i18n.tr(f"engagement.page_assist.{reason}", url="test-url"))
