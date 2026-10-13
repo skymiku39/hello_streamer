@@ -32,7 +32,7 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 ## 下載
 
-**請只下載最新版（Latest）**。較舊 Release 的可執行檔已自 GitHub 移除，僅保留版本說明與 tag 供查閱；過去版本有已知問題（例如下播關窗、離線 VOD 顯示、啟動開窗等），不建議繼續使用。
+**請只下載最新版（Latest）**。部分較舊 Release 已移除可執行檔，僅保留版本說明與 tag；其他舊版仍可能保有下載檔，請以各版本 Release 頁面實際列出的檔案為準。過去版本有已知問題（例如下播關窗、離線 VOD 顯示、啟動開窗等），不建議繼續使用。
 
 請到 [GitHub Releases · Latest](https://github.com/skymiku39/hello_streamer/releases/latest) 下載：
 
