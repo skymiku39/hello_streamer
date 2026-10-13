@@ -880,7 +880,7 @@ def _open_with_browser_settings(
     )
     isolation_available = bool(effective_user_data_dir)
     cdp_port: int | None = None
-    cdp_lease = None
+    cdp_needs_discovery = False
     cdp_attach_reason = ""
     cdp_attach_message = ""
     engagement_for_assist = _active_viewer_engagement()
@@ -911,11 +911,11 @@ def _open_with_browser_settings(
             attach = CdpAttachResult(ok=False, reason="unavailable")
         cdp_attach_reason = attach.reason
         cdp_attach_message = attach.message
-        if attach.ok and isinstance(attach.port, int) and attach.port > 0:
-            cdp_port = attach.port
-            cdp_lease = attach.lease
+        if attach.ok and isinstance(attach.port, int) and attach.port >= 0:
+            cdp_needs_discovery = attach.port == 0
+            cdp_port = attach.port or None
             if attach.pass_debugging_flag:
-                effective_settings["_cdp_debugging_port"] = cdp_port
+                effective_settings["_cdp_debugging_port"] = attach.port
             logger.info(
                 "Twitch page assist CDP port %s for %s (reason=%s)",
                 cdp_port,
@@ -946,8 +946,6 @@ def _open_with_browser_settings(
             logger.exception(
                 "Could not create browser user_data_dir: %s", effective_user_data_dir
             )
-            if cdp_lease is not None:
-                cdp_lease.release()
             return False
 
     want_minimize = bool(effective_settings.get("minimized")) and _is_windows()
@@ -1060,10 +1058,6 @@ def _open_with_browser_settings(
             startupinfo = None
 
     try:
-        if cdp_lease is not None:
-            # Release immediately before spawn so Chrome can bind the port.
-            cdp_lease.release()
-            cdp_lease = None
         subprocess.Popen(
             args,
             startupinfo=startupinfo,
@@ -1075,17 +1069,77 @@ def _open_with_browser_settings(
             "Browser executable not found: %s — falling back to default browser",
             args[0],
         )
-        if cdp_lease is not None:
-            cdp_lease.release()
         return False
     except OSError:
         logger.exception("Failed to spawn browser with custom settings: %s", args)
-        if cdp_lease is not None:
-            cdp_lease.release()
         return False
 
     if keep_awake_after_launch:
         _register_engagement_keep_awake(url)
+
+    current_engagement = _active_viewer_engagement()
+    if (cdp_needs_discovery and current_engagement is not None
+            and current_engagement.page_assist_active()):
+        # Existing close paths remove this registration, including close-all
+        # before the asynchronous HWND tracker has found the new window.
+        _register_obs_managed_url(url)
+
+    if class_name:
+        if want_window_management:
+            _unmark_url_closing(url)
+            _unblock_title_fallback_for_url(url)
+            worker_settings = effective_settings
+            track_url = url
+            track_keywords = tuple(title_hints)
+        else:
+            worker_settings = {
+                **effective_settings,
+                "minimized": False,
+                "hide_from_taskbar": False,
+                "bring_to_front": False,
+            }
+            track_url = ""
+            track_keywords = ()
+            if wants_close_or_hide_mgmt and manage:
+                _block_title_fallback_for_url(url)
+        _apply_new_browser_window_settings_async(
+            class_name,
+            baseline,
+            worker_settings,
+            apply_geometry=apply_geometry,
+            track_for_url=track_url,
+            track_keywords=track_keywords,
+            foreground_hold_seconds=int(
+                worker_settings.get("foreground_hold_seconds", 0)
+            ),
+        )
+    elif _is_windows() and not isolation_available:
+        _block_title_fallback_for_url(url)
+
+    if cdp_needs_discovery:
+        from stream_monitor.cdp_client import resolve_cdp_attach
+
+        def discovery_cancelled() -> bool:
+            active = _active_viewer_engagement()
+            with _OBS_MANAGED_LOCK:
+                tracked = url in _OBS_MANAGED_URLS
+            return not tracked or active is None or not active.page_assist_active()
+
+        try:
+            attach = resolve_cdp_attach(
+                effective_user_data_dir, is_cancelled=discovery_cancelled,
+            )
+        except Exception:
+            logger.exception("Twitch page assist post-launch CDP discovery failed for %s", url)
+            attach = CdpAttachResult(ok=False, reason="unavailable")
+        cdp_attach_reason = attach.reason
+        cdp_attach_message = attach.message
+        if discovery_cancelled():
+            cdp_attach_reason = "cancelled"
+        elif attach.ok and attach.port:
+            cdp_port = attach.port
+        else:
+            publish_page_assist_status(url, attach.reason or "unavailable")
 
     try:
         from stream_monitor.watch_observation import (
@@ -1101,7 +1155,7 @@ def _open_with_browser_settings(
                 origin="app_requested" if manage else "unknown",
                 url=url,
             )
-            if manage:
+            if manage and cdp_attach_reason != "cancelled":
                 _register_obs_managed_url(url)
             if manage and not cdp_port:
                 channel = twitch_channel_key_from_url(url)
@@ -1138,38 +1192,6 @@ def _open_with_browser_settings(
             cdp_attach_reason or "unavailable",
             f" ({cdp_attach_message})" if cdp_attach_message else "",
         )
-
-    if class_name:
-        if want_window_management:
-            _unmark_url_closing(url)
-            _unblock_title_fallback_for_url(url)
-            worker_settings = effective_settings
-            track_url = url
-            track_keywords = tuple(title_hints)
-        else:
-            worker_settings = {
-                **effective_settings,
-                "minimized": False,
-                "hide_from_taskbar": False,
-                "bring_to_front": False,
-            }
-            track_url = ""
-            track_keywords = ()
-            if wants_close_or_hide_mgmt and manage:
-                _block_title_fallback_for_url(url)
-        _apply_new_browser_window_settings_async(
-            class_name,
-            baseline,
-            worker_settings,
-            apply_geometry=apply_geometry,
-            track_for_url=track_url,
-            track_keywords=track_keywords,
-            foreground_hold_seconds=int(
-                worker_settings.get("foreground_hold_seconds", 0)
-            ),
-        )
-    elif _is_windows() and not isolation_available:
-        _block_title_fallback_for_url(url)
 
     return True
 

@@ -28,8 +28,9 @@ _CDP_VK_T = 84
 
 # Bound attach waits so a missing endpoint fails promptly instead of hanging.
 DEFAULT_CDP_ATTACH_TIMEOUT_S = 12.0
-# Keep GUI launch paths snappy; full page attach still uses DEFAULT_CDP_ATTACH_TIMEOUT_S.
-DEFAULT_CDP_DISCOVERY_TIMEOUT_S = 2.5
+# Windows profile/listener ownership queries can take several seconds; keep
+# preflight bounded separately from full page attach.
+DEFAULT_CDP_DISCOVERY_TIMEOUT_S = 5.0
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
@@ -133,7 +134,7 @@ def read_devtools_active_port(user_data_dir: str) -> int | None:
     root = (user_data_dir or "").strip()
     if not root:
         return None
-    path = Path(root) / "DevToolsActivePort"
+    path = Path(os.path.expandvars(os.path.expanduser(root))) / "DevToolsActivePort"
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -193,6 +194,7 @@ def endpoint_belongs_to_profile(
     *,
     reader: Callable[[str], int | None] = read_devtools_active_port,
     endpoint_probe: Callable[..., bool] = probe_cdp_endpoint,
+    timeout: float = 1.0,
 ) -> bool:
     """True only when *port* is proven to be this profile's DevTools endpoint."""
     if port <= 0 or not (user_data_dir or "").strip():
@@ -200,7 +202,28 @@ def endpoint_belongs_to_profile(
     file_port = reader(user_data_dir)
     if file_port is None or file_port != port:
         return False
-    return bool(endpoint_probe(port, timeout=1.0))
+    # Ports can be recycled after Chrome exits. Match the browser instance ID
+    # as well, so a stale file/cache cannot attach to a different profile.
+    try:
+        profile = Path(os.path.expandvars(os.path.expanduser(user_data_dir)))
+        lines = (profile / "DevToolsActivePort").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        browser_path = lines[1].strip() if len(lines) > 1 else ""
+        if not browser_path.startswith("/devtools/browser/"):
+            return False
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/json/version", timeout=timeout
+        ) as response:
+            version = json.loads(response.read().decode("utf-8"))
+        if not isinstance(version, dict):
+            return False
+        ws_url = version.get("webSocketDebuggerUrl")
+        if not isinstance(ws_url, str) or urlsplit(ws_url).path != browser_path:
+            return False
+        return bool(endpoint_probe(port, timeout=timeout))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return False
 
 
 class CdpPortRegistry:
@@ -300,6 +323,7 @@ def _windows_profile_debug_info(
     user_data_dir: str,
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    timeout: float = 5.0,
 ) -> tuple[bool, int | None]:
     """Hidden lookup: ``(profile_process_seen, debug_port_or_none)``.
 
@@ -330,7 +354,11 @@ def _windows_profile_debug_info(
         "if ($profileKey -eq $n) { "
         "$seen = $true; "
         "if ($null -eq $port -and $cl -match '--remote-debugging-port=(\\d+)') { "
-        "$port = [int]$Matches[1] "
+        "$candidate = [int]$Matches[1]; $browserPid = $_.ProcessId; "
+        "if ($candidate -eq 0) { $port = 0 } "
+        "elseif (Get-NetTCPConnection -State Listen -LocalPort $candidate "
+        "-ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $browserPid }) "
+        "{ $port = $candidate } "
         "} "
         "} "
         "}; "
@@ -354,7 +382,7 @@ def _windows_profile_debug_info(
             check=False,
             capture_output=True,
             text=True,
-            timeout=5.0,
+            timeout=max(0.1, timeout),
             creationflags=_CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -367,7 +395,7 @@ def _windows_profile_debug_info(
     port: int | None = None
     if len(parts) >= 2 and parts[1].isdigit():
         value = int(parts[1])
-        port = value if value > 0 else None
+        port = value if 0 <= value <= 65535 else None
     logger.debug(
         "CDP profile process lookup seen=1 port=%s",
         port if port is not None else "none",
@@ -397,15 +425,15 @@ def acquire_cdp_debugging_port(
     busy_check: Callable[[str], bool] | None = None,
     process_lookup: Callable[[str], int | None] | None = None,
     profile_running: Callable[[str], bool] | None = None,
-    leaser: Callable[[], DebuggingPortLease] | None = None,
+    profile_verifier: Callable[..., bool] | None = None,
 ) -> CdpAttachResult:
-    """Lease or safely reuse a CDP port for the exact configured profile.
+    """Reuse a proven profile endpoint or ask Chrome to select its own port.
 
-    Only endpoints proven to belong to *user_data_dir* (or ports this process
-    previously leased into the registry) are reused. Unrelated debug ports are
-    never guessed. Stale lock markers are tolerated when no live endpoint exists.
-    Discovery waits stay bounded so GUI launches are not blocked.
+    A cold launch returns port zero; resolve_cdp_attach must discover the actual
+    endpoint after launch. No socket reservation is handed off to the browser.
+    Cached port numbers alone never establish current profile ownership.
     """
+    user_data_dir = os.path.expandvars(os.path.expanduser((user_data_dir or "").strip()))
     reg = registry if registry is not None else _PORT_REGISTRY
     key = normalize_profile_key(user_data_dir)
     if not key:
@@ -418,20 +446,30 @@ def acquire_cdp_debugging_port(
     endpoint_probe = endpoint_probe or probe_cdp_endpoint
     reader = reader or read_devtools_active_port
     busy_check = busy_check or profile_looks_busy
-    leaser = leaser or lease_debugging_port
-    lookup = process_lookup
-    if lookup is None:
-        lookup = _windows_debug_port_for_profile
+    profile_verifier = profile_verifier or endpoint_belongs_to_profile
+    deadline = clock() + max(0.2, timeout)
+    process_info: tuple[bool, int | None] | None = None
+
+    def _get_process_info(path: str) -> tuple[bool, int | None]:
+        nonlocal process_info
+        if process_info is None:
+            process_info = _windows_profile_debug_info(
+                path, timeout=max(0.1, deadline - clock())
+            )
+        return process_info
+
+    lookup = process_lookup or (lambda path: _get_process_info(path)[1])
 
     def _default_profile_running(path: str) -> bool:
-        seen, _port = _windows_profile_debug_info(path)
+        if not Path(path).exists():
+            return False
+        seen, _port = _get_process_info(path)
         return seen
 
     running_check = (
         profile_running if profile_running is not None else _default_profile_running
     )
 
-    deadline = clock() + max(0.2, timeout)
     probe_timeout = min(0.8, timeout)
 
     def _try_proven(
@@ -446,11 +484,12 @@ def acquire_cdp_debugging_port(
             return None
         file_port = reader(user_data_dir)
         if require_devtools_file:
-            if not endpoint_belongs_to_profile(
+            if not profile_verifier(
                 port,
                 user_data_dir,
                 reader=reader,
                 endpoint_probe=endpoint_probe,
+                timeout=probe_timeout,
             ):
                 return None
         elif file_port is not None and file_port != port:
@@ -465,57 +504,48 @@ def acquire_cdp_debugging_port(
             pass_debugging_flag=False,
         )
 
-    cached = reg.get(key)
-    if isinstance(cached, int) and cached > 0 and endpoint_probe(
-        cached, timeout=probe_timeout
-    ):
-        return CdpAttachResult(
-            ok=True,
-            port=cached,
-            reason="registry",
-            pass_debugging_flag=True,
-        )
-
     proven = _try_proven(reader(user_data_dir), "devtools_file")
     if proven is not None:
         return proven
 
-    busy = bool(busy_check(user_data_dir))
+    reg.clear(key)
+    running = bool(running_check(user_data_dir))
+    busy = bool(busy_check(user_data_dir)) or running
     if busy:
-        # Process cmdline match for this exact profile is sufficient proof.
+        # Legacy fixed-port launches may not have DevToolsActivePort. The
+        # Windows lookup verifies both the exact profile and listener PID.
+        process_port = lookup(user_data_dir)
         proven = _try_proven(
-            lookup(user_data_dir),
+            process_port,
             "process",
             require_devtools_file=False,
         )
         if proven is not None:
             return proven
 
+        if running and process_port == 0:
+            # Another cold opener already started this profile. Chromium will
+            # route the new window to it; discover its endpoint after Popen.
+            return CdpAttachResult(
+                ok=True, port=0, reason="ephemeral", pass_debugging_flag=True,
+            )
+
         wait_budget = max(0.0, deadline - clock())
         if wait_budget > 0:
-            waited_dev = wait_for_devtools_active_port(
+            waited_dev = resolve_cdp_attach(
                 user_data_dir,
                 timeout=wait_budget,
                 clock=clock,
                 sleep=sleep,
                 reader=reader,
+                profile_verifier=profile_verifier,
             )
             if waited_dev.ok:
                 proven = _try_proven(waited_dev.port, "devtools_file")
                 if proven is not None:
                     return proven
 
-        reserved = reg.get(key)
-        if isinstance(reserved, int) and reserved > 0:
-            # App-owned reservation (cold multi-window / pending bind).
-            return CdpAttachResult(
-                ok=True,
-                port=reserved,
-                reason="registry",
-                pass_debugging_flag=True,
-            )
-
-        if running_check(user_data_dir):
+        if running:
             return CdpAttachResult(
                 ok=False,
                 reason="profile_nondebug",
@@ -529,38 +559,11 @@ def acquire_cdp_debugging_port(
             key,
         )
 
-    reserved = reg.get(key)
-    if isinstance(reserved, int) and reserved > 0:
-        # Keep the app-owned reservation for cold multi-window attach even when
-        # /json/list is not up yet. Replacement happens only via proven discovery
-        # above (DevToolsActivePort / process), never by guessing another port.
-        return CdpAttachResult(
-            ok=True,
-            port=reserved,
-            reason="registry",
-            pass_debugging_flag=True,
-        )
-
-    # Cold lease with a short critical section so concurrent openers share one port.
-    with reg._lock:  # noqa: SLF001 — cold-start race winner
-        existing = reg._ports.get(key)  # noqa: SLF001
-        if isinstance(existing, int) and existing > 0:
-            return CdpAttachResult(
-                ok=True,
-                port=existing,
-                reason="registry",
-                pass_debugging_flag=True,
-            )
-        lease = leaser()
-        reg._ports[key] = int(lease.port)  # noqa: SLF001
-        reg._condition_for(key).notify_all()  # noqa: SLF001
-        return CdpAttachResult(
-            ok=True,
-            port=lease.port,
-            reason="leased",
-            lease=lease,
-            pass_debugging_flag=True,
-        )
+    # Concurrent cold launches can all request zero: Chromium's profile
+    # singleton owns the selected endpoint and writes DevToolsActivePort.
+    return CdpAttachResult(
+        ok=True, port=0, reason="ephemeral", pass_debugging_flag=True,
+    )
 
 
 def resolve_cdp_attach(
@@ -571,71 +574,35 @@ def resolve_cdp_attach(
     timeout: float = DEFAULT_CDP_ATTACH_TIMEOUT_S,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
-    endpoint_probe: Callable[..., bool] = probe_cdp_endpoint,
-    wait_devtools: Callable[..., CdpAttachResult] = wait_for_devtools_active_port,
-    reader: Callable[[str], int | None] = read_devtools_active_port,
+    reader: Callable[[str], int | None] | None = None,
+    profile_verifier: Callable[..., bool] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> CdpAttachResult:
-    """Resolve a CDP port after launch without unbounded waiting.
-
-    Fresh profiles typically expose ``preferred_port`` or DevToolsActivePort.
-    Preferred ports are accepted only when proven to belong to *user_data_dir*
-    (or when the profile has not yet written DevToolsActivePort during cold start).
-    An already-running shared profile without debugging surfaces as a timely
-    ``profile_busy`` / ``profile_nondebug`` / ``timeout`` failure instead of hang.
-    """
+    """Wait for a live endpoint belonging to the launched profile, boundedly."""
+    user_data_dir = os.path.expandvars(os.path.expanduser((user_data_dir or "").strip()))
+    reader = reader or read_devtools_active_port
+    profile_verifier = profile_verifier or endpoint_belongs_to_profile
     deadline = clock() + max(0.5, timeout)
-    if preferred_port and preferred_port > 0:
-        interval = 0.2
-        max_iterations = max(1, int(max(0.5, timeout) / interval) + 3)
-        for _ in range(max_iterations):
-            if clock() >= deadline:
-                break
-            if endpoint_probe(preferred_port, timeout=min(1.0, timeout)):
-                file_port = reader(user_data_dir) if user_data_dir else None
-                if file_port is None or file_port == preferred_port:
-                    return CdpAttachResult(
-                        ok=True,
-                        port=preferred_port,
-                        reason="preferred_port",
-                    )
-                return CdpAttachResult(
-                    ok=False,
-                    reason="unrelated_endpoint",
-                    message=(
-                        f"Port {preferred_port} is live but DevToolsActivePort "
-                        f"for this profile is {file_port}"
-                    ),
-                )
-            sleep(interval)
-        if profile_was_busy:
-            return CdpAttachResult(
-                ok=False,
-                reason="profile_busy",
-                message=(
-                    "Existing browser/profile did not expose CDP on "
-                    f"port {preferred_port}"
-                ),
-            )
-        return CdpAttachResult(
-            ok=False,
-            reason="timeout",
-            message=f"CDP endpoint not ready on port {preferred_port}",
-        )
-
-    remaining = max(0.5, deadline - clock())
-    result = wait_devtools(user_data_dir, timeout=remaining, clock=clock, sleep=sleep)
-    if result.ok:
-        return result
-    if profile_was_busy:
-        return CdpAttachResult(
-            ok=False,
-            reason="profile_busy",
-            message=(
-                "Existing browser/profile did not write a usable "
-                "DevToolsActivePort endpoint"
-            ),
-        )
-    return result
+    interval = 0.2
+    max_iterations = max(1, int(max(0.5, timeout) / interval) + 3)
+    for _ in range(max_iterations):
+        if is_cancelled is not None and is_cancelled():
+            return CdpAttachResult(ok=False, reason="cancelled")
+        remaining = deadline - clock()
+        if remaining <= 0:
+            break
+        port = reader(user_data_dir)
+        if port and (not preferred_port or port == preferred_port):
+            if profile_verifier(
+                port, user_data_dir, reader=reader, timeout=min(0.8, remaining / 2),
+            ):
+                _PORT_REGISTRY.put(normalize_profile_key(user_data_dir), port)
+                return CdpAttachResult(ok=True, port=port, reason="devtools_file")
+        sleep(min(interval, max(0.0, deadline - clock())))
+    return CdpAttachResult(
+        ok=False, reason="profile_busy" if profile_was_busy else "timeout",
+        message=f"No verified profile CDP endpoint within {timeout:.1f}s",
+    )
 
 
 def _list_targets(port: int, timeout: float = 2.0) -> list[dict[str, Any]]:
