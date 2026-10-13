@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from copy import deepcopy
@@ -21,6 +22,8 @@ from stream_monitor.browser_settings_model import (
 )
 from stream_monitor.channel_policy import CHANNEL_MODES, normalize_channel_mode
 from stream_monitor.portable_storage import portable_paths
+
+logger = logging.getLogger(__name__)
 
 # Bump when persisted schema semantics change. Older files without this key
 # (or with a lower number) receive :func:`_migrate_iso_features_without_profile`
@@ -675,11 +678,22 @@ def save(config: dict[str, Any]) -> dict[str, Any]:
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = path.with_name(f".{path.name}.tmp")
         normalized = _finalize_config(config, apply_legacy_migration=False)
-        with temp_path.open("w", encoding="utf-8") as f:
-            json.dump(normalized, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        temp_path.replace(path)
+        try:
+            with temp_path.open("w", encoding="utf-8") as f:
+                json.dump(normalized, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            temp_path.replace(path)
+        except Exception:
+            # A handled failure is a rejected save, not an interrupted one.
+            # Callers may roll back (notably launch-records reset); load() must
+            # not silently replay this rejected update on the next launch.
+            # Abrupt process termination still leaves the recovery candidate.
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception("Could not discard failed config save: %s", temp_path)
+            raise
         return normalized
 
