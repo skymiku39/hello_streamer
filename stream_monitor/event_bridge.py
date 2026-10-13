@@ -26,6 +26,7 @@ from stream_monitor.events import (
     PollWaiting,
 )
 from stream_monitor.fetcher.base import StreamInfo
+from stream_monitor.twitch_page_assist import set_page_assist_live
 from stream_monitor.util import channel_key
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,8 @@ class MonitorEventBridge:
             events_processed += 1
             if isinstance(event, ChannelWentLive):
                 if sink.is_channel_active(event.entry):
+                    if event.info.is_live:
+                        set_page_assist_live(event.info.url, is_live=True)
                     live_events.append((event.entry, event.info))
                 else:
                     logger.info(
@@ -206,6 +209,7 @@ class MonitorEventBridge:
                     )
             elif isinstance(event, ChannelWentOffline):
                 if sink.is_channel_active(event.entry):
+                    set_page_assist_live(event.offline_info.url, is_live=False)
                     offline_events.append((event.entry, event.offline_info))
                 else:
                     logger.info(

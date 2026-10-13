@@ -1940,7 +1940,9 @@ class App(ctk.CTk):
             return
         url = next(reversed(self._page_assist_failures))
         reason = self._page_assist_failures[url]
-        key = (
+        key = f"engagement.page_assist.{reason}" if reason in {
+            "player_2000_retrying", "player_2000_unverified", "player_2000_exhausted",
+        } else (
             "engagement.page_assist.profile_busy"
             if reason in {"profile_nondebug", "profile_busy"}
             else "engagement.page_assist.failed"
@@ -2125,6 +2127,11 @@ def _run_frozen_self_check() -> None:
 
 
 def main() -> None:
+    if "--self-check-player-recovery" in sys.argv:
+        from stream_monitor.player_recovery_check import main as recovery_check
+
+        recovery_check(sys.argv[sys.argv.index("--self-check-player-recovery") + 1:])
+        return
     if "--self-check" in sys.argv:
         _run_frozen_self_check()
         return

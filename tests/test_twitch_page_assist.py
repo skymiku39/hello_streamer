@@ -315,8 +315,9 @@ def test_valid_devtools_port_file_is_read(tmp_path, port) -> None:
     assert read_devtools_active_port(str(tmp_path)) == port
 
 
+@pytest.mark.parametrize("disable_during_launch", [False, True])
 def test_open_fresh_profile_ephemeral_port_resolves_devtools(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, disable_during_launch
 ) -> None:
     """Cold start leases a bindable CDP port and passes it to Chrome + assist."""
     monkeypatch.delattr(sys, "frozen", raising=False)
@@ -326,9 +327,14 @@ def test_open_fresh_profile_ephemeral_port_resolves_devtools(
     started: list[tuple[str, int]] = []
     launched: list[list[str]] = []
     cdp_client.reset_cdp_port_registry()
+    monkeypatch.setattr(notifier, "_OBS_MANAGED_URLS", set())
+    monkeypatch.setattr(notifier, "_OBS_MANAGED_SINCE", {})
+    monkeypatch.setattr("stream_monitor.watch_observation.is_watch_observation_enabled", lambda: False)
 
     def fake_popen(args, **_k):
         launched.append(list(args))
+        if disable_during_launch:
+            notifier.configure_viewer_engagement(None)
         return object()
 
     _patch_open_browser_common(monkeypatch)
@@ -371,7 +377,8 @@ def test_open_fresh_profile_ephemeral_port_resolves_devtools(
         assert len(port_flags) == 1
         leased = int(port_flags[0].split("=", 1)[1])
         assert leased > 0
-        assert started == [("https://www.twitch.tv/foo", leased)]
+        assert started == ([] if disable_during_launch else [("https://www.twitch.tv/foo", leased)])
+        assert ("https://www.twitch.tv/foo" in notifier._OBS_MANAGED_URLS) is not disable_during_launch
     finally:
         notifier.configure_viewer_engagement(None)
         stop_all_page_assist()

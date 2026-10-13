@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import time
@@ -10,6 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 from stream_monitor import twitch_page_assist as assist
+from stream_monitor import twitch_player_recovery as recovery
 from stream_monitor.cdp_client import CdpClient
 from stream_monitor.notifier import _resolve_browser_executable
 from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
@@ -496,3 +498,91 @@ def test_reload_gate_flow_does_not_reset_confirmed_theater(monkeypatch):
     assert w._theater_confirmed_once
     client.click_at.assert_not_called()
     client.send_alt_t.assert_not_called()
+
+
+def error_dom(message="網路發生問題。請再試一次。（錯誤代碼 #2000）",
+              button="按一下這裡重新載入播放器", *, error_style="", button_attrs=""):
+    return ('<div data-a-target="video-player" style="width:640px;height:360px">'
+            f'<p id="error" style="{error_style}">{message}</p>'
+            f'<button id="reload" {button_attrs} onclick="window.clicks=(window.clicks||0)+1">'
+            f'{button}</button></div>')
+
+
+@pytest.mark.parametrize("message,button", [
+    ("網路發生問題。請再試一次。（錯誤代碼 #2000）", "按一下這裡重新載入播放器"),
+    ("There was a network error. Please try again. (Error #2000)", "Click Here to Reload Player"),
+    ("網路發生問題。（錯誤代碼 <span>#</span><span>2000</span>）", "重新載入播放器"),
+])
+def test_player_2000_visible_localized_error_and_guarded_click(dom_browser, message, button):
+    set_dom(dom_browser, error_dom(message, button))
+    dom_browser.evaluate("window.clicks=0")
+    snap = dom_browser.evaluate(recovery.PLAYER_SNAPSHOT_JS)
+    assert snap["errorCode"] == "2000"
+    assert snap["retryToken"]
+    args = json.dumps({"clickToken": snap["retryToken"], "expectedUrl": snap["url"]})
+    result = dom_browser.evaluate(f"({recovery._PLAYER_FUNCTION_JS})({args})")
+    assert result["clicked"]
+    assert dom_browser.evaluate("window.clicks") == 1
+
+
+@pytest.mark.parametrize("html", [
+    '<div class="video-player"><p>Loading</p></div><div class="chat-room">Error #2000</div>',
+    '<div class="video-player"><div class="chat-room">Error #2000</div></div>',
+    '<div>Network Error #2000<button>Reload Player</button></div>',
+    error_dom(error_style="display:none"),
+    error_dom(error_style="visibility:hidden"),
+    error_dom(error_style="opacity:0"),
+    error_dom(error_style="position:absolute;left:20000px"),
+    '<div style="opacity:0">' + error_dom() + '</div>',
+    error_dom(message="Error #20000"),
+])
+def test_player_2000_hidden_chat_and_outside_text_are_not_errors(dom_browser, html):
+    set_dom(dom_browser, html)
+    snap = dom_browser.evaluate(recovery.PLAYER_SNAPSHOT_JS)
+    assert snap["errorCode"] is None
+    assert snap["retryToken"] is None
+
+
+@pytest.mark.parametrize("attrs", [
+    'disabled', 'aria-disabled="true"', 'style="pointer-events:none"',
+    'style="display:none"', 'style="position:absolute;left:20000px"',
+])
+def test_player_2000_unavailable_reload_control_is_not_eligible(dom_browser, attrs):
+    set_dom(dom_browser, error_dom(button_attrs=attrs))
+    snap = dom_browser.evaluate(recovery.PLAYER_SNAPSHOT_JS)
+    assert snap["errorCode"] == "2000"
+    assert snap["retryToken"] is None
+
+
+@pytest.mark.parametrize("mutation", [
+    "document.querySelector('#reload').remove()",
+    "document.querySelector('#reload').outerHTML='<button>Reload Player</button>'",
+    "document.querySelector('#error').remove()",
+    "document.querySelector('#error').textContent='Error #3000'",
+    "document.querySelector('#reload').disabled=true",
+    "document.querySelector('.video-player, [data-a-target=video-player]').remove()",
+    "document.body.insertAdjacentHTML('beforeend', '<div style=\"position:fixed;inset:0;z-index:9\">Blocked</div>')",
+])
+def test_player_2000_dom_change_cancels_exact_button_click(dom_browser, mutation):
+    set_dom(dom_browser, error_dom())
+    dom_browser.evaluate("window.clicks=0")
+    snap = dom_browser.evaluate(recovery.PLAYER_SNAPSHOT_JS)
+    dom_browser.evaluate(mutation)
+    args = json.dumps({"clickToken": snap["retryToken"], "expectedUrl": snap["url"]})
+    result = dom_browser.evaluate(f"({recovery._PLAYER_FUNCTION_JS})({args})")
+    assert not result["clicked"]
+    assert dom_browser.evaluate("window.clicks") == 0
+
+
+@pytest.mark.parametrize("extra", [
+    '<div data-a-target="offline-channel-main-content">Offline</div>',
+    '<p>This channel is offline</p>',
+    '<p>目前離線</p>',
+    '<button data-a-target="content-classification-gate-overlay-start-watching-button">Start Watching</button>',
+])
+def test_player_2000_offline_and_gate_do_not_offer_recovery(dom_browser, extra):
+    set_dom(dom_browser, error_dom().replace('</div>', extra + '</div>'))
+    snap = dom_browser.evaluate(recovery.PLAYER_SNAPSHOT_JS)
+    assert snap["errorCode"] == "2000"
+    assert snap["offline"] or snap["gatePresent"]
+    assert snap["retryToken"] is None

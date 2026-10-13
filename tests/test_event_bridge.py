@@ -288,6 +288,26 @@ def test_queued_offline_event_uses_current_channel_mode(old_mode, new_mode):
     assert sink.offline_calls == ([(entry, offline_info)] if new_mode == "trigger" else [])
 
 
+def test_confirmed_offline_suspends_player_retries_without_closing_window(monkeypatch):
+    from stream_monitor import twitch_page_assist as assist
+    from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
+
+    url = "https://www.twitch.tv/hello"
+    worker = assist._PageAssistWorker(url, 1234, ViewerEngagementSettings())
+    monkeypatch.setattr(assist, "_assist_by_url", {assist._url_key(url): worker})
+    bus = MonitorEventBus()
+    sink = _RecordingSink(mode="watch")
+    sink.current_browser_settings = lambda: SimpleNamespace(close_on_offline=False)
+    bridge = MonitorEventBridge(sink, bus)
+    bus.publish(ChannelWentOffline(entry=_entry(), offline_info=SimpleNamespace(url=url)))
+    bridge.tick()
+    assert worker._confirmed_offline.is_set()
+    assert not sink.offline_calls
+    bus.publish(ChannelWentLive(entry=_entry(), info=_live_info()))
+    bridge.tick()
+    assert not worker._confirmed_offline.is_set()
+
+
 def test_completed_poll_consumes_global_one_shot_mode() -> None:
     bus = MonitorEventBus()
     sink = _RecordingSink(mode="watch_once")
