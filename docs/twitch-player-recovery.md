@@ -53,3 +53,16 @@ uv run --locked python scripts/verify_player_recovery.py --output-dir D:\verific
 - Windows onedir 完整性檢查及 `HelloStreamer.exe --self-check` 通過；包內 69 個 Python 原始檔雜湊與工作樹一致。候選封裝位於 `windows-final\dist\HelloStreamer`，請保留整個資料夾及 `_internal`。執行檔 SHA-256 為 `e5aa1c5cae58cf223f534998bec80c63279b090aa316f5b832199d58dd39dc17`；逐檔證據為 `final\bundle-integrity.json`。這是本機測試封裝，尚未發行。
 - 真實 Twitch：01:54 左右，在隔離帳號以唯讀方式觀察 `https://www.twitch.tv/monstercat`，連續 3 次辨識到離線播放器，未出現 #2000，沒有執行重載或注入故障。證據為 `live-twitch-observation.json`。
 - 本機 fixture 的通過不等於已重現使用者的原始網路故障。自然發生的 #2000、真實 Twitch 重載按鈕的恢復結果，以及網路根因仍未驗證。
+
+## 2026-10-14 查核：真實 Twitch 執行日誌
+
+回查 2026-10-13（Asia/Taipei）的 `logs/stream_monitor.log.3`，兩個不同 Twitch 頻道皆留下完整的 #2000 偵測、播放器重載及影片時間前進紀錄。以下僅遮蔽頻道 URL，保留原始時間與結果：
+
+- 頻道 A：15:53:09.550 `attempt=0/3 action=detected result=player_2000_retrying`；15:53:14.668 `attempt=1/3 action=reload_player result=clicked_unverified`；15:53:20.577 `attempt=1/3 action=media_time_advanced result=recovered`。
+- 頻道 B：15:53:10.424 `attempt=0/3 action=detected result=player_2000_retrying`；15:53:15.369 `attempt=1/3 action=reload_player result=clicked_unverified`；15:53:20.376 `attempt=1/3 action=media_time_advanced result=recovered`。
+
+來源為該檔第 1689、1690、1697、1698、1703、1705 行；原始檔 SHA-256 為 `fd9d430230eaeb86d42a21aaf7158776c7be3a6d9c10a2dfbc67e045f33bac7b`。原始日誌保留在本機，未將完整頻道清單或其他執行資料提交到儲存庫。
+
+這些紀錄補足真實 Twitch 網址上辨識、重載及播放進度恢復的執行證據；`media_time_advanced` 由程式在同一影片的連續取樣時間前進後記錄。這是既有日誌的回溯查核，並非本輪現場重現；沒有 DOM 快照或網路封包證據，仍不能據此判定原始網路故障原因或保證所有 #2000 都可恢復。
+
+本次另比對 2026-10-09 Windows 測試封裝的既有 manifest：69 個 Python 原始檔與目前功能程式完全一致，EXE SHA-256 仍為 `e5aa1c5cae58cf223f534998bec80c63279b090aa316f5b832199d58dd39dc17`。原始碼／封裝 fixture 的既有結果與上述真實執行紀錄分開保存；本次沒有重新打包或發布 Release。
