@@ -335,11 +335,13 @@ def _windows_profile_debug_info(
     if not key:
         return False, None
     needle = key.replace("'", "''")
+    # Query WMI directly through the built-in .NET type. Importing the CIM and
+    # NetTCPIP cmdlets in a fresh PowerShell can consume the entire deadline.
     script = (
         "$seen = $false; $port = $null; "
-        "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue "
-        "-Filter \"Name='chrome.exe' OR Name='msedge.exe' OR "
-        "Name='chromium.exe' OR Name='brave.exe' OR Name='vivaldi.exe'\" | "
+        "([wmisearcher]\"SELECT ProcessId, CommandLine FROM Win32_Process WHERE "
+        "Name='chrome.exe' OR Name='msedge.exe' OR Name='chromium.exe' OR "
+        "Name='brave.exe' OR Name='vivaldi.exe'\").Get() | "
         "ForEach-Object { "
         "$cl = $_.CommandLine; "
         "if (-not $cl) { return }; "
@@ -356,8 +358,10 @@ def _windows_profile_debug_info(
         "if ($null -eq $port -and $cl -match '--remote-debugging-port=(\\d+)') { "
         "$candidate = [int]$Matches[1]; $browserPid = $_.ProcessId; "
         "if ($candidate -eq 0) { $port = 0 } "
-        "elseif (Get-NetTCPConnection -State Listen -LocalPort $candidate "
-        "-ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $browserPid }) "
+        "elseif (([wmisearcher]::new('root/StandardCimv2', "
+        "\"SELECT OwningProcess FROM MSFT_NetTCPConnection WHERE State = 2 "
+        "AND LocalPort = $candidate AND OwningProcess = $browserPid\"))"
+        ".Get().Count -gt 0) "
         "{ $port = $candidate } "
         "} "
         "} "
@@ -385,12 +389,18 @@ def _windows_profile_debug_info(
             timeout=max(0.1, timeout),
             creationflags=_CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        logger.debug("CDP profile process lookup timed out after %.2fs", timeout)
+        return False, None
+    except OSError:
         logger.debug("CDP profile process lookup unavailable")
         return False, None
     parts = (completed.stdout or "").strip().split()
     if not parts or parts[0] != "1":
-        logger.debug("CDP profile process lookup found no matching process")
+        logger.debug(
+            "CDP profile process lookup found no matching process (exit=%s, stderr=%s)",
+            completed.returncode, bool(completed.stderr),
+        )
         return False, None
     port: int | None = None
     if len(parts) >= 2 and parts[1].isdigit():

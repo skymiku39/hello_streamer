@@ -20,7 +20,8 @@ from stream_monitor.notifier import _resolve_browser_executable
 
 
 @pytest.fixture
-def chrome_processes():
+def chrome_processes(caplog):
+    caplog.set_level("DEBUG", logger="stream_monitor.cdp_client")
     executable = _resolve_browser_executable("chrome")
     if not shutil.which(executable):
         pytest.skip("Chrome not available for isolated CDP integration")
