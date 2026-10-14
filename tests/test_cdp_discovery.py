@@ -115,3 +115,18 @@ def test_running_profile_without_debugging_fails_without_selecting_port(tmp_path
     )
     assert not result.ok and result.reason == "profile_nondebug"
     assert now[0] <= .6
+
+
+@pytest.mark.parametrize("failure_stage", ["running", "listener"])
+def test_unavailable_process_lookup_never_claims_profile_is_free(tmp_path, failure_stage):
+    def unavailable(_path):
+        raise TimeoutError("native lookup unavailable")
+
+    result = acquire_cdp_debugging_port(
+        str(tmp_path), registry=CdpPortRegistry(), reader=lambda _p: None,
+        busy_check=lambda _p: True,
+        profile_running=unavailable if failure_stage == "running" else lambda _p: True,
+        process_lookup=unavailable,
+    )
+    assert not result.ok and result.reason == "discovery_unavailable"
+    assert result.port is None and not result.pass_debugging_flag

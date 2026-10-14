@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import socket
-import subprocess
 import threading
 import time
 import urllib.error
@@ -28,11 +27,8 @@ _CDP_VK_T = 84
 
 # Bound attach waits so a missing endpoint fails promptly instead of hanging.
 DEFAULT_CDP_ATTACH_TIMEOUT_S = 12.0
-# Windows profile/listener ownership queries can take several seconds; keep
-# preflight bounded separately from full page attach.
+# Keep profile discovery bounded separately from full page attach.
 DEFAULT_CDP_DISCOVERY_TIMEOUT_S = 5.0
-
-_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 
 @dataclass(frozen=True)
@@ -322,10 +318,9 @@ def reset_cdp_port_registry() -> None:
 def _windows_profile_debug_info(
     user_data_dir: str,
     *,
-    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     timeout: float = 5.0,
 ) -> tuple[bool, int | None]:
-    """Hidden lookup: ``(profile_process_seen, debug_port_or_none)``.
+    """Native lookup: ``(profile_process_seen, debug_port_or_none)``.
 
     Never logs raw command lines — only a concise match summary.
     """
@@ -334,92 +329,63 @@ def _windows_profile_debug_info(
     key = normalize_profile_key(user_data_dir)
     if not key:
         return False, None
-    needle = key.replace("'", "''")
-    # Query WMI directly through the built-in .NET type. Importing the CIM and
-    # NetTCPIP cmdlets in a fresh PowerShell can consume the entire deadline.
-    script = (
-        "$seen = $false; $port = $null; "
-        "([wmisearcher]\"SELECT ProcessId, CommandLine FROM Win32_Process WHERE "
-        "Name='chrome.exe' OR Name='msedge.exe' OR Name='chromium.exe' OR "
-        "Name='brave.exe' OR Name='vivaldi.exe'\").Get() | "
-        "ForEach-Object { "
-        "$cl = $_.CommandLine; "
-        "if (-not $cl) { return }; "
-        f"$n = '{needle}'; "
-        "$profileMatch = [regex]::Match($cl, "
-        "'(?i)(?:^|\\s)--user-data-dir(?:=|\\s+)(?:\"([^\"]+)\"|([^\\s\"]+))'); "
-        "if (-not $profileMatch.Success) { return }; "
-        "$profileArg = $profileMatch.Groups[1].Value; "
-        "if (-not $profileArg) { $profileArg = $profileMatch.Groups[2].Value }; "
-        "try { $profileKey = [IO.Path]::GetFullPath($profileArg)"
-        ".TrimEnd([char]92).ToLowerInvariant() } catch { return }; "
-        "if ($profileKey -eq $n) { "
-        "$seen = $true; "
-        "if ($null -eq $port -and $cl -match '--remote-debugging-port=(\\d+)') { "
-        "$candidate = [int]$Matches[1]; $browserPid = $_.ProcessId; "
-        "if ($candidate -eq 0) { $port = 0 } "
-        "elseif (([wmisearcher]::new('root/StandardCimv2', "
-        "\"SELECT OwningProcess FROM MSFT_NetTCPConnection WHERE State = 2 "
-        "AND LocalPort = $candidate AND OwningProcess = $browserPid\"))"
-        ".Get().Count -gt 0) "
-        "{ $port = $candidate } "
-        "} "
-        "} "
-        "}; "
-        "if ($seen) { "
-        "if ($null -ne $port) { Write-Output \"1 $port\" } "
-        "else { Write-Output '1' } "
-        "} else { Write-Output '0' }"
-    )
-    run = runner or subprocess.run
+    import psutil
+
+    browser_names = {"chrome.exe", "msedge.exe", "chromium.exe", "brave.exe", "vivaldi.exe"}
+    seen = False
+    deadline = time.monotonic() + max(0.1, timeout)
+
+    def argument(args: list[str], option: str) -> str | None:
+        for index, value in enumerate(args):
+            if value == option and index + 1 < len(args):
+                return args[index + 1]
+            if value.startswith(option + "="):
+                return value[len(option) + 1:]
+        return None
+
+    # Read command lines only for browser processes. No shell startup or WMI
+    # module loading is needed, and psutil returns parsed Windows arguments.
     try:
-        completed = run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                script,
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=max(0.1, timeout),
-            creationflags=_CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
-    except subprocess.TimeoutExpired:
-        logger.debug("CDP profile process lookup timed out after %.2fs", timeout)
-        return False, None
-    except OSError:
-        logger.debug("CDP profile process lookup unavailable")
-        return False, None
-    parts = (completed.stdout or "").strip().split()
-    if not parts or parts[0] != "1":
-        logger.debug(
-            "CDP profile process lookup found no matching process (exit=%s, stderr=%s)",
-            completed.returncode, bool(completed.stderr),
-        )
-        return False, None
-    port: int | None = None
-    if len(parts) >= 2 and parts[1].isdigit():
-        value = int(parts[1])
-        port = value if 0 <= value <= 65535 else None
-    logger.debug(
-        "CDP profile process lookup seen=1 port=%s",
-        port if port is not None else "none",
-    )
-    return True, port
+        for process in psutil.process_iter(["name"]):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("CDP profile lookup exceeded its deadline")
+            if (process.info.get("name") or "").lower() not in browser_names:
+                continue
+            try:
+                args = process.cmdline()
+                profile_arg = argument(args, "--user-data-dir")
+                if not profile_arg or normalize_profile_key(profile_arg) != key:
+                    continue
+                seen = True
+                port_arg = argument(args, "--remote-debugging-port")
+                if (
+                    not port_arg or len(port_arg) > 5
+                    or not port_arg.isascii() or not port_arg.isdigit()
+                ):
+                    continue
+                port = int(port_arg)
+                if port == 0:
+                    return True, 0
+                if 0 < port <= 65535 and any(
+                    conn.status == psutil.CONN_LISTEN
+                    and conn.laddr.port == port
+                    and conn.laddr.ip in {"127.0.0.1", "0.0.0.0"}
+                    for conn in process.net_connections(kind="tcp4")
+                ) and process.is_running():
+                    return True, port
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except psutil.Error as exc:
+        raise OSError("CDP profile process lookup unavailable") from exc
+    logger.debug("CDP profile process lookup seen=%s port=none", int(seen))
+    return seen, None
 
 
 def _windows_debug_port_for_profile(
     user_data_dir: str,
-    *,
-    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> int | None:
-    """Best-effort hidden lookup of an app-owned Chrome debug port."""
-    _seen, port = _windows_profile_debug_info(user_data_dir, runner=runner)
+    """Best-effort native lookup of an app-owned Chrome debug port."""
+    _seen, port = _windows_profile_debug_info(user_data_dir)
     return port
 
 
@@ -519,12 +485,24 @@ def acquire_cdp_debugging_port(
         return proven
 
     reg.clear(key)
-    running = bool(running_check(user_data_dir))
+    try:
+        running = bool(running_check(user_data_dir))
+    except (OSError, ImportError):
+        return CdpAttachResult(
+            ok=False, reason="discovery_unavailable",
+            message="Unable to verify the existing browser profile within the discovery deadline",
+        )
     busy = bool(busy_check(user_data_dir)) or running
     if busy:
         # Legacy fixed-port launches may not have DevToolsActivePort. The
         # Windows lookup verifies both the exact profile and listener PID.
-        process_port = lookup(user_data_dir)
+        try:
+            process_port = lookup(user_data_dir)
+        except (OSError, ImportError):
+            return CdpAttachResult(
+                ok=False, reason="discovery_unavailable",
+                message="Unable to verify the existing browser profile within the discovery deadline",
+            )
         proven = _try_proven(
             process_port,
             "process",
