@@ -895,6 +895,15 @@ class _PageAssistWorker:
                         and next_refresh_at is not None
                         and now >= next_refresh_at
                     ):
+                        # Only restore theater if it is visibly active before
+                        # our own reload. A user-selected normal mode (or an
+                        # ambiguous probe) must not trigger a forced toggle.
+                        restore_theater = (
+                            self.settings.theater_mode
+                            and self._theater_snapshot(client).get("state") == "on"
+                        )
+                        if self._stop.is_set() or self._confirmed_offline.is_set():
+                            return
                         logger.info("Twitch page assist reloading %s", self.url)
                         try:
                             client.reload()
@@ -902,6 +911,8 @@ class _PageAssistWorker:
                             publish_page_assist_status(self.url, "unavailable")
                             logger.exception("Page.reload failed for %s", self.url)
                             return
+                        if restore_theater:
+                            self._theater_confirmed_once = False
                         if not self._sleep(3.0):
                             return
                         next_refresh_at = self._schedule_refresh()

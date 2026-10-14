@@ -486,7 +486,7 @@ def test_unconfirmed_theater_can_retry_initialization(monkeypatch):
     client.click_at.assert_called_once()
 
 
-def test_reload_gate_flow_does_not_reset_confirmed_theater(monkeypatch):
+def test_gate_flow_alone_does_not_reset_confirmed_theater(monkeypatch):
     w = worker(monkeypatch, theater_mode=True)
     w._theater_confirmed_once = True
     client = Mock()
@@ -498,6 +498,45 @@ def test_reload_gate_flow_does_not_reset_confirmed_theater(monkeypatch):
     assert w._theater_confirmed_once
     client.click_at.assert_not_called()
     client.send_alt_t.assert_not_called()
+
+
+@pytest.mark.parametrize("before,enabled,clicks", [
+    ("on", True, 1), ("off", True, 0), ("unknown", True, 0),
+    ("on", False, 0),
+])
+def test_auto_refresh_restores_only_previously_active_theater(
+    monkeypatch, before, enabled, clicks,
+):
+    w = worker(monkeypatch, auto_refresh=True, theater_mode=enabled)
+    w._theater_confirmed_once = True
+    client = Mock()
+    client.evaluate.return_value = None
+    monkeypatch.setattr(assist, "CdpClient", lambda: client)
+    schedules = iter([0, None])
+    monkeypatch.setattr(w, "_schedule_refresh", lambda: next(schedules))
+    monkeypatch.setattr(w, "_wait_for_gate_or_ready", lambda c: True)
+    state = [before]
+    monkeypatch.setattr(w, "_theater_snapshot", lambda c: {
+        "state": state[0], "control": {"found": True, "x": 1, "y": 2},
+    })
+    client.reload.side_effect = lambda: state.__setitem__(0, "off")
+    client.click_at.side_effect = lambda *args: state.__setitem__(0, "on")
+    original = w._run_gate_and_theater
+    runs = []
+
+    def run(c):
+        original(c)
+        runs.append(c)
+        if len(runs) == 2:
+            w.stop()
+
+    monkeypatch.setattr(w, "_run_gate_and_theater", run)
+    w._run()
+    assert len(runs) == 2
+    client.reload.assert_called_once()
+    assert client.click_at.call_count == clicks
+    client.send_alt_t.assert_not_called()
+    assert state[0] == ("on" if clicks else "off")
 
 
 def error_dom(message="網路發生問題。請再試一次。（錯誤代碼 #2000）",
