@@ -18,6 +18,11 @@ from stream_monitor.cdp_client import (
 )
 from stream_monitor.notifier import _resolve_browser_executable
 
+# Shared CI runners can take longer than the product's 12-second attach budget
+# to start their first Chrome. These cases verify real endpoint ownership;
+# test_cdp_discovery.py separately verifies bounded failure at the deadline.
+BROWSER_STARTUP_TIMEOUT_S = 30
+
 
 @pytest.fixture
 def chrome_processes(caplog):
@@ -58,7 +63,10 @@ def test_concurrent_cold_openers_resolve_one_shared_profile_endpoint(
     assert all(result.ok and result.port == 0 for result in preparations)
     chrome_processes(profile)
     chrome_processes(profile)
-    results = [resolve_cdp_attach(str(profile)) for _ in range(2)]
+    results = [
+        resolve_cdp_attach(str(profile), timeout=BROWSER_STARTUP_TIMEOUT_S)
+        for _ in range(2)
+    ]
     assert all(result.ok for result in results), results
     assert results[0].port == results[1].port
     warm = acquire_cdp_debugging_port(str(profile), registry=registry)
@@ -75,7 +83,7 @@ def test_concurrent_cold_openers_resolve_one_shared_profile_endpoint(
 def test_stale_file_cannot_attach_to_other_browser_instance(tmp_path, chrome_processes):
     profile = tmp_path / "actual"
     chrome_processes(profile)
-    result = resolve_cdp_attach(str(profile))
+    result = resolve_cdp_attach(str(profile), timeout=BROWSER_STARTUP_TIMEOUT_S)
     assert result.ok
     stale = tmp_path / "stale"
     stale.mkdir()

@@ -23,6 +23,8 @@ uv run --locked pytest -q tests/test_cdp_discovery.py tests/test_cdp_discovery_i
 
 `test_cdp_discovery_integration.py` 使用獨立暫存設定檔與 headless Chrome，結束時僅終止測試啟動的程序。需已安裝可解析的 Chrome；固定埠程序擁有者案例限 Windows。
 
+隔離 Chrome 首次啟動在共用 CI 主機可能超過 12 秒，因此成功連線案例使用獨立的 30 秒啟動預算；產品仍使用 12 秒探索上限，逾時回報由專項測試另行驗證。
+
 涵蓋冷啟動、同設定檔雙啟動、暖啟動、舊固定埠擁有者、埠被不同設定檔占用、舊端點檔、未開啟 CDP、查詢不可用、逾時、探索失敗仍追蹤視窗，以及探索期間停用／關窗。
 
 這些是本機啟動與連線驗證；不代表真實 Twitch 長時間播放、觀看入帳或新版 Windows 封裝已完成驗收。
