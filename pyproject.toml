@@ -11,6 +11,7 @@ dependencies = [
     "winotify>=1.1; sys_platform == 'win32'",
     "pystray>=0.19",
     "websocket-client>=1.8",
+    "psutil>=7.2 ; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

@@ -84,6 +84,35 @@ def _seed_config() -> dict:
     }
 
 
+def test_failed_config_replace_does_not_reset_cache_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = PortablePaths(tmp_path)
+    monkeypatch.setattr(config_manager, "_config_path", lambda: paths.config_file)
+    config = _seed_config()
+    config_manager.save(config)
+    original_replace = Path.replace
+
+    def fail_config_replace(source, target):
+        if Path(target) == paths.config_file:
+            raise PermissionError("simulated config replacement failure")
+        return original_replace(source, target)
+
+    with SeenVideoDB(paths.database_file) as db:
+        db.mark_seen("keep", "twitch", "keep_me", "LIVE")
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "replace", fail_config_replace)
+            result = reset_launch_records(
+                db=db, config=config, paths=paths,
+                persist_config=config_manager.save,
+            )
+        assert not result.ok
+        assert db.is_seen("keep", "LIVE")
+        assert "twitch:keep_me" in config[CACHE_CONFIG_KEY]["channels"]
+        restored = config_manager.load()
+        assert "twitch:keep_me" in restored[CACHE_CONFIG_KEY]["channels"]
+
+
 def test_reset_guard_blocks_when_monitor_active() -> None:
     guard = evaluate_reset_guard(
         mode="trigger",

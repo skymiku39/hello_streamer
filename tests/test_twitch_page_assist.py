@@ -295,6 +295,88 @@ def test_cdp_discovery_exception_does_not_block_browser_launch(
     assert ("https://www.twitch.tv/foo", "unavailable") in drain_page_assist_status()
 
 
+@pytest.mark.parametrize("discovery_error", [False, True])
+def test_post_launch_discovery_failure_preserves_window_tracking(
+    monkeypatch, tmp_path, discovery_error,
+) -> None:
+    from stream_monitor import cdp_client
+    from stream_monitor.page_assist_status import drain_page_assist_status
+
+    _patch_open_browser_common(monkeypatch)
+    settings = ViewerEngagementSettings(
+        enabled=True, page_assist_enabled=True, keep_system_awake=False,
+        whitelist_performance=False,
+    )
+    monkeypatch.setattr(notifier, "_active_viewer_engagement", lambda: settings)
+    monkeypatch.setattr(cdp_client, "acquire_cdp_debugging_port", lambda *_a: cdp_client.CdpAttachResult(
+        ok=True, port=0, pass_debugging_flag=True,
+    ))
+    order = []
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: order.append("spawn"))
+    monkeypatch.setattr(notifier, "_apply_new_browser_window_settings_async", lambda *_a, **_k: order.append("track"))
+
+    def resolve(_profile, **_kwargs):
+        order.append("discover")
+        if discovery_error:
+            raise OSError("endpoint unavailable")
+        return cdp_client.CdpAttachResult(ok=False, reason="timeout")
+
+    monkeypatch.setattr(cdp_client, "resolve_cdp_attach", resolve)
+    assist = Mock()
+    monkeypatch.setattr(notifier, "start_page_assist", assist)
+    drain_page_assist_status()
+    assert notifier._open_with_browser_settings("https://www.twitch.tv/foo", {
+        "enabled": True, "browser_path": "chrome", "app_mode": True,
+        "user_data_dir": str(tmp_path / "profile"), "per_channel_profile": False,
+    })
+    assert order == ["spawn", "track", "discover"]
+    assist.assert_not_called()
+    assert ("https://www.twitch.tv/foo", "unavailable" if discovery_error else "timeout") in drain_page_assist_status()
+
+
+@pytest.mark.parametrize("close_all", [False, True])
+def test_close_during_cold_discovery_does_not_restart_assist(
+    monkeypatch, tmp_path, close_all,
+) -> None:
+    from stream_monitor import cdp_client
+
+    _patch_open_browser_common(monkeypatch)
+    engagement = ViewerEngagementSettings(
+        enabled=True, page_assist_enabled=True, keep_system_awake=False,
+        whitelist_performance=False,
+    )
+    monkeypatch.setattr(notifier, "_active_viewer_engagement", lambda: engagement)
+    monkeypatch.setattr(notifier, "_OBS_MANAGED_URLS", set())
+    monkeypatch.setattr(notifier, "_OBS_MANAGED_SINCE", {})
+    monkeypatch.setattr(notifier, "_close_all_tracked_windows_impl", lambda: 0)
+    monkeypatch.setattr(notifier, "_close_browser_window_for_url_impl", lambda *_a, **_k: 0)
+    monkeypatch.setattr(notifier, "set_system_keep_awake", lambda *_a: None)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+    monkeypatch.setattr(cdp_client, "acquire_cdp_debugging_port", lambda *_a: cdp_client.CdpAttachResult(
+        ok=True, port=0, pass_debugging_flag=True,
+    ))
+    url = "https://www.twitch.tv/foo"
+
+    def resolve(_profile, *, is_cancelled):
+        assert not is_cancelled()
+        if close_all:
+            notifier.close_all_tracked_windows()
+        else:
+            notifier.close_browser_window_for_url(url)
+        assert is_cancelled()
+        return cdp_client.CdpAttachResult(ok=True, port=35555)
+
+    monkeypatch.setattr(cdp_client, "resolve_cdp_attach", resolve)
+    assist = Mock()
+    monkeypatch.setattr(notifier, "start_page_assist", assist)
+    assert notifier._open_with_browser_settings(url, {
+        "enabled": True, "browser_path": "chrome", "app_mode": True,
+        "user_data_dir": str(tmp_path / "profile"), "per_channel_profile": False,
+    })
+    assist.assert_not_called()
+    assert url not in notifier._OBS_MANAGED_URLS
+
+
 @pytest.mark.parametrize("content", [
     b"\xff", b"65536\n", b"999999\n", b"0\n", b"-1\n", b"9" * 5000,
 ], ids=["invalid-utf8", "out-of-range", "six-digits", "zero", "negative", "oversized"])
@@ -319,7 +401,7 @@ def test_valid_devtools_port_file_is_read(tmp_path, port) -> None:
 def test_open_fresh_profile_ephemeral_port_resolves_devtools(
     monkeypatch, tmp_path, disable_during_launch
 ) -> None:
-    """Cold start leases a bindable CDP port and passes it to Chrome + assist."""
+    """Chrome binds port zero; assist receives its verified selected endpoint."""
     monkeypatch.delattr(sys, "frozen", raising=False)
     import stream_monitor.cdp_client as cdp_client
 
@@ -333,6 +415,9 @@ def test_open_fresh_profile_ephemeral_port_resolves_devtools(
 
     def fake_popen(args, **_k):
         launched.append(list(args))
+        (profile / "DevToolsActivePort").write_text(
+            "35555\n/devtools/browser/new\n", encoding="utf-8"
+        )
         if disable_during_launch:
             notifier.configure_viewer_engagement(None)
         return object()
@@ -340,8 +425,9 @@ def test_open_fresh_profile_ephemeral_port_resolves_devtools(
     _patch_open_browser_common(monkeypatch)
     monkeypatch.setattr(notifier.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(cdp_client, "profile_looks_busy", lambda _p: False)
+    monkeypatch.setattr(cdp_client, "_windows_profile_debug_info", lambda *_a, **_k: (False, None))
     monkeypatch.setattr(
-        cdp_client, "probe_cdp_endpoint", lambda *_a, **_k: False
+        cdp_client, "endpoint_belongs_to_profile", lambda port, *_a, **_k: port == 35555
     )
     monkeypatch.setattr(
         notifier,
@@ -375,9 +461,8 @@ def test_open_fresh_profile_ephemeral_port_resolves_devtools(
             a for a in launched[0] if a.startswith("--remote-debugging-port=")
         ]
         assert len(port_flags) == 1
-        leased = int(port_flags[0].split("=", 1)[1])
-        assert leased > 0
-        assert started == ([] if disable_during_launch else [("https://www.twitch.tv/foo", leased)])
+        assert port_flags == ["--remote-debugging-port=0"]
+        assert started == ([] if disable_during_launch else [("https://www.twitch.tv/foo", 35555)])
         assert ("https://www.twitch.tv/foo" in notifier._OBS_MANAGED_URLS) is not disable_during_launch
     finally:
         notifier.configure_viewer_engagement(None)
@@ -412,6 +497,9 @@ def test_open_busy_profile_attaches_existing_usable_endpoint(
         cdp_client,
         "probe_cdp_endpoint",
         lambda port, timeout=1.5: port == 35555,
+    )
+    monkeypatch.setattr(
+        cdp_client, "endpoint_belongs_to_profile", lambda port, *_a, **_k: port == 35555,
     )
     monkeypatch.setattr(
         notifier,

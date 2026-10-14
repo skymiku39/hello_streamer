@@ -58,6 +58,29 @@ def test_load_recovers_newer_atomic_temp_file(tmp_path, monkeypatch) -> None:
     assert json.loads(path.read_text(encoding="utf-8"))["minimize_to_tray"] is False
 
 
+@pytest.mark.parametrize("failure", ["fsync", "replace"])
+def test_failed_save_is_not_recovered_as_an_interrupted_save(
+    tmp_path, monkeypatch, failure,
+) -> None:
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+    config_manager.save({"check_interval": 75})
+
+    def fail(*_args):
+        raise OSError("simulated save failure")
+
+    with monkeypatch.context() as patch:
+        if failure == "fsync":
+            patch.setattr(config_manager.os, "fsync", fail)
+        else:
+            patch.setattr(Path, "replace", fail)
+        with pytest.raises(OSError, match="save failure"):
+            config_manager.save({"check_interval": 90})
+
+    assert config_manager.load()["check_interval"] == 75
+    assert not (tmp_path / ".config.json.tmp").exists()
+
+
 @pytest.mark.parametrize("use_temp", [False, True])
 def test_load_accepts_utf8_bom_without_losing_settings(
     tmp_path, monkeypatch, use_temp,
