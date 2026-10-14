@@ -1,3 +1,25 @@
+# Hello Streamer v1.3.1
+
+## 播放器恢復與頁面連線
+
+- Twitch 播放器出現錯誤 #2000 時，會以有限次數重試重新載入；確認影片時間持續前進後才判定恢復。
+- 停止監聽、停用頻道、關閉視窗或確認下播時會取消恢復，並保留使用者的暫停與劇院模式選擇。
+- 修正 Windows 上瀏覽器 CDP 連線埠的探索與帳號資料夾歸屬確認，改善頁面輔助無法連線及啟動等待問題。
+
+## 設定保存
+
+- 修正設定儲存失敗後仍留下待恢復檔案的問題，避免重新啟動時誤套用先前未成功保存的設定。
+
+## Windows 下載與升級
+
+下載 `HelloStreamer-v1.3.1-windows-x64.zip`，**整包解壓**後執行 `HelloStreamer/HelloStreamer.exe`，必須保留同層的 `_internal` 資料夾。
+
+升級前先關閉 Hello Streamer，備份原資料夾，再更新程式檔與 `_internal`。保留原本的 `config.json`、`seen_videos.db`、`logs/`、`browser_profile/` 及 `backups/`，即可沿用設定與使用紀錄。
+
+播放器恢復與頁面輔助不保證 Twitch 認列觀看、點數或 Watch Streak。
+
+---
+
 # Hello Streamer v1.3.0
 
 ## 直播視窗與 CDP 頁面輔助
