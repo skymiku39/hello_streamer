@@ -105,6 +105,7 @@ class MonitorController:
         interval: int,
         initial_statuses: dict[str, Any] | None = None,
         last_activity_epoch: float = 0.0,
+        retained_live_keys: set[str] | None = None,
     ) -> bool:
         """Enter ``mode`` and ensure the monitor is polling. False if no channels."""
         if not channels:
@@ -129,6 +130,7 @@ class MonitorController:
             interval,
             initial_statuses=initial_statuses,
             last_activity_epoch=last_activity_epoch,
+            retained_live_keys=retained_live_keys,
             recheck_live=recheck_live,
         )
         if recheck_boundary is not None:
@@ -216,6 +218,7 @@ class MonitorController:
         interval: int,
         initial_statuses: dict[str, Any] | None = None,
         last_activity_epoch: float = 0.0,
+        retained_live_keys: set[str] | None = None,
         recheck_live: bool = False,
     ) -> int | None:
         # Do not create a new monitor while the previous poll thread is still
@@ -245,6 +248,7 @@ class MonitorController:
                 db=self._db,
                 initial_statuses=initial_statuses,
                 last_activity_epoch=last_activity_epoch,
+                retained_live_keys=retained_live_keys,
             )
             if recheck_live:
                 recheck_boundary = self._monitor.request_live_recheck()

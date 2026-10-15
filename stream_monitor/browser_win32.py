@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from stream_monitor.browser_settings_model import (
@@ -138,6 +139,23 @@ class _WindowRegistry:
         self.title_fallback_blocked: set[str] = set()
         # URLs for which a close was requested but the worker may still run.
         self.closing: set[str] = set()
+        self._recovery: Any = None
+
+    def enable_recovery(self, recovery: Any) -> None:
+        with self.lock:
+            for row in recovery.restore():
+                bucket = self.by_url.setdefault(row["url"], [])
+                if not any(w.hwnd == row["hwnd"] for w in bucket):
+                    bucket.append(_TrackedWindow(row["hwnd"], keywords=tuple(row["keywords"])))
+            self._recovery = recovery
+            self._persist()
+
+    def _persist(self) -> None:
+        if self._recovery is not None:
+            try:
+                self._recovery.save(self.by_url)
+            except Exception:
+                logger.exception("Could not persist managed windows")
 
     # -- tracked HWNDs -------------------------------------------------
     def register(
@@ -157,6 +175,7 @@ class _WindowRegistry:
                         tracked.keywords = _normalize_keywords(
                             tuple(tracked.keywords) + tuple(norm_keywords)
                         )
+                        self._persist()
                     return
             bucket.append(
                 _TrackedWindow(
@@ -165,9 +184,24 @@ class _WindowRegistry:
                     keywords=norm_keywords,
                 )
             )
+            self._persist()
+            logger.info("Tracked managed window HWND=%s url=%s", hwnd, url)
 
     def snapshot(self, url: str) -> list[_TrackedWindow]:
         with self.lock:
+            if self._recovery is not None:
+                # Revalidate ownership during the session too: a closed HWND
+                # may be reused by another window in the same browser process.
+                stale = {
+                    w.hwnd for w in self.by_url.get(url, ())
+                    if (record := self._recovery.records.get((url, w.hwnd))) is not None
+                    and not self._recovery.identity.matches(record)
+                }
+                if stale:
+                    self.by_url[url] = [w for w in self.by_url[url] if w.hwnd not in stale]
+                    if not self.by_url[url]:
+                        self.by_url.pop(url, None)
+                    self._persist()
             return [
                 _TrackedWindow(t.hwnd, t.opened_at, tuple(t.keywords))
                 for t in self.by_url.get(url, ())
@@ -180,6 +214,7 @@ class _WindowRegistry:
     def clear(self, url: str) -> None:
         with self.lock:
             self.by_url.pop(url, None)
+            self._persist()
 
     def remove_hwnd(self, url: str, hwnd: int) -> None:
         with self.lock:
@@ -189,6 +224,7 @@ class _WindowRegistry:
             self.by_url[url] = [t for t in bucket if t.hwnd != int(hwnd)]
             if not self.by_url[url]:
                 self.by_url.pop(url, None)
+            self._persist()
 
     # -- closing flag --------------------------------------------------
     def mark_closing(self, url: str) -> None:
@@ -224,6 +260,10 @@ class _WindowRegistry:
         with self.lock:
             blocked = url in self.title_fallback_blocked
             self.title_fallback_blocked.discard(url)
+            if self._recovery is not None and url in self._recovery.known_urls:
+                # Invalid ownership must not fall through to a title search
+                # that could close a manually opened copy of the same channel.
+                return True
             return blocked
 
     def reset(self) -> None:
@@ -232,6 +272,8 @@ class _WindowRegistry:
             self.by_url.clear()
             self.title_fallback_blocked.clear()
             self.closing.clear()
+            self._persist()
+            self._recovery = None
 
 
 _REGISTRY = _WindowRegistry()
@@ -242,6 +284,20 @@ _TRACKED_HWNDS_LOCK = _REGISTRY.lock
 _TRACKED_WINDOWS_BY_URL = _REGISTRY.by_url
 _TITLE_FALLBACK_BLOCKED_URLS = _REGISTRY.title_fallback_blocked
 _CLOSING_URLS = _REGISTRY.closing
+
+
+def restore_managed_windows(root: Path) -> None:
+    """Call after acquiring the app lock and before any monitor can launch."""
+    if not _is_windows():
+        return
+    try:
+        from stream_monitor.window_recovery import WindowIdentity, WindowRecovery
+
+        _REGISTRY.enable_recovery(WindowRecovery(
+            root / "logs" / "managed-windows.json", WindowIdentity(root),
+        ))
+    except Exception:
+        logger.exception("Managed-window recovery unavailable")
 
 
 def _is_windows() -> bool:

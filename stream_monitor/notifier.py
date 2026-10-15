@@ -128,6 +128,7 @@ from stream_monitor.browser_win32 import (  # noqa: E402, F401
     tracked_hwnds_for_url,
 )
 from stream_monitor.twitch_page_assist import (  # noqa: E402
+    active_page_assist_urls,
     is_standalone_managed_window,
     should_start_page_assist,
     start_page_assist,
@@ -1196,6 +1197,39 @@ def _open_with_browser_settings(
     return True
 
 
+def _resume_managed_window_assist(
+    url: str,
+    settings: BrowserSettings | dict[str, Any] | None,
+    profile_hint: tuple[str, str] | None,
+) -> None:
+    """Reattach a recovered player without launching another Chrome window."""
+    engagement = _active_viewer_engagement()
+    browser = coerce_browser_settings(settings)
+    if browser is None or not browser.enabled or engagement is None or not is_twitch_url(url):
+        return
+    profile = _resolve_effective_user_data_dir(
+        url, browser.user_data_dir, browser.per_channel_profile, profile_hint,
+    )
+    if not profile:
+        return
+    if engagement.keep_system_awake:
+        _register_engagement_keep_awake(url)
+    if not engagement.page_assist_active() or url.rstrip("/").lower() in active_page_assist_urls():
+        return
+    from stream_monitor.cdp_client import acquire_cdp_debugging_port
+
+    try:
+        attach = acquire_cdp_debugging_port(profile)
+        if attach.ok and attach.port and attach.port > 0:
+            _register_obs_managed_url(url)
+            start_page_assist(url, attach.port, engagement)
+            logger.info("Resumed page assist for recovered managed window %s", url)
+        else:
+            publish_page_assist_status(url, attach.reason or "unavailable")
+    except Exception:
+        logger.exception("Could not resume page assist for %s", url)
+
+
 def open_url(
     url: str,
     browser_settings: BrowserSettings | dict[str, Any] | None = None,
@@ -1223,6 +1257,7 @@ def open_url(
 
     if manage and managed_window_is_open(url):
         logger.info("Reusing open managed window for %s", url)
+        _resume_managed_window_assist(url, browser_settings, profile_hint)
         return True
 
     hints_tuple = tuple(title_hints or ())

@@ -71,6 +71,7 @@ from stream_monitor.app_ui import (
     decompose_monitor_mode,
 )
 from stream_monitor.browser_settings_model import BrowserSettings
+from stream_monitor.browser_win32 import managed_window_is_open, restore_managed_windows
 from stream_monitor.canvas_channel_list import (
     CanvasChannelList,
     CanvasChannelRowAdapter,
@@ -1668,12 +1669,17 @@ class App(ctk.CTk):
         """Start or switch the global monitor mode from a bottom-bar action."""
         channels, interval = self._collect_monitor_config()
         initial_statuses, epoch = self._monitor_seed_args()
+        retained_live_keys = {
+            key for key, status in initial_statuses.items()
+            if managed_window_is_open(getattr(status, "url", ""))
+        }
         if not self._controller.start(
             mode,
             channels,
             interval,
             initial_statuses=initial_statuses,
             last_activity_epoch=epoch,
+            retained_live_keys=retained_live_keys,
         ):
             return
         self.config["monitor_mode"] = mode
@@ -2236,6 +2242,7 @@ def main() -> None:
     diagnostics.start(__version__)
     exit_reason = "startup_failed"
     try:
+        restore_managed_windows(data_dir)
         app = App(silent=silent)
         exit_reason = "unexpected_mainloop_return"
         app.mainloop()

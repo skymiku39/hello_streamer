@@ -64,6 +64,7 @@ class Monitor(
         max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
         initial_statuses: dict[str, Any] | None = None,
         last_activity_epoch: float = 0.0,
+        retained_live_keys: set[str] | None = None,
     ) -> None:
         self._entries = [
             ChannelEntry(
@@ -102,12 +103,13 @@ class Monitor(
         self._force_offline_vod_refresh = False
         self._last_maintenance_wall: float = 0.0
 
-        self._seed_initial_statuses(initial_statuses, last_activity_epoch)
+        self._seed_initial_statuses(initial_statuses, last_activity_epoch, retained_live_keys)
 
     def _seed_initial_statuses(
         self,
         initial_statuses: dict[str, Any] | None,
         last_activity_epoch: float,
+        retained_live_keys: set[str] | None = None,
     ) -> None:
         """Prime cached status from a previous session's persisted snapshot.
 
@@ -140,7 +142,9 @@ class Monitor(
         for key, status in initial_statuses.items():
             if key not in keys:
                 continue
-            if skip_live and status_looks_live(status):
+            # A verified player can survive an application exit. Keep its live
+            # edge so confirmed offline still emits a close after a long gap.
+            if skip_live and status_looks_live(status) and key not in (retained_live_keys or ()):
                 skipped_live += 1
                 continue
             seeded[key] = status

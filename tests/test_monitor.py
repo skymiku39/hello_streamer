@@ -3706,6 +3706,28 @@ def test_stale_live_seed_allows_went_live_after_long_gap(
     db.close()
 
 
+def test_recovered_player_keeps_offline_edge_after_long_gap(monkeypatch, tmp_path):
+    fetcher = FakeTwitchFetcher([False, False])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    entry = ChannelEntry(platform="twitch", name="hello")
+    original_url = "https://www.twitch.tv/hello"
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hello"}], db=db, interval=10,
+        initial_statuses={entry.key: ChannelStatus(status=True, url=original_url)},
+        last_activity_epoch=time.time() - 3600,
+        retained_live_keys={entry.key},
+    )
+    try:
+        _check_and_commit(monitor, entry)
+        assert monitor._pending_offline_events == []
+        _check_and_commit(monitor, entry)
+        assert len(monitor._pending_offline_events) == 1
+        assert monitor._pending_offline_events[0][1].url == original_url
+    finally:
+        db.close()
+
+
 def test_start_preserves_seeded_live_status(monkeypatch, tmp_path) -> None:
     """``start()`` must not wipe the seed populated by ``__init__``.
 
