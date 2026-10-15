@@ -193,3 +193,25 @@ def test_main_releases_lock_when_app_constructor_fails(
         threading.excepthook = previous_hook
 
     assert released == [True]
+    import json
+
+    session = json.loads((tmp_path / "logs" / "runtime-session.json").read_text())
+    assert session["state"] == "exited"
+    assert session["exit_reason"] == "unhandled_exception"
+
+
+def test_tray_quit_defers_all_teardown_to_ui_thread():
+    scheduled = []
+    events = []
+    probe = SimpleNamespace(
+        after=lambda delay, callback: scheduled.append(callback),
+        quit_app=lambda **kw: events.append((threading.current_thread(), kw)),
+    )
+    worker = threading.Thread(target=lambda: App.quit_app(probe, reason="tray_menu"))
+    worker.start()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert events == []
+    assert len(scheduled) == 1
+    scheduled[0]()
+    assert events == [(threading.main_thread(), {"reason": "tray_menu"})]

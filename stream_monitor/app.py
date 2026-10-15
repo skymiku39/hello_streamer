@@ -101,6 +101,7 @@ from stream_monitor.notifier import (
 from stream_monitor.page_assist_status import drain_page_assist_status
 from stream_monitor.platform_ports import PlatformServices
 from stream_monitor.portable_storage import portable_paths
+from stream_monitor.runtime_diagnostics import RuntimeDiagnostics
 from stream_monitor.scroll_guard import ScrollRepaintGuard
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import (
@@ -212,7 +213,7 @@ class App(ctk.CTk):
                 generation == self._controller.generation
             ),
             on_stop=lambda: self.on_stop(is_user_action=False),
-            on_exit=self.quit_app,
+            on_exit=lambda: self.quit_app(reason="live_action"),
         )
         configure_viewer_engagement(
             ViewerEngagementSettings.from_dict(
@@ -245,7 +246,7 @@ class App(ctk.CTk):
             on_toggle_monitor=self._tray_toggle_monitor,
             on_watch_only=lambda: self.after(0, self._on_watch),
             on_stop=lambda: self.after(0, self.on_stop),
-            on_quit=self.quit_app,
+            on_quit=lambda: self.quit_app(reason="tray_menu"),
             get_mode=lambda: self._controller.mode,
         )
         self._tray.start()
@@ -311,12 +312,19 @@ class App(ctk.CTk):
         if self.minimize_to_tray_var.get():
             self._hide_window()
         else:
-            self.quit_app()
+            self.quit_app(reason="window_close")
 
-    def quit_app(self) -> None:
+    def quit_app(self, *, reason: str = "requested") -> None:
         """Full exit — called from tray menu or explicit quit."""
+        if threading.current_thread() is not threading.main_thread():
+            # pystray invokes callbacks on its own thread. Keep Tk, config
+            # and SQLite teardown on the UI thread, like every other action.
+            self.after(0, lambda: self.quit_app(reason=reason))
+            return
         if self._truly_quitting:
             return
+        self._exit_reason = reason
+        logger.info("Application shutdown requested: reason=%s", reason)
         self._truly_quitting = True
         self._action_coordinator.shutdown()
         self._scroll_guard.destroy()
@@ -2224,12 +2232,21 @@ def main() -> None:
     except Exception:
         logger.exception("Watch observation enable failed (non-fatal)")
 
+    diagnostics = RuntimeDiagnostics(log_dir)
+    diagnostics.start(__version__)
+    exit_reason = "startup_failed"
     try:
         app = App(silent=silent)
+        exit_reason = "unexpected_mainloop_return"
         app.mainloop()
+        exit_reason = getattr(app, "_exit_reason", exit_reason)
+        if exit_reason == "unexpected_mainloop_return":
+            logger.error("Application mainloop returned without a shutdown request")
     except KeyboardInterrupt:
+        exit_reason = "keyboard_interrupt"
         logger.info("Application interrupted by user")
     except Exception:
+        exit_reason = "unhandled_exception"
         logger.critical("Fatal application exception", exc_info=True)
         raise
     finally:
@@ -2243,6 +2260,8 @@ def main() -> None:
                 disable_watch_observation(emit_close=True)
         except Exception:
             logger.exception("Watch observation final shutdown failed")
+        diagnostics.finish(exit_reason)
+        threading.excepthook = previous_thread_excepthook
         lock.release()
 
 
