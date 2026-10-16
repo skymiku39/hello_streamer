@@ -1221,14 +1221,34 @@ def _resume_managed_window_assist(
 
     try:
         attach = acquire_cdp_debugging_port(profile)
+        current = _active_viewer_engagement()
+        if not managed_window_is_open(url) or current is None or not current.page_assist_active():
+            return
         if attach.ok and attach.port and attach.port > 0:
             _register_obs_managed_url(url)
-            start_page_assist(url, attach.port, engagement)
+            start_page_assist(url, attach.port, current)
             logger.info("Resumed page assist for recovered managed window %s", url)
         else:
             publish_page_assist_status(url, attach.reason or "unavailable")
     except Exception:
         logger.exception("Could not resume page assist for %s", url)
+
+
+def resume_managed_window_assists(
+    urls: list[str], settings: BrowserSettings | dict[str, Any] | None,
+) -> threading.Thread | None:
+    """Reattach surviving players even when cached live actions are suppressed."""
+    if not urls:
+        return None
+
+    def resume() -> None:
+        for url in dict.fromkeys(urls):
+            if managed_window_is_open(url):
+                _resume_managed_window_assist(url, settings, None)
+
+    worker = threading.Thread(target=resume, daemon=True, name="resume-managed-players")
+    worker.start()
+    return worker
 
 
 def open_url(

@@ -215,3 +215,30 @@ def test_tray_quit_defers_all_teardown_to_ui_thread():
     assert len(scheduled) == 1
     scheduled[0]()
     assert events == [(threading.main_thread(), {"reason": "tray_menu"})]
+
+
+@pytest.mark.parametrize("mode", ["trigger", "trigger_once", "watch", "watch_once"])
+def test_start_resumes_only_owned_live_trigger_players(monkeypatch, mode):
+    channels = [dict(platform="twitch", name=name, **options) for name, options in (
+        ("live", {}), ("offline", {}), ("disabled", {"enabled": False}),
+        ("monitor", {"channel_mode": "monitor"}), ("notify", {"channel_mode": "notify"}),
+        ("unmanaged", {}),
+    )]
+    statuses = {f'twitch:{ch["name"]}': SimpleNamespace(
+        url=f'https://www.twitch.tv/{ch["name"]}', is_live=ch["name"] != "offline",
+    ) for ch in channels}
+    calls = []
+    monkeypatch.setattr(app_module, "managed_window_is_open", lambda url: not url.endswith("unmanaged"))
+    monkeypatch.setattr(app_module, "resume_managed_window_assists",
+                        lambda urls, settings: calls.append(urls))
+    probe = SimpleNamespace(
+        _collect_monitor_config=lambda: (channels, 10),
+        _monitor_seed_args=lambda: (statuses, 0),
+        _controller=SimpleNamespace(start=lambda *args, **kwargs: True),
+        config={}, _save_config=lambda: None, _sync_selectors_from_mode=lambda mode: None,
+        _apply_monitor_mode_buttons=lambda: None, _set_status_text=lambda *args: None,
+        _tray=SimpleNamespace(update_tooltip_key=lambda key: None),
+        current_browser_settings=lambda: {},
+    )
+    App._start_monitor_mode(probe, mode, "status", "color", "tooltip")
+    assert calls == ([["https://www.twitch.tv/live"]] if mode.startswith("trigger") else [])

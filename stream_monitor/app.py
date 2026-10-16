@@ -81,11 +81,13 @@ from stream_monitor.canvas_channel_list import (
     CanvasChannelRowAdapter,
 )
 from stream_monitor.channel_policy import (
+    CHANNEL_MODE_TRIGGER,
     TRIGGER_MODE,
     TRIGGER_ONCE_MODE,
     WATCH_MODE,
     WATCH_ONCE_MODE,
     base_monitor_mode,
+    channel_mode_for,
     is_one_shot_monitor_mode,
     mode_for_silent_start,
 )
@@ -102,6 +104,7 @@ from stream_monitor.notifier import (
     configure_viewer_engagement,
     execute_action_plan,
     platform_services,
+    resume_managed_window_assists,
 )
 from stream_monitor.page_assist_status import drain_page_assist_status
 from stream_monitor.platform_ports import PlatformServices
@@ -1692,6 +1695,16 @@ class App(ctk.CTk):
         self._apply_monitor_mode_buttons()
         self._set_status_text(status_key, color)
         self._tray.update_tooltip_key(tray_tooltip_key)
+        if mode in (TRIGGER_MODE, TRIGGER_ONCE_MODE):
+            eligible_keys = {
+                channel_key(ch.get("platform", ""), ch.get("name", ""))
+                for ch in channels if ch.get("enabled", True)
+                and channel_mode_for(ch) == CHANNEL_MODE_TRIGGER
+            }
+            resume_managed_window_assists([
+                status.url for key, status in initial_statuses.items()
+                if key in retained_live_keys & eligible_keys and status.is_live
+            ], self.current_browser_settings())
 
     def on_monitor_cycle_complete(self) -> None:
         """Return to idle after a global one-cycle monitor run."""

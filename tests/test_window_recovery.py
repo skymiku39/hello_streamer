@@ -130,3 +130,37 @@ def test_recovered_window_resumes_assist_without_opening_duplicate(monkeypatch, 
     })
     assert len(calls) == 1
     assert calls[0][:2] == (url, 43210)
+
+
+def test_resume_surviving_players_does_not_open_or_use_closed_windows(monkeypatch):
+    from stream_monitor import notifier
+
+    resumed = []
+    monkeypatch.setattr(notifier, "managed_window_is_open", lambda url: url == "owned")
+    monkeypatch.setattr(notifier, "_resume_managed_window_assist",
+                        lambda *args: resumed.append(args[0]))
+    worker = notifier.resume_managed_window_assists(["owned", "closed", "owned"], {})
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert resumed == ["owned"]
+
+
+def test_resume_rechecks_window_after_cdp_discovery(monkeypatch, tmp_path):
+    from stream_monitor import cdp_client, notifier
+    from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
+
+    calls = []
+    monkeypatch.setattr(notifier, "_active_viewer_engagement", lambda: ViewerEngagementSettings(
+        enabled=True, page_assist_enabled=True, keep_system_awake=False,
+    ))
+    monkeypatch.setattr(notifier, "active_page_assist_urls", lambda: set())
+    monkeypatch.setattr(notifier, "managed_window_is_open", lambda url: False)
+    monkeypatch.setattr(cdp_client, "acquire_cdp_debugging_port", lambda profile: SimpleNamespace(
+        ok=True, port=43210,
+    ))
+    monkeypatch.setattr(notifier, "start_page_assist", lambda *args: calls.append(args))
+    notifier._resume_managed_window_assist("https://www.twitch.tv/original", {
+        "enabled": True, "app_mode": True, "user_data_dir": str(tmp_path),
+        "per_channel_profile": False,
+    }, None)
+    assert calls == []
