@@ -88,6 +88,7 @@ _WS_EX_TOOLWINDOW = 0x00000080
 _WS_EX_APPWINDOW = 0x00040000
 _MINIMIZE_POLL_INTERVAL_S = 0.15
 _MINIMIZE_DEADLINE_S = 8.0  # generous: Chrome cold-start can take 2-3s
+MANAGED_WINDOW_DISCOVERY_TIMEOUT_S = 90.0
 
 @dataclass
 class _TrackedWindow:
@@ -139,7 +140,27 @@ class _WindowRegistry:
         self.title_fallback_blocked: set[str] = set()
         # URLs for which a close was requested but the worker may still run.
         self.closing: set[str] = set()
+        self.pending: dict[str, object] = {}
         self._recovery: Any = None
+
+    def begin_launch(self, url: str) -> object:
+        token = object()
+        with self.lock:
+            self.pending[url] = token
+        return token
+
+    def finish_launch(self, url: str, token: object) -> None:
+        with self.lock:
+            if self.pending.get(url) is token:
+                self.pending.pop(url, None)
+
+    def launch_is_current(self, url: str, token: object) -> bool:
+        with self.lock:
+            return self.pending.get(url) is token
+
+    def launch_pending(self, url: str) -> bool:
+        with self.lock:
+            return url in self.pending
 
     def enable_recovery(self, recovery: Any) -> None:
         with self.lock:
@@ -209,7 +230,7 @@ class _WindowRegistry:
 
     def all_urls(self) -> list[str]:
         with self.lock:
-            return list(self.by_url.keys())
+            return list(dict.fromkeys([*self.by_url, *self.pending]))
 
     def clear(self, url: str) -> None:
         with self.lock:
@@ -272,6 +293,7 @@ class _WindowRegistry:
             self.by_url.clear()
             self.title_fallback_blocked.clear()
             self.closing.clear()
+            self.pending.clear()
             self._persist()
             self._recovery = None
 
@@ -298,6 +320,11 @@ def restore_managed_windows(root: Path) -> None:
         ))
     except Exception:
         logger.exception("Managed-window recovery unavailable")
+
+
+def managed_window_launch_pending(url: str) -> bool:
+    """A successful browser spawn is still awaiting window identification."""
+    return _REGISTRY.launch_pending(url)
 
 
 def _is_windows() -> bool:
@@ -370,6 +397,37 @@ def _get_window_title(user32: Any, hwnd: int) -> str:
     except OSError:
         return ""
     return buf.value or ""
+
+
+def _window_matches_profile(hwnd: int, profile: str) -> bool:
+    """Verify the candidate's process, never adopt another Chrome profile."""
+    if not profile:
+        return True  # Geometry-only callers do not provide a managed profile.
+    import ctypes
+    from ctypes import wintypes
+
+    import psutil
+
+    from stream_monitor.cdp_client import normalize_profile_key
+
+    try:
+        api = ctypes.WinDLL("user32")
+        api.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        api.GetWindowThreadProcessId.restype = wintypes.DWORD
+        pid = wintypes.DWORD()
+        api.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        args = psutil.Process(pid.value).cmdline() if pid.value else []
+        for index, arg in enumerate(args):
+            value = None
+            if arg.startswith("--user-data-dir="):
+                value = arg.split("=", 1)[1]
+            elif arg in {"--user-data-dir", "-profile"} and index + 1 < len(args):
+                value = args[index + 1]
+            if value and normalize_profile_key(value) == normalize_profile_key(profile):
+                return True
+    except (OSError, psutil.Error):
+        logger.debug("Cannot verify browser profile for HWND=%s", hwnd, exc_info=True)
+    return False
 
 
 def _configure_user32_signatures(user32: Any) -> None:
@@ -523,7 +581,7 @@ def _apply_new_browser_window_settings_async(
     settings: dict[str, Any],
     *,
     apply_geometry: bool = True,
-    deadline_s: float = _MINIMIZE_DEADLINE_S,
+    deadline_s: float | None = None,
     track_for_url: str = "",
     track_keywords: tuple[str, ...] = (),
     foreground_hold_seconds: int = 0,
@@ -572,18 +630,24 @@ def _apply_new_browser_window_settings_async(
     hide_from_taskbar = bool(settings.get("hide_from_taskbar"))
     bring_to_front = bool(settings.get("bring_to_front"))
     set_window_pos_flags = _SWP_NOZORDER | _SWP_NOACTIVATE
+    if deadline_s is None:
+        deadline_s = (MANAGED_WINDOW_DISCOVERY_TIMEOUT_S if track_for_url
+                      else _MINIMIZE_DEADLINE_S)
+    launch_token = _REGISTRY.begin_launch(track_for_url) if track_for_url else None
 
     def _worker() -> None:
+        started_at = time.monotonic()
         deadline = time.monotonic() + deadline_s
         managed: set[int] = set()
         ignored: set[int] = set()
+        warned = False
         while time.monotonic() < deadline:
-            if track_for_url and _is_url_closing(track_for_url):
-                logger.debug(
-                    "Post-launch worker aborting: close requested for %s",
-                    track_for_url,
-                )
+            if track_for_url and not _REGISTRY.launch_is_current(track_for_url, launch_token):
                 return
+            if not warned and not managed and time.monotonic() - started_at >= 8.0:
+                warned = True
+                logger.warning("Managed window still loading; continuing discovery for %s "
+                               "(deadline %.0fs)", track_for_url, deadline_s)
             current = _enum_browser_hwnds(class_name)
             new_hwnds = current - baseline - managed - ignored
             for hwnd in new_hwnds:
@@ -632,6 +696,15 @@ def _apply_new_browser_window_settings_async(
                             # Don't add to `managed` — leave room for the real window
                             # to show up in a later poll.
                             continue
+                if track_for_url and not _window_matches_profile(
+                    hwnd, str(settings.get("user_data_dir") or ""),
+                ):
+                    continue
+                if track_for_url and _is_url_closing(track_for_url):
+                    if _post_close_window(hwnd):
+                        managed.add(hwnd)
+                        logger.info("Closed late managed window HWND=%s url=%s", hwnd, track_for_url)
+                    continue
                 try:
                     if apply_geometry:
                         # Chrome may open the new window in a "maximised" state,
@@ -672,6 +745,10 @@ def _apply_new_browser_window_settings_async(
                         _register_tracked_hwnd(
                             track_for_url, hwnd, keywords=track_keywords
                         )
+                        # A close can race with discovery after the pre-check.
+                        if _is_url_closing(track_for_url):
+                            _post_close_window(hwnd)
+                            _remove_tracked_hwnd(track_for_url, hwnd)
                     logger.debug(
                         "Managed new browser window HWND=%s geometry=%s minimized=%s hide_taskbar=%s url=%s",
                         hwnd,
@@ -686,18 +763,19 @@ def _apply_new_browser_window_settings_async(
                 # First batch of new windows is almost always our target;
                 # keep going a little longer in case the browser opens
                 # additional satellite windows that should also be managed.
-                if time.monotonic() > deadline - (_MINIMIZE_DEADLINE_S / 2):
+                settle_s = max(0.0, min(_MINIMIZE_DEADLINE_S / 2,
+                                       deadline_s - _MINIMIZE_DEADLINE_S / 2))
+                if time.monotonic() > started_at + settle_s:
                     return
             time.sleep(_MINIMIZE_POLL_INTERVAL_S)
 
         if not managed:
             logger.warning(
-                "Did not detect a new %s window to manage within %.1fs; "
-                "the browser may have been launched into an existing window. "
-                "Tip: set browser_settings.user_data_dir to a folder path to "
-                "force a dedicated profile (and a real new window).",
+                "Did not identify a managed %s window within %.1fs for %s; "
+                "leaving unverified windows untouched",
                 class_name,
                 deadline_s,
+                track_for_url,
             )
             return
 
@@ -706,8 +784,20 @@ def _apply_new_browser_window_settings_async(
                 user32, managed, foreground_hold_seconds, tracked_url=track_for_url
             )
 
-    thread = threading.Thread(target=_worker, daemon=True, name="browser-window-manager")
-    thread.start()
+    def _run() -> None:
+        try:
+            _worker()
+        finally:
+            if track_for_url:
+                _REGISTRY.finish_launch(track_for_url, launch_token)
+
+    thread = threading.Thread(target=_run, daemon=True, name="browser-window-manager")
+    try:
+        thread.start()
+    except Exception:
+        if track_for_url:
+            _REGISTRY.finish_launch(track_for_url, launch_token)
+        raise
     return thread
 
 
@@ -1085,6 +1175,9 @@ def close_browser_window_for_url(
     _mark_url_closing(url)
     hwnds = tracked_hwnds_for_url(url)
     closed = 0
+    pending = _REGISTRY.launch_pending(url)
+    if pending:
+        logger.info("Close requested while managed window is still loading: %s", url)
 
     # Clear tracking FIRST so any active foreground hold thread for this URL
     # detects the cancellation and stops calling ShowWindow/SetForegroundWindow.
@@ -1095,7 +1188,7 @@ def close_browser_window_for_url(
             closed += 1
 
     title_fallback_blocked = _pop_title_fallback_block(url)
-    if closed == 0 and title_keywords and not title_fallback_blocked:
+    if closed == 0 and title_keywords and not title_fallback_blocked and not pending:
         for hwnd in _find_hwnds_by_title_keyword(title_keywords):
             if _post_close_window(hwnd):
                 closed += 1

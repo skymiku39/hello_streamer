@@ -123,6 +123,7 @@ from stream_monitor.browser_win32 import (  # noqa: E402, F401
     close_all_tracked_windows,
     close_browser_window_for_url,
     managed_window_is_open,
+    managed_window_launch_pending,
     prune_off_topic_tracked_windows,
     set_system_keep_awake,
     tracked_hwnds_for_url,
@@ -222,7 +223,7 @@ def sync_observed_closes_for_tracked_windows(*, min_age_s: float = 6.0) -> int:
     for url, since in candidates:
         if now - since < max(min_age_s, 0.0):
             continue
-        if tracked_hwnds_for_url(url):
+        if tracked_hwnds_for_url(url) or managed_window_launch_pending(url):
             continue
         with _OBS_MANAGED_LOCK:
             if url not in _OBS_MANAGED_URLS:
@@ -336,7 +337,7 @@ def release_keep_awake_for_closed_tracked_windows(*, min_age_s: float = 6.0) -> 
         # an empty bucket as a user-closed window.
         if now - since < max(min_age_s, 0.0):
             continue
-        if tracked_hwnds_for_url(url):
+        if tracked_hwnds_for_url(url) or managed_window_launch_pending(url):
             continue
         stop_page_assist(url)
         with _ENGAGEMENT_AWAKE_LOCK:
@@ -1254,6 +1255,11 @@ def open_url(
     if not url:
         logger.warning("Cannot open empty URL")
         return False
+
+    if (manage and managed_window_launch_pending(url)
+            and not _browser_win32._REGISTRY.is_closing(url)):
+        logger.info("Reusing pending managed launch for %s", url)
+        return True
 
     if manage and managed_window_is_open(url):
         logger.info("Reusing open managed window for %s", url)

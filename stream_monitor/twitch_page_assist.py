@@ -36,6 +36,7 @@ _READY_CONFIRM_POLLS = 2
 _THEATER_VERIFY_WAIT_S = 0.6
 _CLAIM_VERIFY_WAIT_S = 0.8
 _PAGE_CHECK_INTERVAL_S = 30.0
+_INITIAL_ATTACH_TIMEOUT_S = 90.0
 
 # Best-effort DOM helpers. Twitch UI changes; failures are non-fatal.
 _FIND_GATE_JS = r"""
@@ -853,7 +854,22 @@ class _PageAssistWorker:
     def _run(self) -> None:
         client = CdpClient()
         try:
-            client.connect(self.port, self.url, timeout=DEFAULT_CDP_ATTACH_TIMEOUT_S)
+            attach_deadline = time.monotonic() + _INITIAL_ATTACH_TIMEOUT_S
+            while not self._stop.is_set():
+                try:
+                    client.connect(self.port, self.url, timeout=min(
+                        DEFAULT_CDP_ATTACH_TIMEOUT_S,
+                        max(1.0, attach_deadline - time.monotonic()),
+                    ))
+                    break
+                except TimeoutError:
+                    client.close()
+                    if time.monotonic() >= attach_deadline:
+                        raise
+                    logger.warning("Twitch page still loading; retrying CDP attach for %s", self.url)
+                    if not self._sleep(1.0):
+                        return
+                    client = CdpClient()
             if self._stop.is_set():
                 return
             publish_page_assist_status(self.url, "")

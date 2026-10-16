@@ -71,7 +71,11 @@ from stream_monitor.app_ui import (
     decompose_monitor_mode,
 )
 from stream_monitor.browser_settings_model import BrowserSettings
-from stream_monitor.browser_win32 import managed_window_is_open, restore_managed_windows
+from stream_monitor.browser_win32 import (
+    managed_window_is_open,
+    managed_window_launch_pending,
+    restore_managed_windows,
+)
 from stream_monitor.canvas_channel_list import (
     CanvasChannelList,
     CanvasChannelRowAdapter,
@@ -2004,6 +2008,9 @@ class App(ctk.CTk):
             logger.info(
                 "Closed %d browser window(s) for %s (%s)", closed, entry.key, url
             )
+        elif managed_window_launch_pending(url):
+            logger.info("close_on_offline queued until window is identified for %s (%s)",
+                        entry.key, url)
         else:
             logger.warning(
                 "close_on_offline found no window for %s (%s) keywords=%r",

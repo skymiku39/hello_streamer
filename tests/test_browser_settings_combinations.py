@@ -43,7 +43,7 @@ from typing import Any
 
 import pytest
 
-from stream_monitor import notifier
+from stream_monitor import browser_win32, notifier
 from stream_monitor.action_plan import action_plan_for
 
 # ---------------------------------------------------------------------------
@@ -104,9 +104,7 @@ def _reset_tracked_hwnds() -> None:
     so any per-instance store would be a lie), which means cross-test
     contamination is a real risk if a test forgets to clean up.
     """
-    with notifier._TRACKED_HWNDS_LOCK:
-        notifier._TRACKED_WINDOWS_BY_URL.clear()
-        notifier._TITLE_FALLBACK_BLOCKED_URLS.clear()
+    browser_win32._REGISTRY.reset()
 
 
 @pytest.fixture(autouse=True)
