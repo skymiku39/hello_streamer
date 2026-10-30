@@ -1,6 +1,7 @@
 """Profile ownership and cold-start regression tests for CDP discovery."""
 
 import json
+import os
 from io import BytesIO
 
 import pytest
@@ -14,7 +15,7 @@ from stream_monitor.cdp_client import (
 )
 
 
-def test_cold_start_leaves_port_selection_to_browser(tmp_path):
+def test_cold_start_preserves_windows_manual_signin(tmp_path):
     result = acquire_cdp_debugging_port(
         str(tmp_path / "fresh"), registry=CdpPortRegistry(),
         endpoint_probe=lambda *_a, **_k: False,
@@ -23,7 +24,11 @@ def test_cold_start_leaves_port_selection_to_browser(tmp_path):
     )
     try:
         assert result.ok
-        assert result.port == 0
+        if os.name == "nt":
+            assert 0 < result.port <= 65535
+            assert result.reason == "allocated"
+        else:
+            assert result.port == 0
         assert result.pass_debugging_flag
         assert result.lease is None
     finally:
@@ -54,7 +59,7 @@ def test_failed_launch_does_not_reserve_a_fixed_port(tmp_path):
         reader=lambda _p: None, busy_check=lambda _p: False,
         process_lookup=lambda _p: None, profile_running=lambda _p: False,
     )
-    assert result.ok and result.port == 0
+    assert result.ok and (result.port > 0 if os.name == "nt" else result.port == 0)
     assert registry.get(normalize_profile_key(str(tmp_path))) is None
 
 
@@ -130,3 +135,56 @@ def test_unavailable_process_lookup_never_claims_profile_is_free(tmp_path, failu
     )
     assert not result.ok and result.reason == "discovery_unavailable"
     assert result.port is None and not result.pass_debugging_flag
+
+
+def test_native_listener_proof_overrides_stale_devtools_file(tmp_path):
+    result = acquire_cdp_debugging_port(
+        str(tmp_path), registry=CdpPortRegistry(),
+        reader=lambda _p: 31111, profile_verifier=lambda *_a, **_k: False,
+        endpoint_probe=lambda port, **_k: port in {31111, 32222},
+        busy_check=lambda _p: True, profile_running=lambda _p: True,
+        process_lookup=lambda _p: 32222,
+    )
+    assert result.ok and result.port == 32222 and result.reason == "process"
+    assert not result.pass_debugging_flag
+
+
+def test_resolve_discovers_the_actual_profile_listener_without_port_file(tmp_path):
+    probes = []
+    result = resolve_cdp_attach(
+        str(tmp_path), reader=lambda _p: None,
+        process_lookup=lambda _p: 32222,
+        endpoint_probe=lambda port, **_k: probes.append(port) or True,
+    )
+    assert result.ok and result.port == 32222 and result.reason == "process"
+    assert probes == [32222]
+
+
+@pytest.mark.parametrize("lookup_result", [None, 0])
+def test_resolve_does_not_probe_unproven_requested_or_cached_port(tmp_path, lookup_result):
+    registry = cdp_client.get_cdp_port_registry()
+    key = normalize_profile_key(str(tmp_path))
+    registry.put(key, 31111)
+    probes = []
+    try:
+        result = resolve_cdp_attach(
+            str(tmp_path), preferred_port=31111, timeout=.5,
+            reader=lambda _p: None, process_lookup=lambda _p: lookup_result,
+            endpoint_probe=lambda port, **_k: probes.append(port) or True,
+            clock=lambda: 0, sleep=lambda _seconds: None,
+        )
+        assert not result.ok and result.reason == "timeout"
+        assert probes == []
+    finally:
+        registry.clear(key)
+
+
+def test_resolve_process_lookup_failure_is_bounded(tmp_path):
+    def unavailable(_path):
+        raise OSError("listener lookup unavailable")
+
+    result = resolve_cdp_attach(
+        str(tmp_path), timeout=.5, reader=lambda _p: None,
+        process_lookup=unavailable, clock=lambda: 0, sleep=lambda _seconds: None,
+    )
+    assert not result.ok and result.reason == "timeout"

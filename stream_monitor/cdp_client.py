@@ -403,10 +403,12 @@ def acquire_cdp_debugging_port(
     profile_running: Callable[[str], bool] | None = None,
     profile_verifier: Callable[..., bool] | None = None,
 ) -> CdpAttachResult:
-    """Reuse a proven profile endpoint or ask Chrome to select its own port.
+    """Reuse a proven profile endpoint or prepare a verified cold launch.
 
-    A cold launch returns port zero; resolve_cdp_attach must discover the actual
-    endpoint after launch. No socket reservation is handed off to the browser.
+    Windows uses a nonzero port because Chrome treats port zero as automation
+    mode, which can prevent manual sign-in. The selected port is only a hint:
+    resolve_cdp_attach must prove the actual profile listener after launch.
+    Other platforms retain Chromium's port-zero selection and endpoint file.
     Cached port numbers alone never establish current profile ownership.
     """
     user_data_dir = os.path.expandvars(os.path.expanduser((user_data_dir or "").strip()))
@@ -458,7 +460,6 @@ def acquire_cdp_debugging_port(
             return None
         if not endpoint_probe(port, timeout=probe_timeout):
             return None
-        file_port = reader(user_data_dir)
         if require_devtools_file:
             if not profile_verifier(
                 port,
@@ -468,10 +469,9 @@ def acquire_cdp_debugging_port(
                 timeout=probe_timeout,
             ):
                 return None
-        elif file_port is not None and file_port != port:
-            # Process claimed a port that conflicts with this profile's
-            # DevToolsActivePort — treat as unrelated, never attach.
-            return None
+        # Native process lookup already proves the exact profile and listener
+        # PID. A nonzero-port launch does not update DevToolsActivePort, so a
+        # file left by an older port-zero session must not override that proof.
         reg.put(key, port)
         return CdpAttachResult(
             ok=True,
@@ -527,9 +527,14 @@ def acquire_cdp_debugging_port(
                 sleep=sleep,
                 reader=reader,
                 profile_verifier=profile_verifier,
+                process_lookup=process_lookup,
+                endpoint_probe=endpoint_probe,
             )
             if waited_dev.ok:
-                proven = _try_proven(waited_dev.port, "devtools_file")
+                proven = _try_proven(
+                    waited_dev.port, waited_dev.reason,
+                    require_devtools_file=waited_dev.reason != "process",
+                )
                 if proven is not None:
                     return proven
 
@@ -547,8 +552,12 @@ def acquire_cdp_debugging_port(
             key,
         )
 
-    # Concurrent cold launches can all request zero: Chromium's profile
-    # singleton owns the selected endpoint and writes DevToolsActivePort.
+    if os.name == "nt":
+        return CdpAttachResult(
+            ok=True, port=allocate_debugging_port(), reason="allocated",
+            pass_debugging_flag=True,
+        )
+    # Chromium's profile singleton owns the port-zero endpoint on Linux.
     return CdpAttachResult(
         ok=True, port=0, reason="ephemeral", pass_debugging_flag=True,
     )
@@ -564,12 +573,15 @@ def resolve_cdp_attach(
     sleep: Callable[[float], None] = time.sleep,
     reader: Callable[[str], int | None] | None = None,
     profile_verifier: Callable[..., bool] | None = None,
+    process_lookup: Callable[[str], int | None] | None = None,
+    endpoint_probe: Callable[..., bool] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> CdpAttachResult:
     """Wait for a live endpoint belonging to the launched profile, boundedly."""
     user_data_dir = os.path.expandvars(os.path.expanduser((user_data_dir or "").strip()))
     reader = reader or read_devtools_active_port
     profile_verifier = profile_verifier or endpoint_belongs_to_profile
+    endpoint_probe = endpoint_probe or probe_cdp_endpoint
     deadline = clock() + max(0.5, timeout)
     interval = 0.2
     max_iterations = max(1, int(max(0.5, timeout) / interval) + 3)
@@ -586,6 +598,30 @@ def resolve_cdp_attach(
             ):
                 _PORT_REGISTRY.put(normalize_profile_key(user_data_dir), port)
                 return CdpAttachResult(ok=True, port=port, reason="devtools_file")
+        if os.name == "nt" or process_lookup is not None:
+            # Fixed ports have no Chromium endpoint file. Never trust the
+            # requested/cached number: confirm the exact profile command line
+            # and the owning process's listening socket, including when two
+            # cold launches have been forwarded to one profile singleton.
+            try:
+                remaining = max(0.0, deadline - clock())
+                if remaining <= 0:
+                    break
+                if process_lookup is not None:
+                    process_port = process_lookup(user_data_dir)
+                else:
+                    _seen, process_port = _windows_profile_debug_info(
+                        user_data_dir, timeout=min(0.8, remaining),
+                    )
+                remaining = max(0.0, deadline - clock())
+                if (process_port and (not preferred_port or process_port == preferred_port)
+                        and remaining > 0 and endpoint_probe(
+                    process_port, timeout=min(0.8, remaining),
+                )):
+                    _PORT_REGISTRY.put(normalize_profile_key(user_data_dir), process_port)
+                    return CdpAttachResult(ok=True, port=process_port, reason="process")
+            except (OSError, ImportError):
+                logger.debug("CDP profile listener not yet available", exc_info=True)
         sleep(min(interval, max(0.0, deadline - clock())))
     return CdpAttachResult(
         ok=False, reason="profile_busy" if profile_was_busy else "timeout",

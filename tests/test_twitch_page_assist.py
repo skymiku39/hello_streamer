@@ -296,8 +296,9 @@ def test_cdp_discovery_exception_does_not_block_browser_launch(
 
 
 @pytest.mark.parametrize("discovery_error", [False, True])
+@pytest.mark.parametrize("allocated", [False, True])
 def test_post_launch_discovery_failure_preserves_window_tracking(
-    monkeypatch, tmp_path, discovery_error,
+    monkeypatch, tmp_path, discovery_error, allocated,
 ) -> None:
     from stream_monitor import cdp_client
     from stream_monitor.page_assist_status import drain_page_assist_status
@@ -309,7 +310,8 @@ def test_post_launch_discovery_failure_preserves_window_tracking(
     )
     monkeypatch.setattr(notifier, "_active_viewer_engagement", lambda: settings)
     monkeypatch.setattr(cdp_client, "acquire_cdp_debugging_port", lambda *_a: cdp_client.CdpAttachResult(
-        ok=True, port=0, pass_debugging_flag=True,
+        ok=True, port=35555 if allocated else 0,
+        reason="allocated" if allocated else "ephemeral", pass_debugging_flag=True,
     ))
     order = []
     monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: order.append("spawn"))
@@ -398,10 +400,10 @@ def test_valid_devtools_port_file_is_read(tmp_path, port) -> None:
 
 
 @pytest.mark.parametrize("disable_during_launch", [False, True])
-def test_open_fresh_profile_ephemeral_port_resolves_devtools(
+def test_open_fresh_profile_resolves_verified_endpoint(
     monkeypatch, tmp_path, disable_during_launch
 ) -> None:
-    """Chrome binds port zero; assist receives its verified selected endpoint."""
+    """Assist starts only after discovery proves the launched profile endpoint."""
     monkeypatch.delattr(sys, "frozen", raising=False)
     import stream_monitor.cdp_client as cdp_client
 
@@ -425,6 +427,7 @@ def test_open_fresh_profile_ephemeral_port_resolves_devtools(
     _patch_open_browser_common(monkeypatch)
     monkeypatch.setattr(notifier.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(cdp_client, "profile_looks_busy", lambda _p: False)
+    monkeypatch.setattr(cdp_client, "allocate_debugging_port", lambda: 35555)
     monkeypatch.setattr(cdp_client, "_windows_profile_debug_info", lambda *_a, **_k: (False, None))
     monkeypatch.setattr(
         cdp_client, "endpoint_belongs_to_profile", lambda port, *_a, **_k: port == 35555
@@ -461,7 +464,8 @@ def test_open_fresh_profile_ephemeral_port_resolves_devtools(
             a for a in launched[0] if a.startswith("--remote-debugging-port=")
         ]
         assert len(port_flags) == 1
-        assert port_flags == ["--remote-debugging-port=0"]
+        expected_port = 35555 if cdp_client.os.name == "nt" else 0
+        assert port_flags == [f"--remote-debugging-port={expected_port}"]
         assert started == ([] if disable_during_launch else [("https://www.twitch.tv/foo", 35555)])
         assert ("https://www.twitch.tv/foo" in notifier._OBS_MANAGED_URLS) is not disable_during_launch
     finally:

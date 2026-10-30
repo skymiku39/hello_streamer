@@ -722,8 +722,8 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
         )
 
     cdp_port = settings.get("_cdp_debugging_port")
-    # 0 = Chromium-assigned ephemeral port (race-free cold start via
-    # DevToolsActivePort); positive = explicit port (tests / legacy).
+    # Windows cold starts use a nonzero port to preserve manual sign-in.
+    # Zero remains supported for Linux and existing port-zero sessions.
     if isinstance(cdp_port, int) and cdp_port >= 0:
         args.append(f"--remote-debugging-port={cdp_port}")
         # Chrome 111+ rejects CDP websocket origins unless allow-listed.
@@ -914,8 +914,8 @@ def _open_with_browser_settings(
         cdp_attach_reason = attach.reason
         cdp_attach_message = attach.message
         if attach.ok and isinstance(attach.port, int) and attach.port >= 0:
-            cdp_needs_discovery = attach.port == 0
-            cdp_port = attach.port or None
+            cdp_needs_discovery = attach.port == 0 or attach.reason == "allocated"
+            cdp_port = None if cdp_needs_discovery else attach.port
             if attach.pass_debugging_flag:
                 effective_settings["_cdp_debugging_port"] = attach.port
             logger.info(

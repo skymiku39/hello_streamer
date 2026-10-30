@@ -32,17 +32,25 @@ def chrome_processes(caplog):
         pytest.skip("Chrome not available for isolated CDP integration")
     processes = []
 
-    def launch(profile, *, debugging=True, port=0):
+    def launch(profile, *, debugging=True, port=0, headless=True):
         args = [
-            executable, "--headless=new", f"--user-data-dir={profile}",
+            executable, f"--user-data-dir={profile}",
             "--no-first-run", "--no-default-browser-check",
         ]
+        if headless:
+            args.append("--headless=new")
         if debugging:
             args += [f"--remote-debugging-port={port}", "--remote-allow-origins=*"]
         args.append("about:blank")
+        startup = None
+        if os.name == "nt" and not headless:
+            startup = subprocess.STARTUPINFO()
+            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup.wShowWindow = 0
         process = subprocess.Popen(
             args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            startupinfo=startup,
         )
         processes.append(process)
         return process
@@ -60,9 +68,9 @@ def test_concurrent_cold_openers_resolve_one_shared_profile_endpoint(
     profile = tmp_path / "shared"
     registry = CdpPortRegistry()
     preparations = [acquire_cdp_debugging_port(str(profile), registry=registry) for _ in range(2)]
-    assert all(result.ok and result.port == 0 for result in preparations)
-    chrome_processes(profile)
-    chrome_processes(profile)
+    assert all(result.ok and result.pass_debugging_flag for result in preparations)
+    chrome_processes(profile, port=preparations[0].port)
+    chrome_processes(profile, port=preparations[1].port)
     results = [
         resolve_cdp_attach(str(profile), timeout=BROWSER_STARTUP_TIMEOUT_S)
         for _ in range(2)
@@ -108,8 +116,7 @@ def test_existing_nondebug_browser_has_bounded_discovery(tmp_path, chrome_proces
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows legacy listener ownership lookup")
 def test_legacy_fixed_port_is_reused_only_by_its_owning_profile(tmp_path, chrome_processes):
-    # Port selection here deliberately models the legacy fixed-port launcher.
-    # Production cold launches use zero and have no handoff interval.
+    # A different profile cannot claim a live listener just by requesting it.
     port = allocate_debugging_port()
     owner_profile = tmp_path / "owner"
     chrome_processes(owner_profile, port=port)
@@ -128,3 +135,29 @@ def test_legacy_fixed_port_is_reused_only_by_its_owning_profile(tmp_path, chrome
         time.sleep(.1)
     other = acquire_cdp_debugging_port(str(other_profile), registry=CdpPortRegistry())
     assert not other.ok and other.reason == "profile_nondebug"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows manual sign-in regression")
+def test_windows_cold_launch_keeps_normal_browser_identity_with_stale_port_file(
+    tmp_path, chrome_processes,
+):
+    profile = tmp_path / "manual-signin"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text(
+        "1\n/devtools/browser/previous-session\n", encoding="utf-8",
+    )
+    prepared = acquire_cdp_debugging_port(str(profile), registry=CdpPortRegistry())
+    assert prepared.ok and prepared.port > 0
+    chrome_processes(profile, port=prepared.port, headless=False)
+    resolved = resolve_cdp_attach(str(profile), timeout=BROWSER_STARTUP_TIMEOUT_S)
+    assert resolved.ok and resolved.port == prepared.port
+    assert resolved.reason == "process"
+    client = CdpClient()
+    try:
+        client.connect(resolved.port, "about:blank", timeout=5)
+        assert client.evaluate("navigator.webdriver") is False
+        assert "HeadlessChrome" not in client.evaluate("navigator.userAgent")
+    finally:
+        client.close()
+    warm = acquire_cdp_debugging_port(str(profile), registry=CdpPortRegistry())
+    assert warm.ok and warm.port == resolved.port and not warm.pass_debugging_flag

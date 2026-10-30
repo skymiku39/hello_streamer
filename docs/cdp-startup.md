@@ -5,9 +5,9 @@
 ## 啟動流程
 
 1. 設定檔已有可用端點時，核對 `DevToolsActivePort` 的埠、瀏覽器識別路徑與 `/json/version`；不能只相信先前記住的埠。
-2. 舊版使用固定埠且沒有端點檔時，Windows 透過 `psutil` 原生程序 API 確認瀏覽器使用完全相同的設定檔，且監聽埠屬於該程序；不再啟動 PowerShell。查詢不可用時回報失敗，不將未知狀態視為可用設定檔。
-3. 冷啟動傳入 `--remote-debugging-port=0`，由 Chrome 自行綁定可用埠。程式不再預選、釋放固定埠後交給 Chrome。
-4. 瀏覽器成功啟動後立即開始視窗追蹤，再有界等待端點檔及活躍端點。多個冷啟動請求共用設定檔時，皆解析該設定檔實際產生的端點。
+2. Windows 使用非零埠時，透過 `psutil` 原生程序 API 確認瀏覽器使用完全相同的設定檔，且監聽埠屬於該程序；不啟動 PowerShell。查詢不可用時回報失敗，不將未知狀態視為可用設定檔。
+3. Windows 冷啟動預選非零埠，避免 `--remote-debugging-port=0` 讓一般 Chrome 回報 `navigator.webdriver=true`，造成手動登入相容性問題。預選埠只用於啟動，啟動後仍需核對實際程序與監聽埠；若埠被其他程序占用，不會附加到該程序。Linux 保留由 Chrome 自行選埠的既有流程。
+4. 瀏覽器成功啟動後立即開始視窗追蹤，再有界等待端點檔或經程序驗證的活躍端點。多個冷啟動請求共用設定檔時，皆解析該設定檔實際使用的端點；舊版零埠工作階段遺留的端點檔不會覆蓋已驗證的程序歸屬。
 5. 預查詢預設等待預算為 5 秒，啟動後端點探索為 12 秒；失敗回報狀態並保留一般瀏覽器啟動結果。頁面 target 的附加另有既有等待上限。
 6. 探索期間停用輔助或關閉受管視窗會取消啟動輔助；關閉全部視窗亦適用。
 
@@ -21,7 +21,9 @@ Chromium 將埠與瀏覽器識別路徑寫入設定檔的行為，可對照其 [
 uv run --locked pytest -q tests/test_cdp_discovery.py tests/test_cdp_discovery_integration.py tests/test_twitch_page_assist.py
 ```
 
-`test_cdp_discovery_integration.py` 使用獨立暫存設定檔與 headless Chrome，結束時僅終止測試啟動的程序。需已安裝可解析的 Chrome；固定埠程序擁有者案例限 Windows。
+`test_cdp_discovery_integration.py` 使用獨立暫存設定檔，主要案例使用 headless Chrome；Windows 登入相容性案例使用一般 Chrome，直接檢查原生 `navigator.webdriver` 回報為 false。結束時僅終止測試啟動的程序。需已安裝可解析的 Chrome；程序擁有者與登入相容性案例限 Windows。
+
+已用舊版開啟的瀏覽器無法在執行中更換啟動參數。更新後請先停止監聽，關閉程式專用環境的所有播放器與登入視窗，再重新開啟；保留 `browser_profile/` 即可沿用原登入資料。若要先手動登入，可在關閉這些視窗後使用「登入此環境」。
 
 隔離 Chrome 首次啟動在共用 CI 主機可能超過 12 秒，因此成功連線案例使用獨立的 30 秒啟動預算；產品仍使用 12 秒探索上限，逾時回報由專項測試另行驗證。
 
