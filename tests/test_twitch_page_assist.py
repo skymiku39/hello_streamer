@@ -30,6 +30,7 @@ def test_page_assist_defaults_are_opt_in() -> None:
     assert settings.accept_content_gate is True
     assert settings.claim_channel_points is False
     assert settings.theater_mode is False
+    assert settings.points_stall_refresh_enabled is False
     assert settings.auto_refresh is False
 
 
@@ -67,6 +68,7 @@ def test_normalize_viewer_engagement_page_assist_ints() -> None:
             "claim_delay_seconds_max": 3,  # should be ordered up
             "refresh_minutes_min": 10,
             "refresh_minutes_max": 8,
+            "points_stall_refresh_enabled": True,
         }
     )
     assert normalized["page_assist_enabled"] is True
@@ -74,6 +76,7 @@ def test_normalize_viewer_engagement_page_assist_ints() -> None:
     assert normalized["claim_delay_seconds_max"] == 5
     assert normalized["refresh_minutes_min"] == 10
     assert normalized["refresh_minutes_max"] == 10
+    assert normalized["points_stall_refresh_enabled"] is True
 
 
 def test_fuzzy_uniform_orders_bounds() -> None:

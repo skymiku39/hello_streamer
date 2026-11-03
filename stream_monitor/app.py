@@ -1971,13 +1971,18 @@ class App(ctk.CTk):
             return
         url = next(reversed(self._page_assist_failures))
         reason = self._page_assist_failures[url]
-        key = f"engagement.page_assist.{reason}" if reason in {
+        if reason in {
             "player_2000_retrying", "player_2000_unverified", "player_2000_exhausted",
-        } else (
-            "engagement.page_assist.profile_busy"
-            if reason in {"profile_nondebug", "profile_busy"}
-            else "engagement.page_assist.failed"
-        )
+            "f5_verifying", "f5_retrying", "f5_unverified", "f5_paused",
+            "points_stall_exhausted",
+        }:
+            key = f"engagement.page_assist.{reason}"
+        elif reason == "reconnecting":
+            key = "engagement.page_assist.reconnecting"
+        elif reason in {"profile_nondebug", "profile_busy"}:
+            key = "engagement.page_assist.profile_busy"
+        else:
+            key = "engagement.page_assist.failed"
         self._page_assist_notice.configure(text=tr(key, url=url))
         if not self._page_assist_notice.winfo_manager():
             self._page_assist_notice.pack(fill="x", pady=(6, 0))

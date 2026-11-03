@@ -154,6 +154,27 @@ class PlayerRecovery:
         if self.active:
             self._report("player_2000_unverified", action)
 
+    def page_reloaded(self, *, action: str = "full_page_reload") -> None:
+        """Reset page-scoped recovery state after an explicit full-page reload."""
+        previous_notice = self.notice
+        self.active = False
+        self.attempts = 0
+        self.retry_at = None
+        self.verify_until = None
+        self.next_check_at = 0.0
+        self._paused_before_error = False
+        self._reset_samples()
+        self.notice = ""
+        publish_page_assist_status(self.url, "")
+        if previous_notice:
+            logger.info(
+                "Twitch player recovery state reset after page reload url=%s "
+                "previous=%s action=%s",
+                self.url,
+                previous_notice,
+                action,
+            )
+
     def _progress(self, snap: dict[str, Any], now: float) -> bool:
         value = snap.get("currentTime")
         if (not snap.get("playerPresent") or snap.get("errorCode") or snap.get("offline")

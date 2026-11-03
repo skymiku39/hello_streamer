@@ -798,6 +798,11 @@ _PAGE_ASSIST_FEATURE_TOGGLES: tuple[tuple[str, str, str], ...] = (
         "engagement.toggle.auto_refresh",
         "engagement.toggle.auto_refresh.hint",
     ),
+    (
+        "points_stall_refresh_enabled",
+        "engagement.toggle.points_stall_refresh",
+        "engagement.toggle.points_stall_refresh.hint",
+    ),
 )
 
 

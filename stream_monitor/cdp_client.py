@@ -245,6 +245,13 @@ class CdpPortRegistry:
             port = self._ports.get(key)
             return int(port) if isinstance(port, int) and port > 0 else None
 
+    def profile_for_port(self, port: int) -> str | None:
+        with self._lock:
+            for profile_key, registered_port in self._ports.items():
+                if registered_port == port:
+                    return profile_key
+        return None
+
     def put(self, profile_key: str, port: int) -> None:
         key = (profile_key or "").strip()
         if not key or port <= 0:
@@ -304,6 +311,11 @@ class CdpPortRegistry:
 
 
 _PORT_REGISTRY = CdpPortRegistry()
+
+
+def profile_for_cdp_port(port: int) -> str | None:
+    """Return the locally verified profile path currently mapped to *port*."""
+    return _PORT_REGISTRY.profile_for_port(port)
 
 
 def get_cdp_port_registry() -> CdpPortRegistry:
@@ -679,6 +691,13 @@ class CdpClient:
         self._pending: dict[int, dict[str, Any]] = {}
         self._reader: threading.Thread | None = None
         self._closed = threading.Event()
+        self._event_handler: Callable[[str, dict[str, Any]], None] | None = None
+
+    def set_event_handler(
+        self, handler: Callable[[str, dict[str, Any]], None] | None,
+    ) -> None:
+        """Register a callback for unsolicited CDP events."""
+        self._event_handler = handler
 
     @property
     def connected(self) -> bool:
@@ -764,6 +783,15 @@ class CdpClient:
                 if isinstance(msg_id, int):
                     with self._lock:
                         self._pending[msg_id] = message
+                    continue
+                method = message.get("method")
+                handler = self._event_handler
+                if isinstance(method, str) and handler is not None:
+                    params = message.get("params")
+                    try:
+                        handler(method, params if isinstance(params, dict) else {})
+                    except Exception:
+                        logger.debug("CDP event handler failed for %s", method, exc_info=True)
         except Exception:
             logger.debug("CDP reader stopped", exc_info=True)
         finally:
@@ -831,17 +859,17 @@ class CdpClient:
 
     def send_alt_t(self) -> None:
         """Dispatch Alt+T (Twitch theater mode shortcut)."""
-        for phase, key, vk, text in (
-            ("keyDown", "Alt", _CDP_VK_ALT, ""),
-            ("keyDown", "t", _CDP_VK_T, "t"),
-            ("keyUp", "t", _CDP_VK_T, "t"),
-            ("keyUp", "Alt", _CDP_VK_ALT, ""),
+        for phase, key, vk, modifiers, code, text in (
+            ("keyDown", "Alt", _CDP_VK_ALT, 0, "AltLeft", ""),
+            ("keyDown", "t", _CDP_VK_T, _CDP_MODIFIER_ALT, "KeyT", "t"),
+            ("keyUp", "t", _CDP_VK_T, _CDP_MODIFIER_ALT, "KeyT", ""),
+            ("keyUp", "Alt", _CDP_VK_ALT, 0, "AltLeft", ""),
         ):
             params: dict[str, Any] = {
                 "type": phase,
-                "modifiers": _CDP_MODIFIER_ALT,
+                "modifiers": modifiers,
                 "windowsVirtualKeyCode": vk,
-                "code": "AltLeft" if key == "Alt" else "KeyT",
+                "code": code,
                 "key": key,
             }
             if text:

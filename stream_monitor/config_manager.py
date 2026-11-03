@@ -104,6 +104,7 @@ DEFAULT_VIEWER_ENGAGEMENT: dict[str, Any] = {
     "claim_poll_seconds_max": 90,
     "theater_mode": False,
     "theater_delay_seconds": 8,
+    "points_stall_refresh_enabled": False,
     "auto_refresh": False,
     "refresh_minutes_min": 45,
     "refresh_minutes_max": 75,

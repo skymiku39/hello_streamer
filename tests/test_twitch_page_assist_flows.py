@@ -139,6 +139,57 @@ def test_hidden_points_summary_is_not_claim_confirmation(dom_browser):
     }
 
 
+def test_second_points_balance_reads_full_hover_tooltip(dom_browser, monkeypatch):
+    set_dom(dom_browser, '''<style>
+      body { margin: 8px; }
+      button { position: relative; border: 0; padding: 0; }
+      .coin-balance { display: flex; align-items: center; gap: 4px; }
+      #copo-icon { width: 20px; height: 20px; }
+      [role="tooltip"] { display: none; position: absolute; width: 320px; height: 30px; }
+      .coin-balance:hover + [role="tooltip"] { display: block; }
+    </style>
+    <div data-test-selector="community-points-summary">
+      <button aria-label="小奇點和點數餘額">
+        <div class="coin-balance">
+          <img id="copo-icon" alt="">
+          <div data-test-selector="copo-balance-string">11.5萬</div>
+        </div>
+        <div role="tooltip">1,790 枚小奇點, 115,380 儚(ㄇㄥˊ)點</div>
+      </button>
+    </div>''')
+    w = worker(monkeypatch)
+    assert w._read_points_balance(dom_browser) == 115380
+
+
+def test_second_points_balance_accepts_exact_display_and_rejects_compact_values():
+    assert assist._parse_exact_points_balance("115,380") == 115380
+    assert assist._parse_exact_points_balance("115380") == 115380
+    assert assist._parse_exact_points_balance("11.5萬") is None
+    assert assist._parse_points_tooltip_balance([
+        "1,790 枚小奇點, 115,380 儚(ㄇㄥˊ)點",
+    ]) == 115380
+    assert assist._parse_points_tooltip_balance([
+        "1,790 枚小奇點, 115,380 儚點, 22 個獎勵",
+    ]) is None
+
+
+def test_points_tooltip_reads_accessibility_region_with_zero_height(dom_browser):
+    tooltip = "1,790 枚小奇點, 115,380 儚(ㄇㄥˊ)點"
+    set_dom(dom_browser, f'<div role="tooltip" style="display:block;width:300px;height:0;overflow:visible">{tooltip}</div>')
+    assert dom_browser.evaluate(assist._READ_POINTS_TOOLTIP_JS) == [tooltip]
+
+
+def test_unknown_points_value_never_triggers_f5_refresh(monkeypatch):
+    w = worker(monkeypatch, points_stall_refresh_enabled=True)
+    w._points_active_watch_seconds = assist._POINTS_STALL_WINDOW_S
+    w._points_last_balance = 100
+    monkeypatch.setattr(w, "_read_points_balance", lambda _client: None)
+    client = Mock()
+    client.connected = True
+    assert not w._check_points_stall(client, user_requested=True)
+    client.reload.assert_not_called()
+
+
 def worker(monkeypatch, **settings):
     w = assist._PageAssistWorker("https://www.twitch.tv/example", 1234,
                                 ViewerEngagementSettings(**settings))
@@ -301,15 +352,15 @@ def test_successful_claim_keeps_configured_poll_interval(monkeypatch):
     claim = Mock(return_value=True)
     monkeypatch.setattr(w, "_try_claim", claim)
 
-    def sleep(seconds):
+    def wait(seconds):
         sleeps.append(seconds)
         clock[0] += seconds
         if len(sleeps) >= 2:
             w.stop()
             return False
-        return True
+        return False
 
-    monkeypatch.setattr(w, "_sleep", sleep)
+    monkeypatch.setattr(w, "_wait_for_wake", wait)
     w._run()
     assert sleeps == [10, 10]
     assert claim.call_count == 2
@@ -319,7 +370,8 @@ def test_periodic_check_reconciles_enabled_controls(monkeypatch, caplog):
     w = worker(monkeypatch, theater_mode=True, claim_channel_points=True)
     client = Mock()
     monkeypatch.setattr(w, "_probe_page_ready", lambda c:
-                        {"hasVideo": True, "readyState": 4, "paused": False})
+                        {"hasVideo": True, "readyState": 4, "paused": False,
+                         "playbackReady": True})
     theater = Mock()
     chat = Mock(return_value="visible")
     monkeypatch.setattr(w, "_ensure_theater", theater)
@@ -350,6 +402,158 @@ def test_periodic_check_respects_disabled_controls_and_paused_video(monkeypatch,
     assert "playback=paused" in caplog.text
 
 
+def points_player_sample(current_time, **overrides):
+    sample = {
+        "playerPresent": True,
+        "hasVideo": True,
+        "readyState": 4,
+        "paused": False,
+        "ended": False,
+        "mediaError": False,
+        "offline": False,
+        "gatePresent": False,
+        "videoId": "fixture-video",
+        "currentTime": current_time,
+    }
+    sample.update(overrides)
+    return sample
+
+
+def test_points_stall_requires_30_minutes_of_advancing_video(monkeypatch):
+    w = worker(monkeypatch)
+    due, eligible = w._record_points_observation(
+        100, points_player_sample(0), 0, connected=True,
+    )
+    assert not due and eligible
+    for sample_number in range(1, 61):
+        now = sample_number * assist._PAGE_CHECK_INTERVAL_S
+        due, eligible = w._record_points_observation(
+            100, points_player_sample(now), now, connected=True,
+        )
+        assert eligible
+        assert due is (sample_number == 60)
+    assert w._points_active_watch_seconds == assist._POINTS_STALL_WINDOW_S
+
+
+@pytest.mark.parametrize("snapshot,connected", [
+    (points_player_sample(30, paused=True), True),
+    (points_player_sample(30, readyState=2), True),
+    (points_player_sample(30, offline=True), True),
+    (points_player_sample(30, gatePresent=True), True),
+    (points_player_sample(30, mediaError=True), True),
+    (points_player_sample(30), False),
+])
+def test_points_stall_does_not_count_paused_loading_offline_or_disconnected(
+    monkeypatch, snapshot, connected,
+):
+    w = worker(monkeypatch)
+    w._points_last_balance = 100
+    w._points_active_watch_seconds = 300
+    w._points_media_sample = ("fixture-video", 10, 0)
+    due, eligible = w._record_points_observation(
+        100, snapshot, 30, connected=connected,
+    )
+    assert not due and not eligible
+    assert w._points_active_watch_seconds == 300
+    assert w._points_media_sample is None
+
+
+def test_unknown_balance_breaks_watch_sample_without_refresh(monkeypatch):
+    w = worker(monkeypatch, points_stall_refresh_enabled=True)
+    w._points_last_balance = 100
+    w._points_active_watch_seconds = assist._POINTS_STALL_WINDOW_S
+    w._points_media_sample = ("fixture-video", 10, 0)
+    monkeypatch.setattr(w, "_read_points_balance", lambda _client: None)
+    client = Mock()
+    client.connected = True
+    assert not w._check_points_stall(client, user_requested=False)
+    assert w._points_active_watch_seconds == assist._POINTS_STALL_WINDOW_S
+    assert w._points_media_sample is None
+    client.reload.assert_not_called()
+
+
+def test_positive_points_delta_resets_timer_and_retry_budget(monkeypatch):
+    w = worker(monkeypatch)
+    w._points_last_balance = 100
+    w._points_active_watch_seconds = 900
+    w._points_stall_attempts = 2
+    w._points_stall_exhausted = True
+    w._points_media_sample = ("fixture-video", 10, 0)
+    due, eligible = w._record_points_observation(
+        110, points_player_sample(40), 30, connected=True,
+    )
+    assert not due and eligible
+    assert w._points_active_watch_seconds == 0
+    assert w._points_stall_attempts == 0
+    assert not w._points_stall_exhausted
+
+
+def test_f5_check_refreshes_only_a_stalled_page_even_with_auto_mode_off(monkeypatch):
+    w = worker(monkeypatch, points_stall_refresh_enabled=False)
+    w._points_last_balance = 100
+    w._points_active_watch_seconds = assist._POINTS_STALL_WINDOW_S
+    monkeypatch.setattr(w, "_read_points_balance", lambda _client: 100)
+    client = Mock()
+    client.connected = True
+    client.evaluate.return_value = points_player_sample(100)
+    reload_page = Mock(return_value=True)
+    monkeypatch.setattr(w, "_reload_page", reload_page)
+    monkeypatch.setattr(w, "_start_f5_verification", Mock())
+    assert w._check_points_stall(client, user_requested=True)
+    reload_page.assert_called_once_with(client, reason="F5 points-stall check")
+    assert w._points_stall_attempts == 1
+
+
+def test_f5_broadcast_queues_checks_for_every_worker_without_refreshing(monkeypatch):
+    source = Mock()
+    other = Mock()
+    monkeypatch.setattr(assist, "_assist_by_url", {"other": other, "source": source})
+    assist._broadcast_f5_check(source)
+    source.request_external_check.assert_called_once_with(delay_s=0.0)
+    other.request_external_check.assert_called_once_with(delay_s=assist._F5_WINDOW_STAGGER_S)
+    assert "location.reload()" not in assist._F5_BROADCAST_SCRIPT
+
+
+def test_background_points_refresh_requires_new_setting(monkeypatch):
+    w = worker(monkeypatch, points_stall_refresh_enabled=False)
+    w._points_last_balance = 100
+    w._points_active_watch_seconds = assist._POINTS_STALL_WINDOW_S
+    monkeypatch.setattr(w, "_read_points_balance", lambda _client: 100)
+    client = Mock()
+    client.connected = True
+    client.evaluate.return_value = points_player_sample(100)
+    reload_page = Mock(return_value=True)
+    monkeypatch.setattr(w, "_reload_page", reload_page)
+    assert not w._check_points_stall(client, user_requested=False)
+    reload_page.assert_not_called()
+
+    w.settings.points_stall_refresh_enabled = True
+    assert w._check_points_stall(client, user_requested=False)
+    reload_page.assert_called_once_with(client, reason="points-stall auto refresh")
+
+
+def test_f5_rearms_two_exhausted_points_stall_attempts(monkeypatch):
+    from stream_monitor.page_assist_status import drain_page_assist_status
+
+    w = worker(monkeypatch)
+    w._points_last_balance = 100
+    w._points_active_watch_seconds = assist._POINTS_STALL_WINDOW_S
+    w._points_stall_attempts = 2
+    w._points_stall_exhausted = True
+    monkeypatch.setattr(w, "_read_points_balance", lambda _client: 100)
+    client = Mock()
+    client.connected = True
+    client.evaluate.return_value = points_player_sample(100)
+    reload_page = Mock(return_value=True)
+    monkeypatch.setattr(w, "_reload_page", reload_page)
+    monkeypatch.setattr(w, "_start_f5_verification", Mock())
+    assert w._check_points_stall(client, user_requested=True)
+    assert w._points_stall_attempts == 1
+    assert not w._points_stall_exhausted
+    reload_page.assert_called_once_with(client, reason="F5 points-stall check")
+    drain_page_assist_status()
+
+
 def test_periodic_check_rechecks_content_gate_before_controls(monkeypatch):
     w = worker(monkeypatch, accept_content_gate=True, theater_mode=True)
     client = Mock()
@@ -376,22 +580,28 @@ def test_each_page_checks_every_30_seconds_without_claims(monkeypatch):
         monkeypatch.setattr(w, "_run_gate_and_theater", lambda c: None)
         start = clock[0]
         checks = []
+        points_observations = []
 
         def check(c):
             checks.append(clock[0] - start)
             if len(checks) == 2:
                 w.stop()
 
-        def sleep(seconds):
+        def wait(seconds):
             if w._stop.is_set():
                 return False
             clock[0] += seconds
-            return True
+            return False
 
         monkeypatch.setattr(w, "_check_page", check)
-        monkeypatch.setattr(w, "_sleep", sleep)
+        monkeypatch.setattr(w, "_wait_for_wake", wait)
+        monkeypatch.setattr(
+            w, "_read_points_balance",
+            lambda _client: points_observations.append(clock[0] - start) or 100,
+        )
         w._run()
         assert checks == [30, 60]
+        assert points_observations == [30, 60]
         client.reload.assert_not_called()
 
 
@@ -515,6 +725,7 @@ def test_auto_refresh_restores_only_previously_active_theater(
     schedules = iter([0, None])
     monkeypatch.setattr(w, "_schedule_refresh", lambda: next(schedules))
     monkeypatch.setattr(w, "_wait_for_gate_or_ready", lambda c: True)
+    monkeypatch.setattr(w, "_wait_for_player_ready", lambda c: True)
     state = [before]
     monkeypatch.setattr(w, "_theater_snapshot", lambda c: {
         "state": state[0], "control": {"found": True, "x": 1, "y": 2},

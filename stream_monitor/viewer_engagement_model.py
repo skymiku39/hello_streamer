@@ -50,6 +50,9 @@ class ViewerEngagementSettings:
     claim_poll_seconds_max: int = 90
     theater_mode: bool = False
     theater_delay_seconds: int = 8
+    # Read the exact second balance in Twitch's points summary on a 30 second
+    # cadence; only optional background reload behavior is gated by this.
+    points_stall_refresh_enabled: bool = False
     auto_refresh: bool = False
     refresh_minutes_min: int = 45
     refresh_minutes_max: int = 75

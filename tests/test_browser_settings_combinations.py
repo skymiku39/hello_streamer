@@ -2349,3 +2349,16 @@ def test_engagement_bottom_is_reachable_at_minimum_dialog_height():
         assert tips_bottom <= canvas.canvasy(canvas.winfo_height())
     finally:
         dialog.destroy()
+
+
+def test_points_stall_refresh_setting_is_opt_in_and_persisted():
+    from stream_monitor.app_dialogs import BrowserSettingsDialog
+
+    dialog = BrowserSettingsDialog(_module_ctk_root(), {}, {})
+    try:
+        setting = dialog._page_assist_feature_vars["points_stall_refresh_enabled"]
+        assert setting.get() is False
+        setting.set(True)
+        assert dialog._collect_viewer_engagement()["points_stall_refresh_enabled"] is True
+    finally:
+        dialog.destroy()
