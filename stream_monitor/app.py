@@ -2205,6 +2205,7 @@ def main() -> None:
 
     # Apply the saved language as early as possible so the writable-check
     # error dialog (and any boot-time messages) also respect the user choice.
+    _preloaded_config: dict[str, Any] = {}
     try:
         _preloaded_config = config_manager.load()
         i18n.set_language(
@@ -2251,10 +2252,10 @@ def main() -> None:
     try:
         from stream_monitor.watch_observation import (
             enable_watch_observation,
-            is_watch_observation_requested,
+            should_enable_watch_observation,
         )
 
-        if is_watch_observation_requested(sys.argv[1:]):
+        if should_enable_watch_observation(sys.argv[1:], _preloaded_config):
             enable_watch_observation(paths=portable_paths())
             logger.info(
                 "Watch observation enabled → %s",

@@ -25,8 +25,10 @@ from urllib.parse import urlsplit
 from stream_monitor.cdp_client import (
     DEFAULT_CDP_ATTACH_TIMEOUT_S,
     CdpClient,
+    page_urls_match,
 )
 from stream_monitor.page_assist_status import publish_page_assist_status
+from stream_monitor.playback_health import PlaybackHealth
 from stream_monitor.twitch_player_recovery import PLAYER_SNAPSHOT_JS, PlayerRecovery
 from stream_monitor.viewer_engagement_model import (
     ViewerEngagementSettings,
@@ -189,6 +191,7 @@ _PAGE_OBS_JS = r"""
   }
   const visibility = (document.visibilityState || "unknown");
   return {
+    url: location.href,
     gatePresent,
     hasVideo,
     readyState,
@@ -830,6 +833,7 @@ def _points_playback_eligible(snapshot: Any, *, connected: bool) -> bool:
         and not snapshot.get("paused")
         and not snapshot.get("ended")
         and not snapshot.get("mediaError")
+        and not snapshot.get("errorCode")
         and not snapshot.get("offline")
         and not snapshot.get("gatePresent")
         and isinstance(snapshot.get("videoId"), str)
@@ -940,6 +944,8 @@ class _PageAssistWorker:
         self._points_stall_exhausted = False
         self._points_next_check_at: float | None = None
         self._confirmed_offline = threading.Event()
+        self._playback_health = PlaybackHealth()
+        self._playback_state = "verifying"
         self._player_recovery = PlayerRecovery(url, self._stop, self._confirmed_offline)
         self._thread = threading.Thread(
             target=self._run,
@@ -1178,6 +1184,9 @@ class _PageAssistWorker:
                 content_gate_result=self._obs_gate_result,
             )
             return
+        if "url" in hit and not page_urls_match(self.url, str(hit.get("url", ""))):
+            observe_page_snapshot(channel_key_value=channel, cdp="unknown")
+            return
         visibility = str(hit.get("visibilityState") or "unknown")
         if visibility not in {"visible", "hidden", "prerender", "unloaded"}:
             visibility = "unknown"
@@ -1215,6 +1224,7 @@ class _PageAssistWorker:
                     break
                 except Exception:
                     client.close()
+                    self._maybe_observe_snapshot(client, cdp="unavailable")
                     if self._stop.is_set():
                         return
                     self._refresh_debugging_port()
@@ -1254,6 +1264,8 @@ class _PageAssistWorker:
                     now = time.monotonic()
                     if not client.connected:
                         self._reset_points_media_sample()
+                        self._playback_health.reset_samples()
+                        self._maybe_observe_snapshot(client, cdp="unavailable")
                         self._player_recovery.disconnected()
                         client.close()
                         client = self._new_client()
@@ -1473,6 +1485,11 @@ class _PageAssistWorker:
                 return None
             # Only hover the exact second-balance icon. No click or redemption
             # action is sent; compact text is never guessed or scaled.
+            # Twitch can dismiss a tooltip while the pointer stays on its icon.
+            # Leave first so every sample produces a fresh pointer-enter event.
+            client.call("Input.dispatchMouseEvent", {
+                "type": "mouseMoved", "x": 0.0, "y": 0.0,
+            })
             client.call("Input.dispatchMouseEvent", {
                 "type": "mouseMoved", "x": x, "y": y,
             })
@@ -1590,14 +1607,18 @@ class _PageAssistWorker:
             logger.debug("Twitch points balance read failed for %s", self.url,
                          exc_info=True)
             balance = None
-        if balance is None:
-            self._reset_points_media_sample()
-            return False
         try:
             player_snapshot = client.evaluate(PLAYER_SNAPSHOT_JS)
         except Exception:
             logger.debug("Twitch points playback probe failed for %s", self.url,
                          exc_info=True)
+            player_snapshot = None
+        if not isinstance(player_snapshot, dict) or not page_urls_match(
+            self.url, str(player_snapshot.get("url", "")),
+        ):
+            # A raid keeps the original window owner, but the destination's
+            # points must never be credited to the original broadcast.
+            balance = None
             player_snapshot = None
         stalled, eligible = self._record_points_observation(
             balance,
@@ -1605,6 +1626,7 @@ class _PageAssistWorker:
             time.monotonic(),
             connected=client.connected,
         )
+        self._observe_watch_progress(balance, eligible=eligible, stalled=stalled)
 
         if user_requested and eligible and self._points_stall_exhausted:
             self._points_stall_attempts = 0
@@ -1645,6 +1667,59 @@ class _PageAssistWorker:
             publish_page_assist_status(self.url, "points_stall_exhausted")
         return True
 
+    def _observe_watch_progress(
+        self, balance: int | None, *, eligible: bool, stalled: bool,
+    ) -> None:
+        from stream_monitor.watch_observation import (
+            get_watch_observation,
+            twitch_channel_key_from_url,
+        )
+
+        service = get_watch_observation()
+        if service is None:
+            return
+        service.emit("watch.progress", {
+            "channel_key": twitch_channel_key_from_url(self.url),
+            "playback_state": self._playback_state,
+            "points_balance": balance,
+            "eligible_sample": eligible,
+            "eligible_watch_seconds": self._points_active_watch_seconds,
+            "points_stalled": stalled,
+            "points_reload_attempts": self._points_stall_attempts,
+            "managed_pages": len(active_page_assist_urls()),
+            "server_watch_credit": "unknown",
+        })
+
+    def _check_playback_health(self, client: CdpClient) -> bool:
+        if self._stop.is_set() or self._confirmed_offline.is_set():
+            self._playback_health.reset_samples()
+            return False
+        if self._player_recovery.active or self._f5_verification_active:
+            self._playback_health.reset_samples()
+            self._playback_state = "verifying"
+            return False
+        try:
+            snapshot = client.evaluate(PLAYER_SNAPSHOT_JS)
+        except Exception:
+            snapshot = None
+        if isinstance(snapshot, dict) and not page_urls_match(
+            self.url, str(snapshot.get("url", "")),
+        ):
+            snapshot = None
+        self._playback_state = self._playback_health.observe(
+            snapshot, time.monotonic(), connected=client.connected,
+        )
+        if self._playback_state != "stalled":
+            return False
+        if not self._playback_health.can_reload:
+            publish_page_assist_status(self.url, "f5_unverified")
+            return False
+        if self._reload_page(client, reason="media stalled for 90 seconds"):
+            self._playback_health.reloaded()
+            self._start_f5_verification(reset_budget=True)
+            return True
+        return False
+
     def _check_page(self, client: CdpClient) -> bool:
         """Reconcile the page and verify any pending F5 recovery cycle."""
         if self._stop.is_set() or not client.connected:
@@ -1661,6 +1736,8 @@ class _PageAssistWorker:
             if self._stop.is_set():
                 return False
             player_recovery_active = self._player_recovery.active
+        if self._check_playback_health(client):
+            return True
         ready = self._probe_page_ready(client)
         if ready.get("gatePresent") and self.settings.accept_content_gate:
             self._try_accept_gate(client)
@@ -1688,14 +1765,9 @@ class _PageAssistWorker:
         chat = (self._ensure_chat_visible(client) if self.settings.claim_channel_points
                 else self._chat_snapshot(client).get("status", "hidden"))
         theater = self._theater_snapshot(client).get("state", "unknown")
-        if not ready:
-            playback = "unavailable"
-        elif not ready.get("hasVideo") or ready.get("readyState", 0) < 3:
-            playback = "loading"
-        elif ready.get("paused"):
+        playback = self._playback_state
+        if ready.get("hasVideo") and ready.get("paused"):
             playback = "paused"
-        else:
-            playback = "playing"
         logger.info("Twitch page assist periodic page check for %s: "
                     "playback=%s theater=%s chat=%s", self.url, playback, theater, chat)
         return False
@@ -2060,6 +2132,8 @@ class _PageAssistWorker:
             self._confirmed_offline.is_set() and not user_requested
         ):
             return False
+        if self._f5_was_paused_before_refresh and not user_requested:
+            return False
         theater_was_on = (
             self.settings.theater_mode
             and self._theater_snapshot(client).get("state") == "on"
@@ -2076,6 +2150,7 @@ class _PageAssistWorker:
             logger.exception("Page.reload failed for %s", self.url)
             return False
         self._player_recovery.page_reloaded(action=reason.replace(" ", "_"))
+        self._playback_health.reset_samples()
         self._reset_points_window_after_reload()
         if theater_was_on:
             self._theater_confirmed_once = False

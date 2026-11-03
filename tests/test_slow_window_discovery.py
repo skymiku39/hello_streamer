@@ -158,7 +158,7 @@ def test_cancel_initial_cdp_wait_does_not_start_another_connection(monkeypatch):
     factory.assert_called_once()
 
 
-def test_initial_cdp_retries_have_a_deadline(monkeypatch):
+def test_initial_cdp_retries_stay_bounded_and_cancellable_after_slow_start(monkeypatch):
     worker = assist._PageAssistWorker(URL, 9222, ViewerEngagementSettings())
     clock = [0.0]
     client = Mock()
@@ -170,6 +170,17 @@ def test_initial_cdp_retries_have_a_deadline(monkeypatch):
     client.connect.side_effect = connect
     monkeypatch.setattr(assist, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     monkeypatch.setattr(assist, "CdpClient", lambda: client)
-    monkeypatch.setattr(worker, "_sleep", lambda seconds: True)
+    waits = []
+
+    def wait(seconds):
+        waits.append(seconds)
+        clock[0] += seconds
+        return len(waits) < 8
+
+    monkeypatch.setattr(worker, "_sleep", wait)
     worker._run()
-    assert clock[0] == assist._INITIAL_ATTACH_TIMEOUT_S
+    assert clock[0] > 90
+    assert waits == [1, 2, 4, 8, 16, 30, 30, 30]
+    assert client.connect.call_count == 8
+    assert all(call.kwargs["timeout"] == assist.DEFAULT_CDP_ATTACH_TIMEOUT_S
+               for call in client.connect.call_args_list)

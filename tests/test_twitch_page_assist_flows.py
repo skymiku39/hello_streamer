@@ -381,7 +381,7 @@ def test_periodic_check_reconciles_enabled_controls(monkeypatch, caplog):
         w._check_page(client)
     theater.assert_called_once_with(client)
     chat.assert_called_once_with(client)
-    assert "playback=playing theater=on chat=visible" in caplog.text
+    assert "playback=unknown theater=on chat=visible" in caplog.text
     client.reload.assert_not_called()
 
 
@@ -404,6 +404,7 @@ def test_periodic_check_respects_disabled_controls_and_paused_video(monkeypatch,
 
 def points_player_sample(current_time, **overrides):
     sample = {
+        "url": "https://www.twitch.tv/example",
         "playerPresent": True,
         "hasVideo": True,
         "readyState": 4,
@@ -417,6 +418,23 @@ def points_player_sample(current_time, **overrides):
     }
     sample.update(overrides)
     return sample
+
+
+def test_dismissed_points_tooltip_is_reopened_on_next_sample(dom_browser, monkeypatch):
+    set_dom(dom_browser, '<div data-test-selector="community-points-summary"><span>'
+            '<img width="20" height="20">'
+            '<span data-test-selector="copo-balance-string">6.5萬</span>'
+            '</span></div>')
+    dom_browser.evaluate("""document.querySelector('img').addEventListener('mouseenter', () => {
+        document.querySelectorAll('[role=tooltip]').forEach(el => el.remove());
+        const tip = document.createElement('div');
+        tip.setAttribute('role', 'tooltip'); tip.textContent = '1,000 / 65,800';
+        document.body.append(tip);
+    })""")
+    w = worker(monkeypatch)
+    assert w._read_points_balance(dom_browser) == 65800
+    dom_browser.evaluate("document.querySelector('[role=tooltip]').remove()")
+    assert w._read_points_balance(dom_browser) == 65800
 
 
 def test_points_stall_requires_30_minutes_of_advancing_video(monkeypatch):

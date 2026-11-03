@@ -1,6 +1,6 @@
-# Watch Streak 跨場次診斷觀察（opt-in）
+# Watch Streak 跨場次診斷觀察
 
-診斷專用、預設關閉。不改動開窗／關窗／點擊／recovery／refresh／輪詢決策，也不寫入 `config.json`、`seen_videos.db`、`browser_profile/`。
+診斷紀錄不改動開窗／關窗／點擊／recovery／refresh／輪詢決策，也不寫入 `config.json`、`seen_videos.db`、`browser_profile/`。當儲存的觀看輔助與頁內輔助皆啟用時，程式啟動會自動啟用診斷；其他情況仍預設關閉。
 
 ## 啟用方式
 
@@ -16,7 +16,7 @@ run_hello_streamer.bat --watch-observation
 python -m stream_monitor --watch-observation
 ```
 
-未帶旗標時行為與既有快樂路徑相同。
+診斷在單一執行個體鎖取得之後才開始，第二個程式不會留下孤立的啟動事件。
 
 ## 產物
 
@@ -32,7 +32,8 @@ python -m stream_monitor --watch-observation
 - `app.lifecycle` — 行程 open／close
 - `stream.edge` — Twitch live／offline 邊界
 - `window.action` — 視窗 open／close，`origin` 為 `app_requested`｜`observed`｜`unknown`
-- `page.snapshot` — page-assist/CDP 連線期間約每 30 秒快照（僅在 `--watch-observation` 時縮短 assist 等待以醒來取樣；不改 claim／refresh 期限，旗標關閉時等待不變）：`has_video`、`ready_state`、`paused`、`media_current_time`／`media_time_delta`、content-gate presence／attempt／result、`document_visibility`、`cdp`。若 app 管理的視窗未建立 CDP 連線，開窗時會記一筆 `cdp=unavailable` 的未知樣本，不代表播放器正常或已觀看。
+- `page.snapshot` — 診斷啟用期間約每 30 秒快照（不改 claim／refresh 期限）：`has_video`、`ready_state`、`paused`、`media_current_time`／`media_time_delta`、content-gate presence／attempt／result、`document_visibility`、`cdp`。未建立 CDP 連線時記為 unavailable；轉台或頁面歸屬改變時記為 unknown，不把目的頻道的影片或點數歸屬原頻道。
+- `watch.progress` — 每頁約每 30 秒記錄本機播放驗證狀態、完整第二餘額（讀不到為 null）、點數停滯計時、重試次數及同時受管頁數；`server_watch_credit` 一律為 `unknown`。點數增加也不能證明某場連續觀看已認列。
 
 CDP 失敗時只記錄 `cdp=unavailable|unknown` 與不可用欄位，**絕不**暗示 `paused` 或 offline。
 
@@ -65,3 +66,15 @@ CDP 失敗時只記錄 `cdp=unavailable|unknown` 與不可用欄位，**絕不**
 6. 官方目前說明：原 streak 至少 3 場才符合 Watch Streak Recovery 資格；若提供恢復通知，依 Twitch 當下提示列出的合格內容與期限處理。官方說明的恢復期限為第一場漏看的直播結束後 24 小時，並列出符合標記的 Stories／Clips（各至少 5 秒）、VOD（至少 5 分鐘）或期限內同頻道新直播（至少 5 分鐘）。逐場表應記錄通知時間、期限、採用內容與恢復前後結果。
 
 本工具的 NDJSON **不能**證明 Twitch 伺服器是否認列觀看；僅提供本機開／關窗、live 邊界與 page-assist 可見狀態證據。
+
+## 唯讀現場重跑
+
+在原始碼環境執行以下指令，指定實際 EXE 使用的專用 profile。工具會先查核端點歸屬，再對當時現有的 Twitch 頻道頁取樣；不開新直播、不刷新、不點擊獎勵，僅在完整點數需懸停提示時移動頁內游標。
+
+```powershell
+uv run python scripts/observe_managed_playback.py --profile D:\Tools\HelloStreamer\browser_profile --output artifacts/watch-check.ndjson --samples 12 --interval 30
+```
+
+三個有效影片樣本才能建立本機播放證據。多頁會各自取樣，單頁失敗記為 unknown；該次只開一頁時，不能把結果宣稱為真實 Twitch 多開驗收。跨場次 streak 結果仍需對照上方逐場檢查表。
+
+六頁隔離 Chrome 回歸測試可用 `uv run pytest tests/test_playback_health_browser.py` 重跑。五頁採用真實 MediaStream 時鐘，另一頁刻意凍結 `currentTime` 並保留未暫停狀態；測試只證明本機能分辨停滯，並不連到 Twitch。
