@@ -49,13 +49,22 @@ STREAK_JS = r"""(() => {
 })()"""
 
 POINTS_TARGET_JS = r"""(() => {
- const el=document.querySelector('[data-test-selector="community-points-summary"] [data-test-selector="copo-balance-string"]');
- if (!el) return null;
- const r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
- const top=document.elementFromPoint(x,y);
- if(r.width<1 || r.height<1 || x<0 || y<0 || x>=innerWidth || y>=innerHeight ||
-    !top || !(top===el || el.contains(top))) return null;
- return {x,y};
+ for (const summary of document.querySelectorAll('[data-test-selector="community-points-summary"]')) {
+   const balance=summary.querySelector('[data-test-selector="copo-balance-string"]');
+   if (!balance) continue;
+   // An available bonus chest can hide the entire points balance. Open only
+   // the explicitly labelled balances menu; never click the claim button.
+   const menu=[...summary.querySelectorAll('button[aria-label]')].find(b =>
+     /^(?:小奇點和點數餘額|小奇点和点数余额|bits and (?:channel )?points balances?)$/i.test(b.getAttribute('aria-label') || ''));
+   for (const el of [balance,menu].filter(Boolean)) {
+     const r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
+     const top=document.elementFromPoint(x,y);
+     if(r.width<1 || r.height<1 || x<0 || y<0 || x>=innerWidth || y>=innerHeight ||
+        !top || !(top===el || el.contains(top))) continue;
+     return {x,y};
+   }
+ }
+ return null;
 })()"""
 
 
@@ -231,6 +240,10 @@ def probe_ui(client: CdpClient, channel: str, port: int, output: Path,
           }
           return null;
         })()""")
+        if sample["points_balance"] is None:
+            # The open rewards panel can expose a visible coin even while a
+            # pending bonus hides the original summary's balance.
+            sample["points_balance"] = reader._read_points_balance(client)
     if client.evaluate("location.pathname") != f"/popout/{channel}/chat":
         sample.update(points_balance=None, streak_count=None, ui_status="page_changed")
         sample.pop("streak_screenshot", None)

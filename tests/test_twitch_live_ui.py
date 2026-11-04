@@ -73,6 +73,20 @@ def test_hover_overlay_escape_ignored_dialog_and_native_risk_widget(tmp_path):
         assert risk["count"] == 32 and risk["status"] == "at_risk"
         close_points_dialog(client)
         assert client.evaluate(POINTS_TARGET_JS) is not None
+        client.evaluate("""document.querySelector('[data-test-selector="community-points-summary"]').innerHTML=`
+          <button aria-label="小奇點和點數餘額" style="width:120px;height:30px">1,790
+            <span data-test-selector="copo-balance-string" style="display:none">12.7萬</span>
+          </button>
+          <button id="bonus" aria-label="領取額外獎勵">Bonus</button>`;
+          window.claims=0;document.querySelector('#bonus').onclick=()=>window.claims++;
+          document.querySelector('button[aria-label="小奇點和點數餘額"]').onclick=()=>
+            document.querySelector('[role=dialog]').style.display='block';
+        """)
+        menu = client.evaluate(POINTS_TARGET_JS)
+        assert menu is not None
+        client.click_at(menu["x"], menu["y"])
+        assert client.evaluate(STREAK_JS)["count"] == 32
+        assert client.evaluate("window.claims") == 0
     finally:
         client.close()
         if process.poll() is None:
