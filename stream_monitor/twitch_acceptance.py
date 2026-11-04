@@ -34,11 +34,24 @@ def record_evidence(state: dict[str, Any], sample: dict[str, Any]) -> None:
         row["result"] = "not_applicable"
         state["updated_utc"] = sample["ts_utc"]
         return
+    native_count = (isinstance(count, int) and not isinstance(count, bool)
+                    and sample.get("screenshot_version") == 4
+                    and sample.get("streak_screenshot"))
+    if native_count:
+        row["last_native_streak"] = sample
+        if sample.get("streak_status") == "at_risk":
+            row["last_streak_risk"] = sample
     replace_baseline = (row["baseline"] is None
                         or row["baseline"].get("screenshot_version") != 4)
+    baseline = row.get("baseline")
+    if baseline and row.get("streak_proof") is None:
+        prior_end = epoch(baseline.get("prior_stream_ended_at"))
+        new_end = epoch(sample.get("prior_stream_ended_at"))
+        replace_baseline |= new_end is not None and (prior_end is None or new_end > prior_end)
     if (replace_baseline and sample.get("stream_state") == "offline"
-            and sample.get("screenshot_version") == 4 and sample.get("streak_screenshot")
-            and isinstance(count, int) and not isinstance(count, bool)):
+            and native_count and sample.get("streak_status", "active") == "active"):
+        if row["baseline"]:
+            row.setdefault("initial_baseline", row["baseline"])
         row["baseline"] = sample
 
     previous = row.get("overlap_sample")
@@ -67,6 +80,8 @@ def record_evidence(state: dict[str, Any], sample: dict[str, Any]) -> None:
                 and len(shared) >= 2 and channel in shared
                 and isinstance(count, int) and not isinstance(count, bool)
                 and isinstance(prior_count, int) and not isinstance(prior_count, bool)
+                and sample.get("streak_status", "active") == "active"
+                and previous.get("streak_status", "active") == "active"
                 and count > prior_count):
             row["streak_overlap_candidate"] = {
                 "before": prior_count, "after": count,
@@ -86,6 +101,7 @@ def record_evidence(state: dict[str, Any], sample: dict[str, Any]) -> None:
         if (sample.get("stream_state") == "live" and channel in overlap and len(overlap) >= 2
                 and baseline.get("screenshot_version") == 4
                 and sample.get("screenshot_version") == 4 and sample.get("streak_screenshot")
+                and sample.get("streak_status", "active") == "active"
                 and candidate.get("stream_started_at") == started
                 and candidate.get("after") == count
                 and base_time is not None and start_time > base_time

@@ -127,3 +127,34 @@ def test_counter_increase_before_multiwatch_does_not_prove_multiwatch_credit():
     record_evidence(result, sample(71, streak_count=11, points_balance=110))
     assert result["channels"]["one"]["points_proof"] is not None
     assert result["channels"]["one"]["streak_proof"] is None
+
+
+def test_risk_warning_and_last_native_read_survive_an_unavailable_ui_sample():
+    result = state()
+    risk = sample(69, streak_status="at_risk")
+    record_evidence(result, risk)
+    record_evidence(result, sample(70, streak_count=None, streak_screenshot=None))
+    assert result["channels"]["one"]["last_streak_risk"] == risk
+    assert result["channels"]["one"]["last_native_streak"] == risk
+
+
+def test_at_risk_counter_does_not_prove_new_broadcast_credit():
+    result = state()
+    record_evidence(result, sample(69))
+    record_evidence(result, sample(70, streak_count=11, streak_status="at_risk"))
+    assert result["channels"]["one"]["streak_proof"] is None
+
+
+def test_next_offline_baseline_tracks_actual_last_end_and_preserves_first_baseline():
+    result = state()
+    initial = deepcopy(result["channels"]["one"]["baseline"])
+    next_baseline = sample(120, stream_state="offline", playing_channels=[],
+                           prior_stream_ended_at=(BASE + timedelta(minutes=110)).isoformat())
+    record_evidence(result, next_baseline)
+    row = result["channels"]["one"]
+    assert row["initial_baseline"] == initial
+    assert row["baseline"] == next_baseline
+    record_evidence(result, sample(131, stream_started_at=(BASE + timedelta(minutes=120)).isoformat()))
+    record_evidence(result, sample(132, streak_count=11,
+                                  stream_started_at=(BASE + timedelta(minutes=120)).isoformat()))
+    assert row["streak_proof"] is None  # Only ten minutes since the actual last end.

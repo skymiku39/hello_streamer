@@ -18,7 +18,7 @@ from stream_monitor.cdp_client import (
     acquire_cdp_debugging_port,
 )
 from stream_monitor.playback_health import PlaybackHealth
-from stream_monitor.twitch_acceptance import record_evidence
+from stream_monitor.twitch_acceptance import epoch, record_evidence
 from stream_monitor.twitch_page_assist import _PageAssistWorker
 from stream_monitor.twitch_player_recovery import PLAYER_SNAPSHOT_JS
 from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
@@ -29,7 +29,9 @@ STREAK_JS = r"""(() => {
  for (const button of document.querySelectorAll('[role="dialog"] button[aria-label]')) {
    if (!/連續觀[看賞]|连续观[看赏]|watch streak/i.test(button.getAttribute('aria-label') || '')) continue;
    for (let el=button,n=0;el && n<6;el=el.parentElement,n++) {
-     const text=(el.innerText || '').trim(), match=text.match(re);
+     const text=(el.innerText || '').trim();
+     const risk=text.match(/^(\d[\d,]*)\s*(?:連續紀錄即將中斷|连续记录即将中断|watch streak at risk|streak at risk)/i);
+     const match=text.match(re) || risk;
      if (!match || text.length > 600) continue;
      const parent=el.parentElement;
      const box=parent && parent.innerText.trim()===text ? parent : el;
@@ -39,7 +41,7 @@ STREAK_JS = r"""(() => {
          r.right>innerWidth || r.bottom>innerHeight) continue;
      const top=document.elementFromPoint(r.x+r.width/2,r.y+Math.min(8,r.height/2));
      if(!top || !(top===box || box.contains(top))) continue;
-     return {count:Number(match[1].replaceAll(',', '')),text,
+     return {count:Number(match[1].replaceAll(',', '')),text,status:risk?'at_risk':'active',
        rect:{x:r.x,y:r.y,width:r.width,height:r.height}};
    }
  }
@@ -61,6 +63,28 @@ def utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def epoch_latest(state: dict, channel: str) -> float | None:
+    return epoch(state.get("channels", {}).get(channel, {}).get("latest", {}).get("ts_utc"))
+
+
+def notify_risk(state: dict, sample: dict) -> None:
+    if sample.get("streak_status") != "at_risk" or os.name != "nt":
+        return
+    row = state["channels"][sample["channel"]]
+    key = sample.get("prior_stream_ended_at") or sample.get("stream_started_at")
+    if not key or row.get("risk_notification_key") == key:
+        return
+    try:
+        from winotify import Notification
+
+        Notification(app_id="HelloStreamer", title="Twitch 連續觀賞即將中斷",
+                     msg=f"{sample['channel']}：{sample['streak_count']} 場。請查看 Twitch 官方保持連續紀錄入口。",
+                     duration="long").show()
+        row["risk_notification_key"] = key
+    except Exception as exc:
+        print(json.dumps({"risk_notification_error": type(exc).__name__}), flush=True)
+
+
 def atomic_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -74,10 +98,39 @@ def escape(client: CdpClient) -> None:
         })
 
 
+def clear_pointer(client: CdpClient) -> None:
+    """Dismiss hover overlays; background pages may suspend animation frames."""
+    client.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 0, "y": 0})
+    # Chrome can suspend both rAF and page timers in a covered window. Wait on
+    # the collector's clock, then remeasure and hit-test the actual native UI.
+    time.sleep(.15)
+
+
+def close_points_dialog(client: CdpClient) -> None:
+    """Escape does not close Twitch's rewards panel. Only click its own Close."""
+    clear_pointer(client)
+    hit = client.evaluate(r"""(() => {
+      for (const dialog of document.querySelectorAll('[role="dialog"]')) {
+        if (!dialog.querySelector('[data-test-selector="copo-balance-string"]') &&
+            ![...dialog.querySelectorAll('button[aria-label]')].some(b =>
+              /連續觀[看賞]|连续观[看赏]|watch streak/i.test(b.getAttribute('aria-label') || ''))) continue;
+        const b=[...dialog.querySelectorAll('button[aria-label]')].find(b =>
+          /^(?:關閉|关闭|close|閉じる|닫기)$/i.test(b.getAttribute('aria-label') || ''));
+        if (!b) continue;
+        const r=b.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
+        const top=document.elementFromPoint(x,y);
+        if (r.width>0 && r.height>0 && top && (top===b || b.contains(top))) return {x,y};
+      }
+      return null;
+    })()""")
+    if hit:
+        client.click_at(hit["x"], hit["y"])
+        clear_pointer(client)
+
+
 def capture_rect(client: CdpClient, rect: dict, path: Path, *, streak: bool = False) -> dict | None:
     """CDP clip uses device-independent coordinates, unlike DOM CSS rects."""
-    client.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 0, "y": 0})
-    client.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    clear_pointer(client)
     refreshed = client.evaluate(STREAK_JS) if streak else None
     if streak:
         if not isinstance(refreshed, dict):
@@ -107,6 +160,9 @@ def probe_ui(client: CdpClient, channel: str, port: int, output: Path,
         page = client.evaluate("location.pathname")
         if page == f"/popout/{channel}/chat":
             hit = client.evaluate(POINTS_TARGET_JS)
+            if not hit:
+                close_points_dialog(client)
+                hit = client.evaluate(POINTS_TARGET_JS)
             if hit:
                 break
         time.sleep(.25)
@@ -131,7 +187,9 @@ def probe_ui(client: CdpClient, channel: str, port: int, output: Path,
         image_path = output / "evidence" / channel / "unbounded-points.png"
         capture_rect(client, rect, image_path)
         sample["points_screenshot"] = str(image_path.resolve())
-    escape(client)
+    # The balance reader leaves a tooltip over the next click target. Escape
+    # neither removes that hover nor reliably closes an already-open panel.
+    close_points_dialog(client)
     hit = client.evaluate(POINTS_TARGET_JS)
     if not hit:
         sample["ui_status"] = "points_control_unreachable"
@@ -147,15 +205,18 @@ def probe_ui(client: CdpClient, channel: str, port: int, output: Path,
         time.sleep(.2)
     if isinstance(streak, dict):
         sample.update(streak_count=streak["count"], streak_text=streak["text"],
+                      streak_status=streak["status"],
                       ui_status="native_streak_visible")
         if (previous and previous.get("streak_count") == streak["count"]
+                and previous.get("streak_status", "active") == streak["status"]
                 and previous.get("screenshot_version") == 4
                 and Path(previous.get("streak_screenshot") or "").is_file()):
             sample["streak_screenshot"] = previous.get("streak_screenshot")
         else:
             image_path = output / "evidence" / channel / (str(time.time_ns()) + "-streak.png")
             captured = capture_rect(client, streak["rect"], image_path, streak=True)
-            sample.update(streak_count=captured["count"], streak_text=captured["text"])
+            sample.update(streak_count=captured["count"], streak_text=captured["text"],
+                          streak_status=captured["status"])
             sample["streak_screenshot"] = str(image_path.resolve())
     else:
         sample["ui_status"] = "streak_ui_unavailable"
@@ -173,7 +234,7 @@ def probe_ui(client: CdpClient, channel: str, port: int, output: Path,
     if client.evaluate("location.pathname") != f"/popout/{channel}/chat":
         sample.update(points_balance=None, streak_count=None, ui_status="page_changed")
         sample.pop("streak_screenshot", None)
-    escape(client)
+    close_points_dialog(client)
     return sample
 
 
@@ -188,7 +249,7 @@ def main() -> None:
     parser.add_argument("--inspector-target", help="ID of this task's own chat-only tab")
     parser.add_argument("--log-file", type=Path)
     parser.add_argument("--channels", nargs="+", help="Only probe these configured channels")
-    parser.add_argument("--notify", action="store_true", help="Desktop notice when this run ends")
+    parser.add_argument("--notify", action="store_true", help="Desktop notices for streak risks and run completion")
     args = parser.parse_args()
     if not args.baseline and not args.watch:
         parser.error("Choose --baseline or --watch")
@@ -292,6 +353,7 @@ def main() -> None:
             inspector_id = inspector["id"]
             state["inspector_target_id"] = inspector_id
             playing = []
+            playback_pages = []
             cache = config.get("channel_status_cache", {}).get("channels", {})
             for target in pages:
                 url = str(target.get("url", "")).split("?", 1)[0].rstrip("/")
@@ -306,6 +368,21 @@ def main() -> None:
                     snap = player.evaluate(PLAYER_SNAPSHOT_JS)
                     status = health.setdefault(target["id"], PlaybackHealth()).observe(
                         snap, time.monotonic(), connected=player.connected)
+                    environment = player.evaluate("""({
+                      document_visibility:document.visibilityState, has_focus:document.hasFocus(),
+                      logged_in:!!document.querySelector('[data-a-target="user-menu-toggle"]'),
+                      login_button:!!document.querySelector('[data-a-target="login-button"]'),
+                      screen_x:screenX,screen_y:screenY,outer_width:outerWidth,outer_height:outerHeight,
+                      screen_width:screen.width,screen_height:screen.height
+                    })""")
+                    window = player.call("Browser.getWindowForTarget", {"targetId": target["id"]})
+                    playback_pages.append({
+                        "channel": channel, "playback": status,
+                        "media_time": snap.get("currentTime"), "video_id": snap.get("videoId"),
+                        "paused": snap.get("paused"), "ready_state": snap.get("readyState"),
+                        "error_code": snap.get("errorCode"), "environment": environment,
+                        "window_bounds": window.get("bounds"),
+                    })
                     if status == "playing":
                         playing.append(channel)
                 except Exception:
@@ -320,18 +397,25 @@ def main() -> None:
                     row["overlap_sample"] = None
             with (output / "observations.ndjson").open("a", encoding="utf-8") as file:
                 file.write(json.dumps({"type": "playback.overlap", "ts_utc": utc(),
-                                       "playing_channels": playing}) + "\n")
+                                       "playing_channels": playing,
+                                       "pages": playback_pages}) + "\n")
             live_channels = [
                 name for name in scope if cache.get("twitch:" + name, {}).get("state") == "live"
             ]
-            requested = scope if args.baseline else live_channels
+            # Refresh offline native states too: this captures missed-stream
+            # recovery warnings and a new baseline before the next broadcast.
+            offline_due = [name for name in scope if name not in live_channels and
+                           time.time() - (epoch_latest(state, name) or 0) >= 300]
+            requested = scope if args.baseline else live_channels + offline_due
             if args.channels:
                 requested = [name for name in requested if name in args.channels]
-            round_robin = requested[:]
             if not args.baseline and requested:
-                rotated = requested[cursor % len(requested):] + requested[:cursor % len(requested)]
-                requested = rotated[:3]
-                cursor = (cursor + len(requested)) % len(round_robin)
+                # Keep the cursor in the fixed scope, since the offline-due
+                # subset changes after each probe. A changing ring can starve
+                # live channels and invalidate adjacent evidence intervals.
+                rotated = scope[cursor:] + scope[:cursor]
+                requested = [name for name in rotated if name in requested][:3]
+                cursor = (scope.index(requested[-1]) + 1) % len(scope)
             client = CdpClient()
             try:
                 client.connect(port, inspector["url"], timeout=5)
@@ -345,6 +429,8 @@ def main() -> None:
                                       prior_stream_ended_at=stream.get("ended_at"),
                                       playing_channels=sorted(set(playing)))
                         record_evidence(state, sample)
+                        if args.notify:
+                            notify_risk(state, sample)
                         with (output / "observations.ndjson").open("a", encoding="utf-8") as file:
                             file.write(json.dumps(sample, ensure_ascii=False) + "\n")
                         atomic_json(state_path, state)
@@ -354,6 +440,10 @@ def main() -> None:
                             "channel": channel, "type": type(exc).__name__, "ts_utc": utc(),
                         }
                         atomic_json(state_path, state)
+                        try:
+                            close_points_dialog(client)
+                        except Exception:
+                            pass
                 state["collector"].update(last_cycle_utc=utc(),
                     playing_channels=sorted(set(playing)), live_channels=live_channels,
                     waiting_for="actual_live_overlap_and_next_broadcast_streak_increment")
