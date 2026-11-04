@@ -299,6 +299,7 @@ class _WindowRegistry:
 
 
 _REGISTRY = _WindowRegistry()
+_GEOMETRY_LOCK = threading.Lock()
 # Back-compat module-level views onto the registry's containers. Kept bound to
 # the same objects the registry mutates in place (never reassign), so existing
 # callers/tests that poke them directly keep working.
@@ -575,6 +576,40 @@ def _hold_foreground(
     )
 
 
+def _separate_window_rect(user32: Any, hwnd: int, requested: tuple[int, int, int, int]
+                          ) -> tuple[int, int, int, int]:
+    import ctypes
+    from ctypes import wintypes
+
+    from stream_monitor.window_layout import choose_window_rect
+
+    class MonitorInfo(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    x, y, width, height = requested
+    rect = wintypes.RECT(x, y, x + width, y + height)
+    user32.MonitorFromRect.argtypes = [ctypes.POINTER(wintypes.RECT), wintypes.DWORD]
+    user32.MonitorFromRect.restype = wintypes.HANDLE
+    user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    monitor = user32.MonitorFromRect(ctypes.byref(rect), 2)  # nearest monitor
+    info = MonitorInfo(cbSize=ctypes.sizeof(MonitorInfo))
+    if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return requested
+    area = info.rcWork
+    with _REGISTRY.lock:
+        others = {window.hwnd for bucket in _REGISTRY.by_url.values() for window in bucket}
+    occupied = []
+    for other in others - {hwnd}:
+        bounds = wintypes.RECT()
+        if user32.IsWindow(other) and user32.GetWindowRect(other, ctypes.byref(bounds)):
+            occupied.append((bounds.left, bounds.top, bounds.right - bounds.left,
+                             bounds.bottom - bounds.top))
+    return choose_window_rect(requested, (area.left, area.top, area.right - area.left,
+                                         area.bottom - area.top), occupied)
+
+
 def _apply_new_browser_window_settings_async(
     class_name: str,
     baseline: set[int],
@@ -629,7 +664,8 @@ def _apply_new_browser_window_settings_async(
     minimized = bool(settings.get("minimized"))
     hide_from_taskbar = bool(settings.get("hide_from_taskbar"))
     bring_to_front = bool(settings.get("bring_to_front"))
-    set_window_pos_flags = _SWP_NOZORDER | _SWP_NOACTIVATE
+    always_on_top = bool(settings.get("always_on_top"))
+    set_window_pos_flags = _SWP_NOACTIVATE | (0 if always_on_top else _SWP_NOZORDER)
     if deadline_s is None:
         deadline_s = (MANAGED_WINDOW_DISCOVERY_TIMEOUT_S if track_for_url
                       else _MINIMIZE_DEADLINE_S)
@@ -712,16 +748,23 @@ def _apply_new_browser_window_settings_async(
                         # geometry but the user sees no visible change. Force
                         # a restore first so our X/Y/W/H actually take effect
                         # on screen.
-                        user32.ShowWindow(hwnd, _SW_RESTORE)
-                        user32.SetWindowPos(
-                            hwnd,
-                            0,
-                            x,
-                            y,
-                            width,
-                            height,
-                            set_window_pos_flags,
-                        )
+                        with _GEOMETRY_LOCK:
+                            rect = (x, y, width, height)
+                            if settings.get("separate_windows") and track_for_url:
+                                rect = _separate_window_rect(user32, hwnd, rect)
+                            user32.ShowWindow(hwnd, _SW_RESTORE)
+                            user32.SetWindowPos(hwnd, -1 if always_on_top else 0,
+                                                *rect, set_window_pos_flags)
+                            if settings.get("separate_windows") or always_on_top:
+                                logger.info("Managed playback window HWND=%s rect=%s topmost=%s url=%s",
+                                            hwnd, rect, always_on_top, track_for_url)
+                            # Reserve this slot before another launch chooses
+                            # a position; discovery already checked ownership.
+                            if track_for_url and not _is_url_closing(track_for_url):
+                                _register_tracked_hwnd(track_for_url, hwnd, keywords=track_keywords)
+                    elif always_on_top:
+                        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0,
+                                            _SWP_NOACTIVATE | 0x0001 | 0x0002)
                     if hide_from_taskbar:
                         # Must happen BEFORE minimize: minimizing a window
                         # whose WS_EX_TOOLWINDOW we then toggle on can

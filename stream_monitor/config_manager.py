@@ -89,6 +89,8 @@ DEFAULT_BROWSER_SETTINGS: dict[str, Any] = {
 DEFAULT_VIEWER_ENGAGEMENT: dict[str, Any] = {
     "enabled": False,
     "force_visible": True,
+    "separate_windows": False,
+    "always_on_top": False,
     "keep_system_awake": True,
     "whitelist_performance": True,
     "bring_to_front": True,

@@ -25,6 +25,8 @@ class ViewerEngagementSettings:
     # Skip the minimise / hide-from-taskbar window treatment for Twitch pages,
     # when the user prefers to keep managed playback windows visible.
     force_visible: bool = True
+    separate_windows: bool = False
+    always_on_top: bool = False
     # Hold a Windows execution-state request while a tracked Twitch window is
     # open so the machine does not sleep mid-stream.
     keep_system_awake: bool = True

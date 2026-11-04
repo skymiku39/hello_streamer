@@ -756,6 +756,16 @@ class AppSettingsDialog(ctk.CTkToplevel):
 # ═══════════════════════════════════════════════════════════════════════════
 _VIEWER_ENGAGEMENT_TOGGLES: tuple[tuple[str, str, str], ...] = (
     (
+        "separate_windows",
+        "engagement.toggle.separate_windows",
+        "engagement.toggle.separate_windows.hint",
+    ),
+    (
+        "always_on_top",
+        "engagement.toggle.always_on_top",
+        "engagement.toggle.always_on_top.hint",
+    ),
+    (
         "force_visible",
         "engagement.toggle.force_visible",
         "engagement.toggle.force_visible.hint",

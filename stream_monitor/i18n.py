@@ -31,6 +31,10 @@ DEFAULT_LANGUAGE = "zh_TW"
 # Translation tables
 # ---------------------------------------------------------------------------
 _ZH_TW: dict[str, str] = {
+    "engagement.toggle.separate_windows": "直播視窗使用分開座標",
+    "engagement.toggle.separate_windows.hint": "開窗時優先排在螢幕工作區內的空位；空間不足時錯開排列。僅調整本程式管理的視窗，不保證點數認列。",
+    "engagement.toggle.always_on_top": "直播視窗保持置頂",
+    "engagement.toggle.always_on_top.hint": "讓本程式管理的 Twitch 視窗保持置頂；可能遮住其他程式，不保證點數認列。",
     # App
     "app.title": "哈嘍主播  Hello Streamer",
     "app.title.cn": "哈嘍主播",
@@ -401,6 +405,10 @@ _ZH_TW: dict[str, str] = {
 
 
 _ZH_CN: dict[str, str] = {
+    "engagement.toggle.separate_windows": "直播窗口使用分开坐标",
+    "engagement.toggle.separate_windows.hint": "打开时优先放在屏幕工作区内的空位；空间不足时错开排列。仅调整本程序管理的窗口，不保证积分计入。",
+    "engagement.toggle.always_on_top": "直播窗口保持置顶",
+    "engagement.toggle.always_on_top.hint": "让本程序管理的 Twitch 窗口保持置顶；可能遮住其他程序，不保证积分计入。",
     # App
     "app.title": "哈喽主播  Hello Streamer",
     "app.title.cn": "哈喽主播",
@@ -769,6 +777,10 @@ _ZH_CN: dict[str, str] = {
 
 
 _EN: dict[str, str] = {
+    "engagement.toggle.separate_windows": "Use separate stream window positions",
+    "engagement.toggle.separate_windows.hint": "Place managed windows in free monitor work-area slots, or stagger them when space is limited. This does not guarantee points credit.",
+    "engagement.toggle.always_on_top": "Keep stream windows on top",
+    "engagement.toggle.always_on_top.hint": "Keep managed Twitch windows above other applications. This may cover other windows and does not guarantee points credit.",
     "app.title": "Hello Streamer",
     "app.title.cn": "Hello Streamer",
     "app.title.en": "",
@@ -1124,6 +1136,10 @@ _EN: dict[str, str] = {
 
 
 _JA: dict[str, str] = {
+    "engagement.toggle.separate_windows": "配信ウィンドウの位置を分ける",
+    "engagement.toggle.separate_windows.hint": "管理するウィンドウを画面内の空き領域に配置し、空きが足りない場合は位置をずらします。ポイントの付与を保証するものではありません。",
+    "engagement.toggle.always_on_top": "配信ウィンドウを最前面に固定",
+    "engagement.toggle.always_on_top.hint": "管理する Twitch ウィンドウを最前面に固定します。他のアプリを覆う場合があり、ポイントの付与は保証されません。",
     "app.title": "ハローストリーマー",
     "app.title.cn": "ハローストリーマー",
     "app.title.en": "Hello Streamer",
@@ -1480,6 +1496,10 @@ _JA: dict[str, str] = {
 
 
 _KO: dict[str, str] = {
+    "engagement.toggle.separate_windows": "방송 창을 서로 다른 위치에 배치",
+    "engagement.toggle.separate_windows.hint": "관리하는 창을 화면의 빈 작업 영역에 배치하고 공간이 부족하면 위치를 엇갈리게 배치합니다. 포인트 적립을 보장하지 않습니다.",
+    "engagement.toggle.always_on_top": "방송 창을 항상 위에 표시",
+    "engagement.toggle.always_on_top.hint": "관리하는 Twitch 창을 다른 앱 위에 유지합니다. 다른 창을 가릴 수 있으며 포인트 적립을 보장하지 않습니다.",
     "app.title": "헬로 스트리머",
     "app.title.cn": "헬로 스트리머",
     "app.title.en": "Hello Streamer",
