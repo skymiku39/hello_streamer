@@ -97,7 +97,18 @@ def notify_risk(state: dict, sample: dict) -> None:
 def atomic_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, path)
+    # Windows readers can briefly deny delete-sharing on the destination.
+    # Retrying the atomic replacement keeps a status inspection from killing
+    # a multi-day collector, without exposing a partially written checkpoint.
+    deadline = time.monotonic() + 3.0
+    while True:
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def escape(client: CdpClient) -> None:
