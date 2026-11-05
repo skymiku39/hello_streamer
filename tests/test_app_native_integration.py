@@ -50,5 +50,9 @@ def test_start_and_restart_restore_live_actions_despite_cached_status():
     _run("trigger_restart")
 
 
-def test_dialog_buttons_use_application_style():
-    _run("dialogs")
+@pytest.mark.parametrize("dialog", ["app", "language", "channel", "browser"])
+def test_dialog_buttons_use_application_style(dialog):
+    # Give each independently constructed dialog the existing 30-second bound.
+    # A combined run previously spent 20-30 seconds repainting all four dialogs
+    # across five languages and timed out before any assertion failed.
+    _run("dialogs", dialog)

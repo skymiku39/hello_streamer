@@ -237,7 +237,7 @@ def test_watch_to_trigger_opens_current_live_once(native_app, *, pending_event=F
         services.browser.open.assert_called_once()
 
 
-def test_dialog_buttons_use_application_style(native_app):
+def test_dialog_buttons_use_application_style(native_app, selected=None):
     app, _services = native_app()
     _pump(app)
     callbacks = {
@@ -246,13 +246,14 @@ def test_dialog_buttons_use_application_style(native_app):
         "on_startup_changed": lambda _v: True,
         "on_reset_launch_records": lambda: (True, "settings.reset.success"),
     }
-    factories = [
-        (lambda: AppSettingsDialog(app, **callbacks), "_close_btn"),
-        (lambda: LanguageDialog(app), "_close_btn"),
-        (lambda: AddChannelDialog(app), "_cancel_btn"),
-        (lambda: BrowserSettingsDialog(app, {}), "_cancel_btn"),
-    ]
-    for factory, name in factories:
+    factories = {
+        "app": (lambda: AppSettingsDialog(app, **callbacks), "_close_btn"),
+        "language": (lambda: LanguageDialog(app), "_close_btn"),
+        "channel": (lambda: AddChannelDialog(app), "_cancel_btn"),
+        "browser": (lambda: BrowserSettingsDialog(app, {}), "_cancel_btn"),
+    }
+    choices = [factories[selected]] if selected else list(factories.values())
+    for factory, name in choices:
         dialog = factory()
         try:
             # CTk briefly withdraws new Windows dialogs while applying their
@@ -289,6 +290,8 @@ if __name__ == "__main__":
         elif sys.argv[1] == "trigger_restart":
             test_start_and_restart_restore_live_actions_despite_cached_status(create)
         elif sys.argv[1] == "dialogs":
-            test_dialog_buttons_use_application_style(create)
+            test_dialog_buttons_use_application_style(
+                create, sys.argv[2] if len(sys.argv) > 2 else None,
+            )
         else:
             raise ValueError(sys.argv[1])
