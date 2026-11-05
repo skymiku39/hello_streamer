@@ -22,6 +22,12 @@ def record_evidence(state: dict[str, Any], sample: dict[str, Any]) -> None:
     row = state["channels"].setdefault(channel, {
         "baseline": None, "points_proof": None, "streak_proof": None,
     })
+    proof = row.get("streak_proof") or {}
+    if proof and (proof.get("before") == 0 or proof.get("after") == 1):
+        row.setdefault("superseded_streak_proofs", []).append({
+            "proof": proof, "reason": "first_stream_does_not_prove_cross_broadcast_continuity",
+        })
+        row["streak_proof"] = None
     row["latest"] = sample
     now = epoch(sample["ts_utc"])
     balance = sample.get("points_balance")
@@ -104,6 +110,8 @@ def record_evidence(state: dict[str, Any], sample: dict[str, Any]) -> None:
                 and sample.get("streak_status", "active") == "active"
                 and candidate.get("stream_started_at") == started
                 and candidate.get("after") == count
+                and candidate.get("before", 0) >= 1
+                and baseline.get("streak_count", 0) >= 1
                 and base_time is not None and start_time > base_time
                 and last_end is not None and start_time - last_end >= 1800
                 and now - start_time >= 600 and isinstance(count, int)

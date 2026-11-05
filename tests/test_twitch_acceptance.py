@@ -158,3 +158,37 @@ def test_next_offline_baseline_tracks_actual_last_end_and_preserves_first_baseli
     record_evidence(result, sample(132, streak_count=11,
                                   stream_started_at=(BASE + timedelta(minutes=120)).isoformat()))
     assert row["streak_proof"] is None  # Only ten minutes since the actual last end.
+
+
+def test_first_stream_is_not_continuity_but_next_broadcast_can_prove_it():
+    result = {"scope": ["one", "two"], "channels": {}}
+    record_evidence(result, sample(0, stream_state="offline", playing_channels=[], streak_count=0))
+    record_evidence(result, sample(69, streak_count=0))
+    record_evidence(result, sample(70, streak_count=1, points_balance=110))
+    row = result["channels"]["one"]
+    assert row["points_proof"] is not None
+    assert row["streak_proof"] is None
+    assert row["result"] == "pending"
+    record_evidence(result, sample(120, stream_state="offline", playing_channels=[], streak_count=1,
+                                  prior_stream_ended_at=(BASE + timedelta(minutes=110)).isoformat()))
+    next_start = (BASE + timedelta(minutes=180)).isoformat()
+    record_evidence(result, sample(190, streak_count=1, stream_started_at=next_start))
+    record_evidence(result, sample(191, streak_count=2, stream_started_at=next_start))
+    assert row["streak_proof"]["before"] == 1
+    assert row["streak_proof"]["after"] == 2
+    assert row["result"] == "passed"
+
+
+def test_existing_first_stream_pass_is_revoked_and_its_evidence_is_preserved():
+    result = state()
+    record_evidence(result, sample(69))
+    record_evidence(result, sample(70, points_balance=110))
+    row = result["channels"]["one"]
+    points = deepcopy(row["points_proof"])
+    legacy = {"before": 0, "after": 1, "after_screenshot": "/fixture/first-stream.png"}
+    row.update(streak_proof=legacy, result="passed")
+    record_evidence(result, sample(71, points_balance=110))
+    assert row["streak_proof"] is None
+    assert row["result"] == "pending"
+    assert row["points_proof"] == points
+    assert row["superseded_streak_proofs"][0]["proof"] == legacy
