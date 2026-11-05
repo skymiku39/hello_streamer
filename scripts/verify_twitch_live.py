@@ -262,6 +262,19 @@ def probe_ui(client: CdpClient, channel: str, port: int, output: Path,
     return sample
 
 
+def acceptance_scope(config: dict, requested: list[str] | None) -> list[str]:
+    configured = [c["name"].lower() for c in config["channels"]
+                  if c["platform"] == "twitch" and c.get("enabled", True)]
+    if requested is None:
+        return configured
+    selected = {name.lower() for name in requested}
+    if not selected or not selected.issubset(configured):
+        raise ValueError("--channels must select enabled Twitch channels")
+    # Completion must cover exactly the requested channels. Keeping unrelated
+    # guest players in the scope would leave an otherwise successful run pending.
+    return [name for name in configured if name in selected]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app-dir", type=Path, required=True)
@@ -272,7 +285,7 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=30)
     parser.add_argument("--inspector-target", help="ID of this task's own chat-only tab")
     parser.add_argument("--log-file", type=Path)
-    parser.add_argument("--channels", nargs="+", help="Only probe these configured channels")
+    parser.add_argument("--channels", nargs="+", help="Limit acceptance scope to these configured channels")
     parser.add_argument("--notify", action="store_true", help="Desktop notices for streak risks and run completion")
     args = parser.parse_args()
     if not args.baseline and not args.watch:
@@ -300,14 +313,14 @@ def main() -> None:
     state_path = output / "acceptance.json"
     config_path = args.app_dir / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    scope = [c["name"].lower() for c in config["channels"]
-             if c["platform"] == "twitch" and c.get("enabled", True)]
+    try:
+        scope = acceptance_scope(config, args.channels)
+    except ValueError as exc:
+        parser.error(str(exc))
     state = (json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else
              {"schema_version": 1, "created_utc": utc(), "scope": scope,
               "channels": {}, "result": "pending"})
     assert state["scope"] == scope, "Acceptance scope changed; use a separate output directory"
-    if args.channels and not set(args.channels).issubset(scope):
-        parser.error("--channels must be within the saved acceptance scope")
     state["collector"] = {"pid": os.getpid(), "state": "running", "started_utc": utc()}
     atomic_json(state_path, state)
     deadline = time.monotonic() + args.max_hours * 3600
@@ -431,8 +444,6 @@ def main() -> None:
             offline_due = [name for name in scope if name not in live_channels and
                            time.time() - (epoch_latest(state, name) or 0) >= 300]
             requested = scope if args.baseline else live_channels + offline_due
-            if args.channels:
-                requested = [name for name in requested if name in args.channels]
             if not args.baseline and requested:
                 # Keep the cursor in the fixed scope, since the offline-due
                 # subset changes after each probe. A changing ring can starve

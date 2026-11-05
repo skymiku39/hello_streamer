@@ -73,3 +73,20 @@ def test_non_sharing_write_failure_is_not_retried(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="storage unavailable"):
         collector.atomic_json(path, {"result": "pending"})
     assert len(calls) == 1
+
+
+def test_selected_acceptance_does_not_wait_for_unselected_guest_channel():
+    config = {"channels": [
+        {"platform": "twitch", "name": "guest"},
+        {"platform": "twitch", "name": "priority_one"},
+        {"platform": "twitch", "name": "priority_two"},
+        {"platform": "twitch", "name": "disabled", "enabled": False},
+        {"platform": "youtube", "name": "other"},
+    ]}
+    assert collector.acceptance_scope(config, ["PRIORITY_TWO", "priority_one", "priority_one"]) == [
+        "priority_one", "priority_two",
+    ]
+    assert collector.acceptance_scope(config, None) == ["guest", "priority_one", "priority_two"]
+    for names in [["disabled"], ["other"], ["missing"], []]:
+        with pytest.raises(ValueError):
+            collector.acceptance_scope(config, names)
