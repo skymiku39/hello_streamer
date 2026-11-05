@@ -455,6 +455,7 @@ class ChannelRow(ctk.CTkFrame):
         self._status_timestamp = ""
         self._status_scheduled_start = ""
         self._verification_pending = False
+        self._status_unavailable = False
         self.time_label.configure(text="")
 
     def clear_launch_status(self) -> None:
@@ -581,11 +582,9 @@ class ChannelRow(ctk.CTkFrame):
         if not self.channel.get("enabled", True):
             return
 
-        # A real monitor update (pending=False) always clears the
-        # "restored, not yet re-checked" marker for this row.
-        self._verification_pending = pending
-
         detail = status if isinstance(status, ChannelStatus) else None
+        self._status_unavailable = bool(detail and detail.unavailable)
+        self._verification_pending = pending or self._status_unavailable
         state = detail.state if detail else status
         self._active_url = detail.url if detail else ""
         self._status_title = detail.title if detail else ""
@@ -659,6 +658,8 @@ class ChannelRow(ctk.CTkFrame):
 
     def _compose_time_label_text(self) -> str:
         """Build i18n time label from cached status timestamps."""
+        if getattr(self, "_status_unavailable", False):
+            return tr("status.row.unavailable_hint")
         state = self._status_state
         result = ""
         if state == "live":
@@ -703,9 +704,12 @@ class ChannelRow(ctk.CTkFrame):
 
         state = self._status_state
         if state is None:
-            self.time_label.configure(text="")
+            unavailable = getattr(self, "_status_unavailable", False)
+            self.time_label.configure(
+                text=tr("status.row.unavailable_hint") if unavailable else ""
+            )
             self.status_label.configure(
-                text=tr("status.row.placeholder"),
+                text=tr("status.row.unknown" if unavailable else "status.row.placeholder"),
                 text_color="#666677",
                 fg_color="transparent",
                 cursor="",

@@ -3079,7 +3079,7 @@ def test_twitch_fetch_none_preserves_live_through_tier2(
     db.close()
 
 
-def test_twitch_fetch_none_no_prior_status_leaves_cache_untouched(
+def test_twitch_fetch_none_no_prior_status_reports_unknown(
     monkeypatch, tmp_path
 ) -> None:
     """None with no prior status must not create OFFLINE or publish offline."""
@@ -3092,7 +3092,8 @@ def test_twitch_fetch_none_no_prior_status_leaves_cache_untouched(
     events = _check_and_commit(monitor, entry)
     assert events == []
     with monitor._lock:
-        assert entry.key not in monitor._last_status
+        assert monitor._last_status[entry.key].is_unknown
+        assert monitor._last_status[entry.key].unavailable
         assert monitor._offline_strikes.get("twitch:hello|_") in (None, 0)
         assert monitor._pending_offline_events == []
     db.close()
@@ -3153,10 +3154,10 @@ def test_run_survives_probe_exception(monkeypatch, tmp_path) -> None:
     db.close()
 
 
-def test_twitch_fetch_exception_increments_strike_when_was_live(
+def test_twitch_fetch_exception_preserves_unverified_live(
     monkeypatch, tmp_path,
 ) -> None:
-    """Fetch exceptions while LIVE count toward offline strikes (not frozen)."""
+    """Fetch exceptions preserve LIVE without inventing an offline edge."""
     fetcher = FakeTwitchFetcherReadings([True])
     calls = {"n": 0}
     orig_get = fetcher.get_stream_info
@@ -3180,7 +3181,8 @@ def test_twitch_fetch_exception_increments_strike_when_was_live(
     _check_and_commit(monitor, entry)
     with monitor._lock:
         assert monitor._last_status["twitch:hello"].status is True
-        assert monitor._offline_strikes.get("twitch:hello|_") == 1
+        assert "twitch:hello|_" not in monitor._offline_strikes
+        assert monitor._last_status[entry.key].unavailable
     db.close()
 
 
@@ -3405,7 +3407,7 @@ def test_empty_tidus_feed_strike_before_fallback(
     db.close()
 
 
-def test_youtube_tidus_fetch_failure_counts_strike_not_fallback(
+def test_youtube_tidus_fetch_failure_is_unavailable_not_fallback(
     monkeypatch, tmp_path,
 ) -> None:
     """TIDUS HTTP failure (None) must not be treated as an empty feed."""
@@ -3432,14 +3434,15 @@ def test_youtube_tidus_fetch_failure_counts_strike_not_fallback(
         snap = monitor._probe_snapshots.get(entry.key)
         assert snap is None or not snap.youtube_fallback
         assert monitor._last_status[entry.key].status is True
-        assert monitor._offline_strikes.get("youtube:yt|_") == 1
+        assert "youtube:yt|_" not in monitor._offline_strikes
+        assert monitor._last_status[entry.key].unavailable
     db.close()
 
 
-def test_youtube_fetch_unavailable_cold_start_writes_offline(
+def test_youtube_fetch_unavailable_cold_start_reports_unknown(
     monkeypatch, tmp_path,
 ) -> None:
-    """Cold-start TIDUS failure should still surface an offline row in the UI."""
+    """Cold-start TIDUS failure must surface uncertainty, never OFFLINE."""
     fetcher = FakeYouTubeFetcher(items_batches=[])
     monkeypatch.setattr(
         fetcher,
@@ -3456,8 +3459,9 @@ def test_youtube_fetch_unavailable_cold_start_writes_offline(
     with monitor._lock:
         row = monitor._last_status["youtube:yt"]
         assert isinstance(row, ChannelStatus)
-        assert row.status is False
-        assert row.ended_at_source == "pending"
+        assert row.is_unknown
+        assert row.unavailable
+        assert row.ended_at_source == ""
         assert row.ended_at == ""
     db.close()
 

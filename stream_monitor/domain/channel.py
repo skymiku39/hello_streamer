@@ -80,6 +80,7 @@ class ChannelStatus:
     vod_url: str = ""  # archive / replay link for the link button
     upcoming_url: str = ""  # waiting-room link when offline but scheduled
     ended_at_source: str = ""  # "vod" | "confirmed" | "pending"
+    unavailable: bool = False  # Last query failed; state is only last-known.
 
     @property
     def state(self) -> ChannelState:

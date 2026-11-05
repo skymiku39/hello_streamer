@@ -62,7 +62,9 @@ class YouTubePlatformProbe:
         snap.youtube_items = items
         with session.lock:
             session.probe_snapshots[entry.key] = snap
-        facade.publish_preview(entry, from_probe=True)
+        # An empty feed needs the fallback probe before it can prove OFFLINE.
+        if items:
+            facade.publish_preview(entry, from_probe=True)
         if not items:
             with session.lock:
                 prev = session.last_status.get(entry.key)

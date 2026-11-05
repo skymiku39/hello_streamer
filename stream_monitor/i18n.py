@@ -169,6 +169,8 @@ _ZH_TW: dict[str, str] = {
     "status.row.time.no_data": "無時間資料",
     "status.row.time.pending_detail": "未開播，待深度檢查",
     "status.row.pending_suffix": "· 待檢測",
+    "status.row.unknown": "無法確認",
+    "status.row.unavailable_hint": "查詢失敗，等待重試；保留上次狀態",
 
     # Tray
     "tray.show": "顯示主畫面",
@@ -529,6 +531,7 @@ _ZH_CN: dict[str, str] = {
     "status.watching": "仅监测中…",
     "status.watching_once": "仅监测一次中…",
     "status.stopped": "已停止",
+    "status.monitor_restarted": "监控已自动恢复…",
     "status.empty_hint": "尚无频道，请点击「＋ 新增频道」开始",
     "status.row.placeholder": "  --  ",
     "status.row.paused": " 已暂停 ",
@@ -542,6 +545,8 @@ _ZH_CN: dict[str, str] = {
     "status.row.time.no_data": "无时间资料",
     "status.row.time.pending_detail": "未开播，待深度检查",
     "status.row.pending_suffix": "· 待检测",
+    "status.row.unknown": "无法确认",
+    "status.row.unavailable_hint": "查询失败，等待重试；保留上次状态",
 
     # Tray
     "tray.show": "显示主界面",
@@ -910,6 +915,8 @@ _EN: dict[str, str] = {
     "status.row.time.no_data": "No time data",
     "status.row.time.pending_detail": "Not live, pending detail check",
     "status.row.pending_suffix": "· checking",
+    "status.row.unknown": "UNKNOWN",
+    "status.row.unavailable_hint": "Query failed; retrying. Last known state shown.",
 
     "tray.show": "Show main window",
     "tray.trigger_active": "✓ Monitor + Trigger",
@@ -959,6 +966,7 @@ _EN: dict[str, str] = {
 
     "browser.title": "Browser Settings",
     "browser.tab.basic": "Basic",
+    "browser.tab.user": "Basic settings",
     "browser.tab.window": "Window",
     "browser.tab.account": "Account",
     "browser.tab.lifecycle": "Cleanup",
@@ -1269,6 +1277,8 @@ _JA: dict[str, str] = {
     "status.row.time.no_data": "時間情報なし",
     "status.row.time.pending_detail": "未配信、詳細確認待ち",
     "status.row.pending_suffix": "· 確認待ち",
+    "status.row.unknown": "確認不可",
+    "status.row.unavailable_hint": "取得失敗・再試行待ち。前回の状態を表示。",
 
     "tray.show": "メイン画面を表示",
     "tray.trigger_active": "✓ 監視＋実行中",
@@ -1629,6 +1639,8 @@ _KO: dict[str, str] = {
     "status.row.time.no_data": "시간 정보 없음",
     "status.row.time.pending_detail": "미방송, 상세 확인 대기",
     "status.row.pending_suffix": "· 확인 대기",
+    "status.row.unknown": "확인 불가",
+    "status.row.unavailable_hint": "조회 실패, 재시도 대기. 마지막 상태 표시.",
 
     "tray.show": "메인 화면 표시",
     "tray.trigger_active": "✓ 감시 + 트리거 중",

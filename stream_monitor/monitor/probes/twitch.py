@@ -48,7 +48,10 @@ class TwitchPlatformProbe:
                         entry.key,
                     )
                     snap.fetcher = fetcher
-                    return []
+                    return facade.handle_fetch_unavailable(
+                        entry, label="Twitch", snap=snap,
+                        reason="offline confirmation unavailable",
+                    )
                 info = retry
         except Exception:
             logger.exception("Error fetching %s", entry.key)
@@ -57,9 +60,8 @@ class TwitchPlatformProbe:
             )
 
         if info is None:
-            # Primary get_stream_info None is unavailable evidence only:
-            # do not strike, commit OFFLINE, mutate cache, or emit offline.
-            # (Exceptions still use the shared handle_fetch_unavailable path.)
+            # Missing evidence marks the cached state unverified; it must not
+            # strike, commit OFFLINE, or emit an offline edge.
             logger.warning(
                 "Twitch %s: fetch returned None (unavailable), "
                 "keeping prev_status=%s (no strike)",
@@ -67,7 +69,9 @@ class TwitchPlatformProbe:
                 prev_status,
             )
             snap.fetcher = fetcher
-            return []
+            return facade.handle_fetch_unavailable(
+                entry, label="Twitch", snap=snap, reason="fetch returned None"
+            )
 
         live_key = _live_cache_key(entry.key)
 

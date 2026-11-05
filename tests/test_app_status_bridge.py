@@ -73,6 +73,25 @@ def _make_row():
     return host, row
 
 
+def test_unavailable_status_is_visible_and_fresh_update_clears_it():
+    host, row = _make_row()
+    try:
+        row.set_status(ChannelStatus(status=None, unavailable=True))
+        assert row._status_state is None
+        assert row.status_label.cget("text") == i18n.tr("status.row.unknown")
+        assert row._verification_pending
+        assert row.time_label.cget("text") == i18n.tr("status.row.unavailable_hint")
+        row.set_status(ChannelStatus(status=True, unavailable=True))
+        assert row._status_state == "live"
+        assert row._verification_pending
+        assert row.time_label.cget("text") == i18n.tr("status.row.unavailable_hint")
+        row.set_status(ChannelStatus(status=True))
+        assert not row._verification_pending
+        assert row.time_label.cget("text") != i18n.tr("status.row.unavailable_hint")
+    finally:
+        host.destroy()
+
+
 def test_channel_row_live_status() -> None:
     host, row = _make_row()
     try:
