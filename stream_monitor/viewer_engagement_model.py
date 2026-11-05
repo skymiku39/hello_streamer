@@ -13,8 +13,36 @@ claim, auto-refresh) is available in source and packaged builds.
 from __future__ import annotations
 
 import importlib.util
-from dataclasses import asdict, dataclass, fields
+import re
+from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Any
+from urllib.parse import urlsplit
+
+
+def normalize_points_priorities(value: Any) -> list[str]:
+    """Parse explicit channel logins, rejecting an ambiguous or oversized list."""
+    entries = re.split(r"[\s,，]+", value.strip()) if isinstance(value, str) else value
+    if not isinstance(entries, (list, tuple)):
+        raise ValueError("Expected channel names")
+    names = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            raise ValueError("Expected channel names")
+        name = entry.strip().lower()
+        if not name:
+            continue
+        if "://" in name:
+            parsed = urlsplit(name)
+            if parsed.hostname not in {"twitch.tv", "www.twitch.tv"}:
+                raise ValueError("Expected a Twitch channel URL")
+            name = parsed.path.strip("/")
+        if not re.fullmatch(r"[a-z0-9_]{1,25}", name):
+            raise ValueError("Invalid Twitch channel name")
+        if name not in names:
+            names.append(name)
+    if len(names) > 2:
+        raise ValueError("Choose at most two priority channels")
+    return names
 
 
 @dataclass
@@ -55,6 +83,9 @@ class ViewerEngagementSettings:
     # Read the exact second balance in Twitch's points summary on a 30 second
     # cadence; only optional background reload behavior is gated by this.
     points_stall_refresh_enabled: bool = False
+    # A conservative allocation policy, not a claim about a published Twitch
+    # limit. Empty preserves shared-account multiview. Other channels use Guest.
+    points_priority_channels: list[str] = field(default_factory=list)
     auto_refresh: bool = False
     refresh_minutes_min: int = 45
     refresh_minutes_max: int = 75
@@ -65,7 +96,26 @@ class ViewerEngagementSettings:
             return cls()
         valid = {field.name for field in fields(cls)}
         kwargs = {key: raw[key] for key in valid if key in raw}
+        try:
+            kwargs["points_priority_channels"] = normalize_points_priorities(
+                raw.get("points_priority_channels", [])
+            )
+        except ValueError:
+            kwargs["points_priority_channels"] = []
         return cls(**kwargs)
+
+    def points_role(self, url: str) -> str:
+        parsed = urlsplit(url)
+        if (not self.enabled or not self.points_priority_channels
+                or parsed.hostname not in {"twitch.tv", "www.twitch.tv"}):
+            return "shared"
+        name = parsed.path.strip("/").split("/")[0].lower()
+        return "priority" if name in self.points_priority_channels else "watch_only"
+
+    def for_channel(self, url: str) -> ViewerEngagementSettings:
+        if self.points_role(url) == "watch_only":
+            return replace(self, claim_channel_points=False, points_stall_refresh_enabled=False)
+        return self
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

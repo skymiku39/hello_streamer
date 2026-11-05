@@ -1,5 +1,29 @@
 # Watch Streak 跨場次診斷觀察
 
+## 多開與指定點數頻道（2026-11-06 查核）
+
+瀏覽器設定的「觀看」頁可填入最多兩個優先頻道帳號，以逗號分隔。
+留空維持原本共用帳號行為；填入後，指定頻道共用所選的專用 Chrome／Edge
+帳號，其餘頻道以獨立訪客模式播放，不累積這個帳號的點數或連續觀看。
+這是保守的點數分配設定，兩個名額不是宣稱 Twitch 已公開保證的固定上限。
+變更名單後需要重新開啟受影響的頁面；同帳號在其他程式／裝置上的播放仍可能競爭認列。
+若專用瀏覽器開啟失敗，不會偷偷改用已登入的預設瀏覽器。
+
+自動領取綠色觀看獎勵是獨立開關，儲存後會套用至已運作的頁內輔助。
+每次只點一次，最多等待六次、每次 0.8 秒確認按鈕消失；記錄 UI 成功與
+伺服器實際餘額增長時，仍須分開看待。訪客頻道不執行點數領取或點數停滯刷新。
+
+驗收必須分別記錄：每頁影片時間是否前進、指定頻道固定點數是否增加、
+綠色獎勵是否領取，以及真正下一場直播的原生 streak 是否增加。
+十頁正常播放不能直接證明十台公開觀看人數都包含本帳號。
+
+查核來源：
+
+- [Twitch 觀看人數說明](https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat?language=en_US)：播放中的靜音、背景分頁仍符合觀看條件；聊天名單不等於觀看人數，公開總數也無法逐一歸因。
+- [Twitch 觀眾點數指南](https://help.twitch.tv/s/article/viewer-channel-point-guide?lang=en_US&language=en_US)：登入後的基本觀看獎勵與點擊領取獎勵分開計算。
+- [Twitch Watch Streaks](https://help.twitch.tv/s/article/recover-watch-streaks?language=en_US)：需以不同合格直播及原生 streak 增長驗證；恢復舊 streak 不會增加次數。
+- [第三方實作的限制說明](https://github.com/Tkd-Alex/Twitch-Channel-Points-Miner-v2#limits)：採兩台優先策略。這不是 Twitch 官方規格；本程式使用正常瀏覽器播放驗證，不採用該專案的觀看模擬方式。
+
 診斷紀錄不改動開窗／關窗／點擊／recovery／refresh／輪詢決策，也不寫入 `config.json`、`seen_videos.db`、`browser_profile/`。當儲存的觀看輔助與頁內輔助皆啟用時，程式啟動會自動啟用診斷；其他情況仍預設關閉。
 
 ## 啟用方式

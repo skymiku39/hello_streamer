@@ -725,6 +725,8 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
             "need the CLI flags to take effect at startup."
         )
 
+    if settings.get("guest_mode"):
+        args.append("--guest")
     cdp_port = settings.get("_cdp_debugging_port")
     # Windows cold starts use a nonzero port to preserve manual sign-in.
     # Zero remains supported for Linux and existing port-zero sessions.
@@ -858,6 +860,13 @@ def _open_with_browser_settings(
     settings, but it is never tracked, so the app leaves it alone.
     """
     coerced = coerce_browser_settings(settings)
+    from stream_monitor.twitch_watch_policy import route_browser
+
+    try:
+        coerced = route_browser(url, coerced, _active_viewer_engagement())
+    except ValueError as exc:
+        logger.warning("Cannot apply Twitch points priority: %s", exc)
+        return False
     if coerced is None:
         return False
     settings = coerced.to_dict()
@@ -1182,7 +1191,7 @@ def _open_with_browser_settings(
             # Track closure even when keep-awake and diagnostic observation are
             # disabled. Re-read settings because launch may outlast a UI toggle.
             _register_obs_managed_url(url)
-            start_page_assist(url, cdp_port, current_engagement)
+            start_page_assist(url, cdp_port, current_engagement.for_channel(url))
         except Exception:
             publish_page_assist_status(url, "unavailable")
             logger.exception("Failed to start Twitch page assist for %s", url)
@@ -1212,6 +1221,12 @@ def _resume_managed_window_assist(
     """Reattach a recovered player without launching another Chrome window."""
     engagement = _active_viewer_engagement()
     browser = coerce_browser_settings(settings)
+    from stream_monitor.twitch_watch_policy import route_browser
+
+    try:
+        browser = route_browser(url, browser, engagement)
+    except ValueError:
+        return
     if browser is None or not browser.enabled or engagement is None or not is_twitch_url(url):
         return
     profile = _resolve_effective_user_data_dir(
@@ -1282,6 +1297,17 @@ def open_url(
         logger.warning("Cannot open empty URL")
         return False
 
+    from stream_monitor.twitch_watch_policy import route_browser
+
+    engagement = _active_viewer_engagement()
+    try:
+        browser_settings = route_browser(
+            url, coerce_browser_settings(browser_settings), engagement,
+        )
+    except ValueError as exc:
+        logger.warning("Cannot apply Twitch points priority: %s", exc)
+        return False
+
     if (manage and managed_window_launch_pending(url)
             and not _browser_win32._REGISTRY.is_closing(url)):
         logger.info("Reusing pending managed launch for %s", url)
@@ -1306,6 +1332,11 @@ def open_url(
         ):
             return True
         custom_launch_failed = True
+
+    if engagement is not None and engagement.points_role(url) != "shared":
+        # A fallback to the everyday signed-in browser would silently defeat
+        # the user's explicit selection of which channels use their account.
+        return False
 
     block_fallback = (
         manage

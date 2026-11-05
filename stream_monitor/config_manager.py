@@ -107,6 +107,7 @@ DEFAULT_VIEWER_ENGAGEMENT: dict[str, Any] = {
     "theater_mode": False,
     "theater_delay_seconds": 8,
     "points_stall_refresh_enabled": False,
+    "points_priority_channels": [],
     "auto_refresh": False,
     "refresh_minutes_min": 45,
     "refresh_minutes_max": 75,
@@ -407,7 +408,16 @@ def _normalize_viewer_engagement(value: Any) -> dict[str, Any]:
         for key in normalized:
             if key not in value:
                 continue
-            if key in _VIEWER_ENGAGEMENT_INT_KEYS:
+            if key == "points_priority_channels":
+                from stream_monitor.viewer_engagement_model import (
+                    normalize_points_priorities,
+                )
+
+                try:
+                    normalized[key] = normalize_points_priorities(value[key])
+                except ValueError:
+                    logger.warning("Invalid Twitch points priority list; keeping shared mode")
+            elif key in _VIEWER_ENGAGEMENT_INT_KEYS:
                 floor = _VIEWER_ENGAGEMENT_MIN_BOUNDS.get(key, 0)
                 normalized[key] = max(
                     floor, _coerce_int(value[key], normalized[key])

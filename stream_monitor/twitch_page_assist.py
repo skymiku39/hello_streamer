@@ -2494,6 +2494,7 @@ def start_page_assist(
         return False
     if not is_twitch_url(url) or port <= 0:
         return False
+    engagement = engagement.for_channel(url)
     key = _url_key(url)
     from stream_monitor.cdp_client import profile_for_cdp_port
 
@@ -2517,7 +2518,7 @@ def update_page_assist_settings(settings: ViewerEngagementSettings) -> None:
     """Apply saved switches to existing players without reloading their video."""
     with _assist_lock:
         for worker in _assist_by_url.values():
-            worker.settings = settings
+            worker.settings = settings.for_channel(worker.url)
             worker._settings_changed.set()
             worker._wake.set()
 

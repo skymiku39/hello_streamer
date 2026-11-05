@@ -51,6 +51,8 @@ class BrowserSettings:
     close_on_stop: bool = False
     close_off_topic_pages: bool = False
     hide_from_taskbar: bool = False
+    # Derived by the explicit Twitch points policy, not copied from user login.
+    guest_mode: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> BrowserSettings:

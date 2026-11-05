@@ -31,6 +31,10 @@ DEFAULT_LANGUAGE = "zh_TW"
 # Translation tables
 # ---------------------------------------------------------------------------
 _ZH_TW: dict[str, str] = {
+    "engagement.priority.label": "優先累積點數的頻道（最多 2 台）",
+    "engagement.priority.hint": "以逗號分隔頻道帳號；留空維持原模式。指定後使用同一專用 Chrome／Edge 帳號，其餘以訪客播放，不累積本帳號點數或連續觀看。更改名單後請重新開啟受影響頁面。外部同帳號播放仍可能影響認列；觀看人數不保證。",
+    "engagement.priority.invalid": "請填入最多 2 個有效 Twitch 頻道，並選擇已啟用的專用 Chrome／Edge 帳號。",
+
     "engagement.toggle.separate_windows": "直播視窗使用分開座標",
     "engagement.toggle.separate_windows.hint": "開窗時優先排在螢幕工作區內的空位；空間不足時錯開排列。僅調整本程式管理的視窗，不保證點數認列。",
     "engagement.toggle.always_on_top": "直播視窗保持置頂",
@@ -407,6 +411,10 @@ _ZH_TW: dict[str, str] = {
 
 
 _ZH_CN: dict[str, str] = {
+    "engagement.priority.label": "优先累积点数的频道（最多 2 台）",
+    "engagement.priority.hint": "用逗号分隔频道账号；留空保持原模式。指定后使用同一专用 Chrome／Edge 账号，其余使用访客模式，不累积本账号点数或连续观看。修改后请重新打开相关页面。外部同账号播放仍可能影响认列；观看人数不保证。",
+    "engagement.priority.invalid": "请填写最多 2 个有效 Twitch 频道，并启用专用 Chrome／Edge 账号。",
+
     "engagement.toggle.separate_windows": "直播窗口使用分开坐标",
     "engagement.toggle.separate_windows.hint": "打开时优先放在屏幕工作区内的空位；空间不足时错开排列。仅调整本程序管理的窗口，不保证积分计入。",
     "engagement.toggle.always_on_top": "直播窗口保持置顶",
@@ -782,6 +790,10 @@ _ZH_CN: dict[str, str] = {
 
 
 _EN: dict[str, str] = {
+    "engagement.priority.label": "Priority channels for points (up to 2)",
+    "engagement.priority.hint": "Comma-separated channel logins; leave blank for shared mode. Selected channels use one dedicated Chrome/Edge account. Others play as guests without account points or streaks. Reopen affected pages after editing. Other signed-in players can still compete for credit; viewer counts are not guaranteed.",
+    "engagement.priority.invalid": "Enter up to 2 valid Twitch channels and enable a dedicated Chrome/Edge profile.",
+
     "engagement.toggle.separate_windows": "Use separate stream window positions",
     "engagement.toggle.separate_windows.hint": "Place managed windows in free monitor work-area slots, or stagger them when space is limited. This does not guarantee points credit.",
     "engagement.toggle.always_on_top": "Keep stream windows on top",
@@ -1144,6 +1156,10 @@ _EN: dict[str, str] = {
 
 
 _JA: dict[str, str] = {
+    "engagement.priority.label": "ポイント優先チャンネル（最大2つ）",
+    "engagement.priority.hint": "ログイン名をカンマ区切りで入力。空欄は従来の共有モード。指定先は同じ専用Chrome/Edgeアカウント、他はゲスト再生（ポイント・連続視聴なし）。変更後は該当ページを開き直してください。他のログイン済み再生も認定に影響します。視聴者数は保証できません。",
+    "engagement.priority.invalid": "有効なTwitchチャンネルを最大2つ指定し、専用Chrome/Edgeプロファイルを有効にしてください。",
+
     "engagement.toggle.separate_windows": "配信ウィンドウの位置を分ける",
     "engagement.toggle.separate_windows.hint": "管理するウィンドウを画面内の空き領域に配置し、空きが足りない場合は位置をずらします。ポイントの付与を保証するものではありません。",
     "engagement.toggle.always_on_top": "配信ウィンドウを最前面に固定",
@@ -1506,6 +1522,10 @@ _JA: dict[str, str] = {
 
 
 _KO: dict[str, str] = {
+    "engagement.priority.label": "포인트 우선 채널 (최대 2개)",
+    "engagement.priority.hint": "채널 로그인명을 쉼표로 구분하세요. 빈칸은 기존 공유 모드입니다. 선택 채널은 전용 Chrome/Edge 계정, 나머지는 게스트로 재생하며 계정 포인트와 연속 시청을 쌓지 않습니다. 변경 후 해당 페이지를 다시 여세요. 다른 로그인 재생도 인정에 영향을 줍니다. 시청자 수는 보장되지 않습니다.",
+    "engagement.priority.invalid": "유효한 Twitch 채널을 최대 2개 입력하고 전용 Chrome/Edge 프로필을 활성화하세요.",
+
     "engagement.toggle.separate_windows": "방송 창을 서로 다른 위치에 배치",
     "engagement.toggle.separate_windows.hint": "관리하는 창을 화면의 빈 작업 영역에 배치하고 공간이 부족하면 위치를 엇갈리게 배치합니다. 포인트 적립을 보장하지 않습니다.",
     "engagement.toggle.always_on_top": "방송 창을 항상 위에 표시",
