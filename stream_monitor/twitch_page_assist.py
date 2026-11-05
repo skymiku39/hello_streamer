@@ -44,6 +44,7 @@ _GATE_POLL_S = 1.0
 _READY_CONFIRM_POLLS = 2
 _THEATER_VERIFY_WAIT_S = 0.6
 _CLAIM_VERIFY_WAIT_S = 0.8
+_CLAIM_VERIFY_POLLS = 6
 _PAGE_CHECK_INTERVAL_S = 30.0
 _POINTS_STALL_WINDOW_S = 30 * 60.0
 _POINTS_STALL_RETRY_LIMIT = 2
@@ -919,6 +920,7 @@ class _PageAssistWorker:
         self._theater_confirmed_once = False
         self._stop = threading.Event()
         self._wake = threading.Event()
+        self._settings_changed = threading.Event()
         self._external_check_requested = threading.Event()
         self._external_check_lock = threading.Lock()
         self._external_check_due_at: float | None = None
@@ -1262,6 +1264,10 @@ class _PageAssistWorker:
                 next_page_check_at = self._next_page_check_at()
                 while not self._stop.is_set():
                     now = time.monotonic()
+                    if self._settings_changed.is_set():
+                        self._settings_changed.clear()
+                        claim_deadline = now
+                        next_refresh_at = self._schedule_refresh()
                     if not client.connected:
                         self._reset_points_media_sample()
                         self._playback_health.reset_samples()
@@ -2413,6 +2419,8 @@ class _PageAssistWorker:
         )
         if not self._sleep(delay):
             return False
+        if self._settings_changed.is_set() and not self.settings.claim_channel_points:
+            return False
 
         # DOM may change during fuzzy delay — re-probe exact eligible button.
         hit = self._probe_claim(client)
@@ -2445,9 +2453,16 @@ class _PageAssistWorker:
             logger.exception("Claim click failed for %s", self.url)
             return False
 
-        if not self._sleep(_CLAIM_VERIFY_WAIT_S):
-            return False
-        after = self._claim_still_present(client, key)
+        # Twitch acknowledges the click asynchronously. Real playback showed
+        # the bonus still present at 0.8 s, then gone with +50 points by 2 s.
+        # Retry only the observation, never the click, for at most 4.8 s.
+        after = {"present": True}
+        for _ in range(_CLAIM_VERIFY_POLLS):
+            if not self._sleep(_CLAIM_VERIFY_WAIT_S):
+                return False
+            after = self._claim_still_present(client, key)
+            if not after.get("present"):
+                break
         if after.get("present"):
             logger.warning(
                 "Twitch page assist claim click unverified for %s "
@@ -2496,6 +2511,15 @@ def start_page_assist(
         previous.join(timeout=1.0)
     worker.start()
     return True
+
+
+def update_page_assist_settings(settings: ViewerEngagementSettings) -> None:
+    """Apply saved switches to existing players without reloading their video."""
+    with _assist_lock:
+        for worker in _assist_by_url.values():
+            worker.settings = settings
+            worker._settings_changed.set()
+            worker._wake.set()
 
 
 def stop_page_assist(url: str) -> None:

@@ -241,10 +241,36 @@ def test_claim_requires_disappearance_with_points_ui(monkeypatch, after, success
     client = Mock()
     monkeypatch.setattr(w, "_ensure_chat_visible", lambda c: "visible")
     probes = iter([BONUS, BONUS, after])
-    monkeypatch.setattr(w, "_probe_claim", lambda c: next(probes))
+    monkeypatch.setattr(w, "_probe_claim", lambda c: next(probes, after))
     assert w._try_claim(client) is success
+    assert client.click_at.call_count == 1
     x, y = client.click_at.call_args.args
     assert 30 < x < 70 and 20 < y < 40
+
+
+def test_claim_waits_for_delayed_acknowledgement_without_clicking_again(monkeypatch):
+    w = worker(monkeypatch)
+    client = Mock()
+    monkeypatch.setattr(w, "_ensure_chat_visible", lambda c: "visible")
+    probes = iter([BONUS, BONUS, BONUS, BONUS,
+                   {"found": False, "pointsPresent": True}])
+    monkeypatch.setattr(w, "_probe_claim", lambda c: next(probes))
+    assert w._try_claim(client)
+    client.click_at.assert_called_once()
+
+
+def test_saved_claim_switch_reaches_existing_worker_without_page_reload(monkeypatch):
+    from stream_monitor import notifier
+
+    w = worker(monkeypatch)
+    monkeypatch.setattr(assist, "_assist_by_url", {w.url: w})
+    monkeypatch.setattr(notifier, "_VIEWER_ENGAGEMENT", None)
+    notifier.configure_viewer_engagement(ViewerEngagementSettings(
+        enabled=True, page_assist_enabled=True, claim_channel_points=True,
+    ))
+    assert w.settings.claim_channel_points
+    assert w._settings_changed.is_set() and w._wake.is_set()
+    assert not w._stop.is_set()
 
 
 @pytest.mark.parametrize("chat", ["hidden", "collapsed", "not_logged_in", "unavailable"])

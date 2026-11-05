@@ -164,12 +164,16 @@ _OBS_MANAGED_LOCK = threading.Lock()
 def configure_viewer_engagement(
     settings: ViewerEngagementSettings | dict[str, Any] | None,
 ) -> None:
-    """Install the active viewer-engagement settings for subsequent launches."""
+    """Install viewer settings for new launches and already-running assistants."""
     global _VIEWER_ENGAGEMENT
     _VIEWER_ENGAGEMENT = coerce_viewer_engagement(settings)
     if _VIEWER_ENGAGEMENT is None or not _VIEWER_ENGAGEMENT.page_assist_active():
         stop_all_page_assist()
         publish_page_assist_status("*", "")
+    else:
+        from stream_monitor.twitch_page_assist import update_page_assist_settings
+
+        update_page_assist_settings(_VIEWER_ENGAGEMENT)
 
 
 def _active_viewer_engagement() -> ViewerEngagementSettings | None:
