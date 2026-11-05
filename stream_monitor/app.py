@@ -1974,7 +1974,7 @@ class App(ctk.CTk):
         if reason in {
             "player_2000_retrying", "player_2000_unverified", "player_2000_exhausted",
             "f5_verifying", "f5_retrying", "f5_unverified", "f5_paused",
-            "points_stall_exhausted",
+            "points_stall_exhausted", "claim_rejected",
         }:
             key = f"engagement.page_assist.{reason}"
         elif reason == "reconnecting":

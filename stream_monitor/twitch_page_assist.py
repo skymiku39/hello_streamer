@@ -29,6 +29,7 @@ from stream_monitor.cdp_client import (
 )
 from stream_monitor.page_assist_status import publish_page_assist_status
 from stream_monitor.playback_health import PlaybackHealth
+from stream_monitor.twitch_claim_ack import ClaimAcknowledgements, ClaimResult
 from stream_monitor.twitch_player_recovery import PLAYER_SNAPSHOT_JS, PlayerRecovery
 from stream_monitor.viewer_engagement_model import (
     ViewerEngagementSettings,
@@ -921,6 +922,8 @@ class _PageAssistWorker:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._settings_changed = threading.Event()
+        self._claim_ack = ClaimAcknowledgements()
+        self._claim_blocked = False
         self._external_check_requested = threading.Event()
         self._external_check_lock = threading.Lock()
         self._external_check_due_at: float | None = None
@@ -960,6 +963,31 @@ class _PageAssistWorker:
 
     def start(self) -> None:
         self._thread.start()
+
+    def update_settings(self, settings: ViewerEngagementSettings) -> None:
+        if settings.claim_channel_points and not self.settings.claim_channel_points:
+            self._claim_blocked = False
+            self._claim_ack.reset()
+            self._publish_status("")
+        self.settings = settings
+        self._settings_changed.set()
+        self._wake.set()
+
+    def _publish_status(self, reason: str) -> None:
+        # Passive points or successful playback recovery cannot prove that a
+        # rejected reward request has become eligible again.
+        publish_page_assist_status(self.url, "claim_rejected" if self._claim_blocked and not reason else reason)
+
+    def _read_claim_ack(self, client: CdpClient) -> ClaimResult | None:
+        result = self._claim_ack.poll(client)
+        if result is not None and result.status == "rejected":
+            self._claim_blocked = True
+            publish_page_assist_status(self.url, "claim_rejected")
+            logger.warning("Twitch rejected bonus claim for %s code=%s; automatic claims paused",
+                           self.url, result.code)
+        elif result is not None and result.status == "accepted":
+            logger.info("Twitch confirmed bonus claim for %s server_balance=%s", self.url, result.balance)
+        return result
 
     def stop(self) -> None:
         self._stop.set()
@@ -1077,6 +1105,10 @@ class _PageAssistWorker:
         return state
 
     def _on_cdp_event(self, method: str, params: dict[str, Any]) -> None:
+        if method.startswith("Network."):
+            if self._claim_ack.observe(method, params):
+                self._wake.set()
+            return
         if method == "Page.frameNavigated":
             frame = params.get("frame")
             if not isinstance(frame, dict) or frame.get("parentId"):
@@ -1251,7 +1283,7 @@ class _PageAssistWorker:
                 return
             self._install_f5_broadcast(client)
             self._connected_once = True
-            publish_page_assist_status(self.url, "")
+            self._publish_status("")
             logger.info("Twitch page assist attached via CDP for %s", self.url)
             self._obs_next_snapshot_at = 0.0
             self._maybe_observe_snapshot(client, cdp="connected")
@@ -1264,6 +1296,7 @@ class _PageAssistWorker:
                 next_page_check_at = self._next_page_check_at()
                 while not self._stop.is_set():
                     now = time.monotonic()
+                    self._read_claim_ack(client)
                     if self._settings_changed.is_set():
                         self._settings_changed.clear()
                         claim_deadline = now
@@ -1460,7 +1493,7 @@ class _PageAssistWorker:
                     _assist_by_url.pop(_url_key(self.url), None)
                 if (current is None or current is self) and self._f5_verification_active:
                     self._f5_verification_active = False
-                    publish_page_assist_status(self.url, "")
+                    self._publish_status("")
 
     def _read_points_balance(self, client: CdpClient) -> int | None:
         """Read the exact second balance; unknown UI states stay unknown."""
@@ -1562,7 +1595,7 @@ class _PageAssistWorker:
                 self.url, previous_balance, balance,
             )
             if was_exhausted and not self._f5_verification_active:
-                publish_page_assist_status(self.url, "")
+                self._publish_status("")
         else:
             # Spending does not count as new watch credit, but the latest exact
             # amount becomes the comparison baseline for a later increase.
@@ -1637,7 +1670,7 @@ class _PageAssistWorker:
         if user_requested and eligible and self._points_stall_exhausted:
             self._points_stall_attempts = 0
             self._points_stall_exhausted = False
-            publish_page_assist_status(self.url, "")
+            self._publish_status("")
             logger.info("F5 re-armed points-stall cycle for %s", self.url)
 
         if not stalled:
@@ -1776,6 +1809,8 @@ class _PageAssistWorker:
             playback = "paused"
         logger.info("Twitch page assist periodic page check for %s: "
                     "playback=%s theater=%s chat=%s", self.url, playback, theater, chat)
+        if self._claim_blocked:
+            publish_page_assist_status(self.url, "claim_rejected")
         return False
 
     def _start_f5_verification(self, *, reset_budget: bool) -> None:
@@ -2390,7 +2425,9 @@ class _PageAssistWorker:
         }
 
     def _try_claim(self, client: CdpClient) -> bool:
-        """Attempt bonus claim. True only when bonus disappearance is verified."""
+        """Attempt once; only a native server acknowledgement is success."""
+        if self._claim_blocked or self._stop.is_set():
+            return False
         chat_status = self._ensure_chat_visible(client)
         if chat_status == "not_logged_in":
             return False
@@ -2448,39 +2485,35 @@ class _PageAssistWorker:
         )
         key = str(hit.get("key") or "")
         try:
+            self._claim_ack.begin(client)
+        except Exception:
+            logger.warning("Bonus claim acknowledgement observation unavailable for %s", self.url)
+        try:
             client.click_at(x, y)
         except Exception:
             logger.exception("Claim click failed for %s", self.url)
             return False
 
-        # Twitch acknowledges the click asynchronously. Real playback showed
-        # the bonus still present at 0.8 s, then gone with +50 points by 2 s.
-        # Retry only the observation, never the click, for at most 4.8 s.
+        # A hidden button is not server acceptance: Twitch can optimistically
+        # hide it even when ClaimCommunityPoints returns IntegrityCheckFailed.
+        # Retry only observation, never the click, for at most 4.8 s.
         after = {"present": True}
+        accepted = False
         for _ in range(_CLAIM_VERIFY_POLLS):
             if not self._sleep(_CLAIM_VERIFY_WAIT_S):
                 return False
+            acknowledgement = self._read_claim_ack(client)
+            if acknowledgement is not None:
+                if acknowledgement.status == "rejected":
+                    return False
+                accepted = acknowledgement.status == "accepted" or accepted
             after = self._claim_still_present(client, key)
-            if not after.get("present"):
+            if accepted and not after.get("present"):
                 break
-        if after.get("present"):
-            logger.warning(
-                "Twitch page assist claim click unverified for %s "
-                "(bonus still present; offset=%s,%s)",
-                self.url,
-                dx,
-                dy,
-            )
-            return False
-
-        logger.info(
-            "Twitch page assist channel-points bonus disappeared after click "
-            "for %s (verified; offset=%s,%s; not asserting server balance)",
-            self.url,
-            dx,
-            dy,
-        )
-        return True
+        if not accepted:
+            logger.warning("Twitch bonus claim unverified for %s button_present=%s offset=%s,%s; "
+                           "no server acceptance received", self.url, after.get("present"), dx, dy)
+        return accepted
 
 
 def start_page_assist(
@@ -2518,9 +2551,7 @@ def update_page_assist_settings(settings: ViewerEngagementSettings) -> None:
     """Apply saved switches to existing players without reloading their video."""
     with _assist_lock:
         for worker in _assist_by_url.values():
-            worker.settings = settings.for_channel(worker.url)
-            worker._settings_changed.set()
-            worker._wake.set()
+            worker.update_settings(settings.for_channel(worker.url))
 
 
 def stop_page_assist(url: str) -> None:

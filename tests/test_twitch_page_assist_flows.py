@@ -14,6 +14,7 @@ from stream_monitor import twitch_page_assist as assist
 from stream_monitor import twitch_player_recovery as recovery
 from stream_monitor.cdp_client import CdpClient
 from stream_monitor.notifier import _resolve_browser_executable
+from stream_monitor.twitch_claim_ack import ClaimResult
 from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
 
 
@@ -242,6 +243,7 @@ def test_claim_requires_disappearance_with_points_ui(monkeypatch, after, success
     monkeypatch.setattr(w, "_ensure_chat_visible", lambda c: "visible")
     probes = iter([BONUS, BONUS, after])
     monkeypatch.setattr(w, "_probe_claim", lambda c: next(probes, after))
+    monkeypatch.setattr(w._claim_ack, "poll", lambda c: ClaimResult("accepted", balance=50) if success else None)
     assert w._try_claim(client) is success
     assert client.click_at.call_count == 1
     x, y = client.click_at.call_args.args
@@ -255,6 +257,8 @@ def test_claim_waits_for_delayed_acknowledgement_without_clicking_again(monkeypa
     probes = iter([BONUS, BONUS, BONUS, BONUS,
                    {"found": False, "pointsPresent": True}])
     monkeypatch.setattr(w, "_probe_claim", lambda c: next(probes))
+    replies = iter([None, None, ClaimResult("accepted", balance=50)])
+    monkeypatch.setattr(w._claim_ack, "poll", lambda c: next(replies, None))
     assert w._try_claim(client)
     client.click_at.assert_called_once()
 

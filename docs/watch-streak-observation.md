@@ -10,8 +10,11 @@
 若專用瀏覽器開啟失敗，不會偷偷改用已登入的預設瀏覽器。
 
 自動領取綠色觀看獎勵是獨立開關，儲存後會套用至已運作的頁內輔助。
-每次只點一次，最多等待六次、每次 0.8 秒確認按鈕消失；記錄 UI 成功與
-伺服器實際餘額增長時，仍須分開看待。訪客頻道不執行點數領取或點數停滯刷新。
+每次只點一次，最多等待六次、每次 0.8 秒讀取頁面原生請求的回覆；只有伺服器
+明確接受才列為成功，按鈕消失本身不算。觀察器不發送額外領獎請求、不保存登入
+標頭或請求變數。若收到 `IntegrityCheckFailed` 等拒絕，會顯示提示並暫停該頁領取，
+播放仍繼續。請先在瀏覽器確認登入、手動領取正常，再關閉並重新開啟自動領取。
+訪客頻道不執行點數領取或點數停滯刷新。
 
 驗收必須分別記錄：每頁影片時間是否前進、指定頻道固定點數是否增加、
 綠色獎勵是否領取，以及真正下一場直播的原生 streak 是否增加。
@@ -24,6 +27,7 @@
 - [Twitch 觀看人數說明](https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat?language=en_US)：播放中的靜音、背景分頁仍符合觀看條件；聊天名單不等於觀看人數，公開總數也無法逐一歸因。
 - [Twitch 觀眾點數指南](https://help.twitch.tv/s/article/viewer-channel-point-guide?lang=en_US&language=en_US)：登入後的基本觀看獎勵與點擊領取獎勵分開計算。
 - [Twitch Watch Streaks](https://help.twitch.tv/s/article/recover-watch-streaks?language=en_US)：需以不同合格直播及原生 streak 增長驗證；恢復舊 streak 不會增加次數。
+- [Twitch 支援的瀏覽器與排除步驟](https://help.twitch.tv/s/article/supported-browsers?language=en_US)：確認版本、擴充套件、快取與登入狀態。清除 Cookie 會需要重新登入，不應由領取失敗自動觸發。
 - [第三方實作的限制說明](https://github.com/Tkd-Alex/Twitch-Channel-Points-Miner-v2#limits)：採兩台優先策略。這不是 Twitch 官方規格；本程式使用正常瀏覽器播放驗證，不採用該專案的觀看模擬方式。
 
 診斷紀錄不改動開窗／關窗／點擊／recovery／refresh／輪詢決策，也不寫入 `config.json`、`seen_videos.db`、`browser_profile/`。當儲存的觀看輔助與頁內輔助皆啟用時，程式啟動會自動啟用診斷；其他情況仍預設關閉。

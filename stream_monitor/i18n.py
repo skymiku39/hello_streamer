@@ -31,6 +31,7 @@ DEFAULT_LANGUAGE = "zh_TW"
 # Translation tables
 # ---------------------------------------------------------------------------
 _ZH_TW: dict[str, str] = {
+    "engagement.page_assist.claim_rejected": "Twitch 拒絕獎勵請求，已暫停自動領取：{url}。請先在瀏覽器確認登入與手動領取，再關閉並重新開啟自動領取；播放仍繼續。",
     "engagement.priority.label": "優先累積點數的頻道（最多 2 台）",
     "engagement.priority.hint": "以逗號分隔頻道帳號；留空維持原模式。指定後使用同一專用 Chrome／Edge 帳號，其餘以訪客播放，不累積本帳號點數或連續觀看。更改名單後請重新開啟受影響頁面。外部同帳號播放仍可能影響認列；觀看人數不保證。",
     "engagement.priority.invalid": "請填入最多 2 個有效 Twitch 頻道，並選擇已啟用的專用 Chrome／Edge 帳號。",
@@ -411,6 +412,7 @@ _ZH_TW: dict[str, str] = {
 
 
 _ZH_CN: dict[str, str] = {
+    "engagement.page_assist.claim_rejected": "Twitch 拒绝奖励请求，已暂停自动领取：{url}。请先在浏览器确认登录和手动领取，再关闭并重新开启自动领取；播放仍继续。",
     "engagement.priority.label": "优先累积点数的频道（最多 2 台）",
     "engagement.priority.hint": "用逗号分隔频道账号；留空保持原模式。指定后使用同一专用 Chrome／Edge 账号，其余使用访客模式，不累积本账号点数或连续观看。修改后请重新打开相关页面。外部同账号播放仍可能影响认列；观看人数不保证。",
     "engagement.priority.invalid": "请填写最多 2 个有效 Twitch 频道，并启用专用 Chrome／Edge 账号。",
@@ -790,6 +792,7 @@ _ZH_CN: dict[str, str] = {
 
 
 _EN: dict[str, str] = {
+    "engagement.page_assist.claim_rejected": "Twitch rejected a reward request; automatic claims are paused for {url}. Check sign-in and manual claiming in the browser, then switch automatic claims off and on. Playback continues.",
     "engagement.priority.label": "Priority channels for points (up to 2)",
     "engagement.priority.hint": "Comma-separated channel logins; leave blank for shared mode. Selected channels use one dedicated Chrome/Edge account. Others play as guests without account points or streaks. Reopen affected pages after editing. Other signed-in players can still compete for credit; viewer counts are not guaranteed.",
     "engagement.priority.invalid": "Enter up to 2 valid Twitch channels and enable a dedicated Chrome/Edge profile.",
@@ -1156,6 +1159,7 @@ _EN: dict[str, str] = {
 
 
 _JA: dict[str, str] = {
+    "engagement.page_assist.claim_rejected": "Twitch が報酬リクエストを拒否したため、{url} の自動受取を一時停止しました。ブラウザーでログインと手動受取を確認し、自動受取をオフ／オンにしてください。再生は続行します。",
     "engagement.priority.label": "ポイント優先チャンネル（最大2つ）",
     "engagement.priority.hint": "ログイン名をカンマ区切りで入力。空欄は従来の共有モード。指定先は同じ専用Chrome/Edgeアカウント、他はゲスト再生（ポイント・連続視聴なし）。変更後は該当ページを開き直してください。他のログイン済み再生も認定に影響します。視聴者数は保証できません。",
     "engagement.priority.invalid": "有効なTwitchチャンネルを最大2つ指定し、専用Chrome/Edgeプロファイルを有効にしてください。",
@@ -1522,6 +1526,7 @@ _JA: dict[str, str] = {
 
 
 _KO: dict[str, str] = {
+    "engagement.page_assist.claim_rejected": "Twitch가 보상 요청을 거부하여 {url}의 자동 수령을 일시 중지했습니다. 브라우저에서 로그인과 수동 수령을 확인한 다음 자동 수령을 껐다 켜세요. 재생은 계속됩니다.",
     "engagement.priority.label": "포인트 우선 채널 (최대 2개)",
     "engagement.priority.hint": "채널 로그인명을 쉼표로 구분하세요. 빈칸은 기존 공유 모드입니다. 선택 채널은 전용 Chrome/Edge 계정, 나머지는 게스트로 재생하며 계정 포인트와 연속 시청을 쌓지 않습니다. 변경 후 해당 페이지를 다시 여세요. 다른 로그인 재생도 인정에 영향을 줍니다. 시청자 수는 보장되지 않습니다.",
     "engagement.priority.invalid": "유효한 Twitch 채널을 최대 2개 입력하고 전용 Chrome/Edge 프로필을 활성화하세요.",
