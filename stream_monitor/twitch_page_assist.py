@@ -993,6 +993,11 @@ class _PageAssistWorker:
             logger.warning("Twitch rejected bonus claim for %s code=%s; automatic claims paused",
                            self.url, result.code)
         elif result is not None and result.status == "accepted":
+            if self._claim_blocked:
+                # An actual successful native claim (including a manual claim
+                # or Twitch's own delayed retry) resolves a prior rejection.
+                self._claim_blocked = False
+                self._publish_status("")
             logger.info("Twitch confirmed bonus claim for %s server_balance=%s", self.url, result.balance)
         return result
 

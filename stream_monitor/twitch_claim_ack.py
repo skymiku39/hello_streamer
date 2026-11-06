@@ -102,7 +102,7 @@ class ClaimAcknowledgements:
             ready = [key for key, done in self._pending.items() if done]
             for key in ready:
                 self._pending.pop(key)
-        accepted = None
+        latest = None
         for request_id in ready:
             try:
                 reply = client.call("Network.getResponseBody", {"requestId": request_id})
@@ -114,7 +114,9 @@ class ClaimAcknowledgements:
                 result = parse_claim_response(json.loads(raw))
             except (OSError, RuntimeError, TimeoutError, ValueError):
                 continue
-            if result is not None and result.status == "rejected":
-                return result
-            accepted = result or accepted
-        return accepted
+            # Native Twitch may retry after a rejection. Read every completed
+            # response before returning: an early return used to discard all
+            # subsequent IDs, including a successful native retry.
+            if result is not None:
+                latest = result
+        return latest

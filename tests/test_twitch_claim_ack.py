@@ -63,6 +63,31 @@ def test_new_attempt_does_not_accept_previous_response_and_tracking_is_bounded()
     assert len(tracker._pending) == 16
 
 
+def test_native_retry_success_is_not_discarded_after_rejected_response():
+    tracker = ClaimAcknowledgements()
+    client = Mock()
+    client.call.side_effect = [{"body": json.dumps(REJECTED)}, {"body": json.dumps(ACCEPTED)}]
+    event(tracker, "first")
+    event(tracker, "native-retry")
+    assert tracker.poll(client) == ClaimResult("accepted", balance=250)
+    assert client.call.call_count == 2
+    assert tracker.poll(client) is None
+
+
+def test_late_native_acceptance_clears_rejection_without_repeating_click(monkeypatch):
+    from stream_monitor.page_assist_status import drain_page_assist_status
+
+    drain_page_assist_status()
+    worker = _PageAssistWorker("https://www.twitch.tv/test", 1234, ViewerEngagementSettings())
+    worker._claim_blocked = True
+    client = Mock()
+    monkeypatch.setattr(worker._claim_ack, "poll", lambda _c: ClaimResult("accepted", balance=250))
+    assert worker._read_claim_ack(client).status == "accepted"
+    assert not worker._claim_blocked
+    assert drain_page_assist_status() == [(worker.url, "")]
+    client.click_at.assert_not_called()
+
+
 def test_rejected_claim_pauses_only_claims_until_explicit_off_on(monkeypatch):
     settings = ViewerEngagementSettings(enabled=True, page_assist_enabled=True, claim_channel_points=True)
     worker = _PageAssistWorker("https://www.twitch.tv/test", 1234, settings)
