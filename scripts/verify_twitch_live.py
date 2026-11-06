@@ -13,6 +13,7 @@ from pathlib import Path
 
 from stream_monitor.browser_win32 import set_system_keep_awake
 from stream_monitor.cdp_client import (
+    CdpAttachResult,
     CdpClient,
     _list_targets,
     acquire_cdp_debugging_port,
@@ -275,6 +276,57 @@ def acceptance_scope(config: dict, requested: list[str] | None) -> list[str]:
     return [name for name in configured if name in selected]
 
 
+def existing_browser_ready(attach: CdpAttachResult) -> bool:
+    """A reserved cold-start port is not an existing observable browser."""
+    return (attach.ok and isinstance(attach.port, int) and attach.port > 0
+            and not attach.pass_debugging_flag and attach.lease is None)
+
+
+def page_window_ids(client: CdpClient, pages: list[dict]) -> dict[str, int]:
+    result = {}
+    for page in pages:
+        try:
+            window = client.call("Browser.getWindowForTarget", {"targetId": page["id"]})
+            if isinstance(window.get("windowId"), int):
+                result[page["id"]] = window["windowId"]
+        except (OSError, RuntimeError, TimeoutError):
+            continue
+    return result
+
+
+def independent_window(target_id: str, window_ids: dict[str, int]) -> bool:
+    window_id = window_ids.get(target_id)
+    return window_id is not None and list(window_ids.values()).count(window_id) == 1
+
+
+def ensure_inspector_window(client: CdpClient, pages: list[dict], inspector_id: str | None,
+                            channel: str) -> tuple[str, dict[str, int], bool]:
+    """Keep the chat inspector out of every playback window, including on resume."""
+    windows = page_window_ids(client, pages)
+    if len(windows) != len(pages):
+        raise RuntimeError("Cannot verify the browser window inventory")
+    old = next((p for p in pages if p["id"] == inspector_id), None)
+    old_is_chat = old and str(old.get("url", "")).startswith("https://www.twitch.tv/popout/")
+    if old_is_chat and independent_window(old["id"], windows):
+        return old["id"], windows, False
+    target = client.call("Target.createTarget", {
+        "url": f"https://www.twitch.tv/popout/{channel}/chat?popout=",
+        "newWindow": True, "background": True,
+    })["targetId"]
+    try:
+        window_id = client.call("Browser.getWindowForTarget", {"targetId": target})["windowId"]
+        if window_id in windows.values():
+            raise RuntimeError("Inspector was opened in an existing browser window")
+    except (OSError, RuntimeError, TimeoutError, KeyError):
+        client.call("Target.closeTarget", {"targetId": target})
+        raise
+    # Replace only our recorded chat inspector. Never close a playback page
+    # merely because an old --inspector-target argument points at it.
+    if old_is_chat:
+        client.call("Target.closeTarget", {"targetId": old["id"]})
+    return target, windows, True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app-dir", type=Path, required=True)
@@ -351,7 +403,7 @@ def main() -> None:
             attach = acquire_cdp_debugging_port(profile)
             if attach.lease is not None:
                 attach.lease.release()
-            if not attach.ok or attach.lease is not None:
+            if not existing_browser_ready(attach):
                 state["collector"]["waiting_for"] = "app_owned_browser_endpoint"
                 state["collector"]["last_cycle_utc"] = utc()
                 atomic_json(state_path, state)
@@ -362,31 +414,38 @@ def main() -> None:
             port = attach.port
             try:
                 targets = _list_targets(port)
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
                 health.clear()
+                state["collector"].update(last_cycle_utc=utc(), playing_channels=[],
+                    waiting_for="app_owned_browser_endpoint",
+                    last_error={"type": type(exc).__name__, "ts_utc": utc(), "operation": "list_browser_pages"})
+                atomic_json(state_path, state)
                 time.sleep(5)
                 continue
             pages = [t for t in targets if t.get("type") == "page"]
-            inspectors = [t for t in pages if t["id"] == inspector_id]
-            if not inspectors:
-                # A chat-only inspector never plays video or earns watch credit.
-                launcher = CdpClient()
-                if not pages:
-                    time.sleep(args.interval)
-                    continue
-                try:
-                    launcher.connect(port, pages[0]["url"])
-                    inspector_id = launcher.call("Target.createTarget", {
-                        "url": f"https://www.twitch.tv/popout/{scope[0]}/chat?popout=",
-                    })["targetId"]
-                    state["inspector_target_id"] = inspector_id
-                    atomic_json(state_path, state)
-                except (OSError, RuntimeError, TimeoutError):
-                    time.sleep(5)
-                finally:
-                    launcher.close()
+            if not pages:
+                time.sleep(args.interval)
                 continue
-            inspector = inspectors[0]
+            launcher = CdpClient()
+            try:
+                launcher.connect(port, pages[0]["url"])
+                inspector_id, window_ids, created = ensure_inspector_window(
+                    launcher, pages, inspector_id, scope[0])
+                state["inspector_target_id"] = inspector_id
+                atomic_json(state_path, state)
+                if created:
+                    continue
+            except (OSError, RuntimeError, TimeoutError) as exc:
+                health.clear()
+                state["collector"].update(last_cycle_utc=utc(), playing_channels=[],
+                    waiting_for="independent_inspector_window",
+                    last_error={"type": type(exc).__name__, "ts_utc": utc(), "operation": "verify_inspector_window"})
+                atomic_json(state_path, state)
+                time.sleep(5)
+                continue
+            finally:
+                launcher.close()
+            inspector = next(t for t in pages if t["id"] == inspector_id)
             inspector_id = inspector["id"]
             state["inspector_target_id"] = inspector_id
             playing = []
@@ -419,8 +478,10 @@ def main() -> None:
                         "paused": snap.get("paused"), "ready_state": snap.get("readyState"),
                         "error_code": snap.get("errorCode"), "environment": environment,
                         "window_bounds": window.get("bounds"),
+                        "window_id": window.get("windowId"),
+                        "independent_window": independent_window(target["id"], window_ids),
                     })
-                    if status == "playing":
+                    if status == "playing" and independent_window(target["id"], window_ids):
                         playing.append(channel)
                 except Exception:
                     health.pop(target["id"], None)

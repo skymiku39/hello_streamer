@@ -8,6 +8,7 @@ import time
 import pytest
 
 from scripts import verify_twitch_live as collector
+from stream_monitor.cdp_client import CdpAttachResult
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows destination-sharing contract")
@@ -90,3 +91,41 @@ def test_selected_acceptance_does_not_wait_for_unselected_guest_channel():
     for names in [["disabled"], ["other"], ["missing"], []]:
         with pytest.raises(ValueError):
             collector.acceptance_scope(config, names)
+
+
+def test_reserved_cold_start_port_is_not_a_running_browser():
+    assert not collector.existing_browser_ready(CdpAttachResult(
+        ok=True, port=12345, reason="allocated", pass_debugging_flag=True))
+    assert not collector.existing_browser_ready(CdpAttachResult(
+        ok=True, port=0, reason="ephemeral", pass_debugging_flag=True))
+    assert collector.existing_browser_ready(CdpAttachResult(ok=True, port=12345, reason="process"))
+
+
+def test_two_tabs_in_one_window_cannot_pass_independent_playback():
+    ids = {"one": 10, "two": 10, "three": 20}
+    assert not collector.independent_window("one", ids)
+    assert not collector.independent_window("two", ids)
+    assert not collector.independent_window("missing", ids)
+    assert collector.independent_window("three", ids)
+
+
+def test_inspector_replaces_only_owned_chat_tab_and_preserves_playback():
+    from unittest.mock import Mock
+
+    pages = [{"id": "player", "url": "https://www.twitch.tv/one"},
+             {"id": "inspector", "url": "https://www.twitch.tv/popout/one/chat"}]
+    client = Mock()
+    windows = {"player": 10, "inspector": 10, "new-inspector": 20}
+    def call(method, params):
+        if method == "Browser.getWindowForTarget":
+            return {"windowId": windows[params["targetId"]]}
+        if method == "Target.createTarget":
+            assert params["newWindow"] is True
+            return {"targetId": "new-inspector"}
+        assert method == "Target.closeTarget" and params["targetId"] == "inspector"
+        return {"success": True}
+    client.call.side_effect = call
+    assert collector.ensure_inspector_window(client, pages, "inspector", "one")[0] == "new-inspector"
+    client.reset_mock()
+    assert collector.ensure_inspector_window(client, pages, "player", "one")[0] == "new-inspector"
+    assert all(c.args[0] != "Target.closeTarget" for c in client.call.call_args_list)
