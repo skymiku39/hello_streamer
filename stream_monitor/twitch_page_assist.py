@@ -206,8 +206,9 @@ _PAGE_OBS_JS = r"""
 
 # The second balance in Twitch's community-points summary is exposed as
 # ``copo-balance-string``. Its compact display (for example, 11.5萬) is not an
-# exact reading; the associated coin icon's accessible tooltip contains both
-# balances in full. Hovering that icon is read-only and never clicks the page.
+# exact reading; the balance button's accessible tooltip contains both balances
+# in full, including when responsive layout hides the channel-points amount.
+# Hovering the icon/button is read-only and never clicks the page.
 _FIND_POINTS_BALANCE_JS = r"""
 (() => {
   const visible = (el) => {
@@ -228,14 +229,20 @@ _FIND_POINTS_BALANCE_JS = r"""
   )].filter(visible);
   for (const summary of summaries) {
     const balance = summary.querySelector('[data-test-selector="copo-balance-string"]');
-    if (!(balance instanceof HTMLElement) || !visible(balance)) continue;
+    if (!(balance instanceof HTMLElement)) continue;
+    const balanceVisible = visible(balance);
+    const button = balance.closest('button');
+    if (!balanceVisible && (!(button instanceof HTMLElement) || !visible(button))) continue;
     const icon = balance.parentElement?.querySelector('img, svg');
-    const text = (balance.innerText || balance.textContent || '').trim();
+    // Hidden text can be stale; obtain the current exact value from the
+    // visible containing button's tooltip instead of trusting hidden DOM.
+    const text = balanceVisible ? (balance.innerText || balance.textContent || '').trim() : '';
     let hover = null;
-    if (icon instanceof HTMLElement && visible(icon)) {
-      const r = icon.getBoundingClientRect();
-      // Twitch displays the full, exact value when the second balance icon is
-      // hovered. Aim inside the icon, away from the adjacent compact text.
+    const target = icon instanceof HTMLElement && visible(icon) ? icon : button;
+    if (target instanceof HTMLElement && visible(target)) {
+      const r = target.getBoundingClientRect();
+      // The same tooltip is available on the containing balance button when
+      // Twitch hides the second icon/amount in a narrow chat layout.
       hover = {x: r.left + Math.max(1, r.width * 0.8), y: r.top + r.height / 2};
     }
     return {found: true, displayed: text, hover};
@@ -1522,8 +1529,9 @@ class _PageAssistWorker:
             y = float(hover.get("y"))
             if not math.isfinite(x) or not math.isfinite(y):
                 return None
-            # Only hover the exact second-balance icon. No click or redemption
-            # action is sent; compact text is never guessed or scaled.
+            # Only hover the second-balance icon or its containing balance
+            # button. No click or redemption action is sent; compact text is
+            # never guessed or scaled.
             # Twitch can dismiss a tooltip while the pointer stays on its icon.
             # Leave first so every sample produces a fresh pointer-enter event.
             client.call("Input.dispatchMouseEvent", {

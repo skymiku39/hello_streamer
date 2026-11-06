@@ -162,6 +162,36 @@ def test_second_points_balance_reads_full_hover_tooltip(dom_browser, monkeypatch
     assert w._read_points_balance(dom_browser) == 115380
 
 
+@pytest.mark.parametrize("hidden_text", ["13.7萬", "999"])
+def test_narrow_points_layout_reads_visible_button_tooltip(dom_browser, monkeypatch, hidden_text):
+    set_dom(dom_browser, f'''<style>
+      #balance {{ position: relative; width: 150px; height: 40px; }}
+      .channel-points {{ display: none; }}
+      [role="tooltip"] {{ display: none; position: absolute; width: 360px; height: 30px; }}
+      #balance:hover [role="tooltip"] {{ display: block; }}
+    </style>
+    <div data-test-selector="community-points-summary">
+      <button id="balance" onclick="window.balanceClicks=(window.balanceClicks||0)+1">
+        <span data-test-selector="bits-balance-string">1,790</span>
+        <span class="channel-points"><img alt="">
+          <span data-test-selector="copo-balance-string">{hidden_text}</span>
+        </span>
+        <span role="tooltip">1,790 枚小奇點, 137,772 爆肝指數</span>
+      </button>
+      <button class="claimable-bonus" onclick="window.bonusClicks=(window.bonusClicks||0)+1">Bonus</button>
+    </div>''')
+    assert worker(monkeypatch)._read_points_balance(dom_browser) == 137772
+    assert dom_browser.evaluate("window.balanceClicks || window.bonusClicks || 0") == 0
+
+
+def test_hidden_points_without_visible_balance_button_stays_unknown(dom_browser, monkeypatch):
+    set_dom(dom_browser, '''<div data-test-selector="community-points-summary">
+      <button>1,790 Bits</button>
+      <span style="display:none" data-test-selector="copo-balance-string">137772</span>
+    </div>''')
+    assert worker(monkeypatch)._read_points_balance(dom_browser) is None
+
+
 def test_second_points_balance_accepts_exact_display_and_rejects_compact_values():
     assert assist._parse_exact_points_balance("115,380") == 115380
     assert assist._parse_exact_points_balance("115380") == 115380
