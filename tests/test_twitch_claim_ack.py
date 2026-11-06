@@ -15,6 +15,10 @@ REJECTED = {"data": {"claimCommunityPoints": None}, "errors": [
     {"message": "failed integrity check", "extensions": {"code": "IntegrityCheckFailed"}},
 ]}
 ACCEPTED = {"data": {"claimCommunityPoints": {"currentPoints": {"balance": 250}}}}
+NATIVE_ACCEPTED = {"data": {"claimCommunityPoints": {
+    "claim": {"pointsEarnedBaseline": 50, "pointsEarnedTotal": 50},
+    "currentPoints": 138262, "error": None,
+}}}
 
 
 def event(tracker, request_id="1", operation="ClaimCommunityPoints"):
@@ -30,6 +34,15 @@ def test_native_integrity_failure_is_rejection_even_when_data_is_null():
     assert parse_claim_response([ACCEPTED, REJECTED]).status == "rejected"
     assert parse_claim_response([ACCEPTED]) == ClaimResult("accepted", balance=250)
     assert parse_claim_response({"data": None, "errors": REJECTED["errors"]}).status == "rejected"
+
+
+def test_real_twitch_scalar_current_points_response_is_accepted():
+    assert parse_claim_response([NATIVE_ACCEPTED]) == ClaimResult("accepted", balance=138262)
+
+
+@pytest.mark.parametrize("balance", [None, True, "138262", -1, float("inf")])
+def test_invalid_scalar_current_points_is_not_acceptance(balance):
+    assert parse_claim_response({"data": {"claimCommunityPoints": {"currentPoints": balance}}}) is None
 
 
 @pytest.mark.parametrize("response", [{}, {"data": {"claimCommunityPoints": None}},

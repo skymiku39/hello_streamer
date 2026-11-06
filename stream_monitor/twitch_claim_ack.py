@@ -39,7 +39,10 @@ def parse_claim_response(body: Any) -> ClaimResult | None:
             code = raw if isinstance(raw, str) and raw.isidentifier() and len(raw) <= 80 else "platform_rejected"
             return ClaimResult("rejected", code)
         points = claim.get("currentPoints") if isinstance(claim, dict) else None
-        balance = points.get("balance") if isinstance(points, dict) else None
+        # Native ClaimCommunityPoints currently returns currentPoints as a
+        # number. Accept the object form too, but never confuse a missing,
+        # boolean, non-finite or negative value with successful credit.
+        balance = points.get("balance") if isinstance(points, dict) else points
         if (isinstance(balance, (int, float)) and not isinstance(balance, bool)
                 and math.isfinite(balance) and balance >= 0):
             accepted = ClaimResult("accepted", balance=balance)
