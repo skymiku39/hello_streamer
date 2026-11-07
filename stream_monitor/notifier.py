@@ -138,6 +138,7 @@ from stream_monitor.twitch_page_assist import (  # noqa: E402
 )
 from stream_monitor.viewer_engagement_model import (  # noqa: E402
     ViewerEngagementSettings,
+    active_points_channels_configured,
     coerce_viewer_engagement,
     is_twitch_url,
 )
@@ -863,7 +864,9 @@ def _open_with_browser_settings(
     from stream_monitor.twitch_watch_policy import route_browser
 
     try:
-        coerced = route_browser(url, coerced, _active_viewer_engagement())
+        coerced = route_browser(
+            url, coerced, _active_viewer_engagement(), managed=manage,
+        )
     except ValueError as exc:
         logger.warning("Cannot apply Twitch points priority: %s", exc)
         return False
@@ -1303,9 +1306,20 @@ def open_url(
     try:
         browser_settings = route_browser(
             url, coerce_browser_settings(browser_settings), engagement,
+            managed=manage,
         )
     except ValueError as exc:
         logger.warning("Cannot apply Twitch points priority: %s", exc)
+        return False
+
+    if (
+        manage
+        and browser_settings is None
+        and engagement is not None
+        and engagement.points_role(url) == "watch_only"
+        and active_points_channels_configured()
+    ):
+        logger.info("Skipping live page outside current signed-in allocation: %s", url)
         return False
 
     if (manage and managed_window_launch_pending(url)

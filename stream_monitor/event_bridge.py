@@ -255,6 +255,22 @@ class MonitorEventBridge:
                     applied,
                     len(self._pending),
                 )
+            if not poll_complete:
+                for entry, info in live_events:
+                    if sink.is_channel_active(entry):
+                        sink.apply_live_row_status(entry, info)
+            refresh_allocation = getattr(
+                sink, "refresh_points_priority_allocation", None
+            )
+            if callable(refresh_allocation) and (
+                applied or poll_complete or live_events
+            ):
+                refresh_allocation(
+                    allow_open=True,
+                    event_channels={
+                        entry.name.strip().lower() for entry, _info in live_events
+                    },
+                )
 
         mode = sink.monitor_mode
 
@@ -343,9 +359,6 @@ class MonitorEventBridge:
                     key = channel_key(channel["platform"], channel["name"])
                     current_channel_modes[key] = channel_mode_for(channel)
         for entry, info in live_events:
-            if not poll_complete and not sink.defer_channel_row_repaints:
-                sink.apply_live_row_status(entry, info)
-
             decision = resolve_live_action(
                 mode=mode,
                 monitor_only=getattr(entry, "monitor_only", False),

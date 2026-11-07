@@ -14,9 +14,29 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import threading
 from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Any
 from urllib.parse import urlsplit
+
+_ACTIVE_POINTS_CHANNELS_LOCK = threading.Lock()
+_ACTIVE_POINTS_CHANNELS: tuple[str, ...] | None = None
+
+
+def set_active_points_channels(channels: Any = None) -> None:
+    """Set the runtime login allocation; ``None`` keeps static priority mode."""
+    global _ACTIVE_POINTS_CHANNELS
+    if channels is None:
+        normalized = None
+    else:
+        normalized = tuple(normalize_points_priorities(channels))
+    with _ACTIVE_POINTS_CHANNELS_LOCK:
+        _ACTIVE_POINTS_CHANNELS = normalized
+
+
+def active_points_channels_configured() -> bool:
+    with _ACTIVE_POINTS_CHANNELS_LOCK:
+        return _ACTIVE_POINTS_CHANNELS is not None
 
 
 def normalize_points_priorities(value: Any) -> list[str]:
@@ -84,7 +104,8 @@ class ViewerEngagementSettings:
     # cadence; only optional background reload behavior is gated by this.
     points_stall_refresh_enabled: bool = False
     # A conservative allocation policy, not a claim about a published Twitch
-    # limit. Empty preserves shared-account multiview. Other channels use Guest.
+    # limit. Empty preserves shared-account multiview. Managed playback outside
+    # the active allocation is skipped instead of opening a Guest window.
     points_priority_channels: list[str] = field(default_factory=list)
     auto_refresh: bool = False
     refresh_minutes_min: int = 45
@@ -110,7 +131,13 @@ class ViewerEngagementSettings:
                 or parsed.hostname not in {"twitch.tv", "www.twitch.tv"}):
             return "shared"
         name = parsed.path.strip("/").split("/")[0].lower()
-        return "priority" if name in self.points_priority_channels else "watch_only"
+        with _ACTIVE_POINTS_CHANNELS_LOCK:
+            priorities = (
+                self.points_priority_channels
+                if _ACTIVE_POINTS_CHANNELS is None
+                else _ACTIVE_POINTS_CHANNELS
+            )
+        return "priority" if name in priorities else "watch_only"
 
     def for_channel(self, url: str) -> ViewerEngagementSettings:
         if self.points_role(url) == "watch_only":

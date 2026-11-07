@@ -22,6 +22,7 @@ class ChannelRowView(Protocol):
     key: str
     _status_state: str | None
     _ended_at_source: str
+    verification_pending: bool
 
     def set_status(self, status: Any) -> None: ...
 
@@ -62,6 +63,13 @@ class AppEventSink(Protocol):
 
     def apply_live_row_status(
         self, entry: ChannelEntry, info: StreamInfo
+    ) -> None: ...
+
+    def refresh_points_priority_allocation(
+        self,
+        *,
+        allow_open: bool = False,
+        event_channels: set[str] | None = None,
     ) -> None: ...
 
     def execute_live_action(

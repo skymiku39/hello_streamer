@@ -157,6 +157,10 @@ class CanvasChannelRowAdapter:
     def _ended_at_source(self) -> str:
         return self.raw._ended_at_source
 
+    @property
+    def verification_pending(self) -> bool:
+        return self.raw._verification_pending
+
     def set_status(
         self,
         status: bool | str | ChannelStatus | None,
