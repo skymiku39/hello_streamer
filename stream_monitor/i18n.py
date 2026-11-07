@@ -32,8 +32,8 @@ DEFAULT_LANGUAGE = "zh_TW"
 # ---------------------------------------------------------------------------
 _ZH_TW: dict[str, str] = {
     "engagement.page_assist.claim_rejected": "Twitch 拒絕獎勵請求，已暫停自動領取：{url}。請先在瀏覽器確認登入與手動領取，再關閉並重新開啟自動領取；播放仍繼續。",
-    "engagement.priority.label": "優先累積點數的頻道（最多 2 台）",
-    "engagement.priority.hint": "以逗號分隔優先頻道（最多 2 台）；留空維持原本共用帳號模式。名單內有直播時優先維持這些頻道的登入播放；名單全離線時，按主頻道清單由上到下補位。其他直播不會自動以訪客模式開啟。Twitch 是否認列點數或連續觀看仍由平台決定。",
+    "engagement.priority.label": "優先維持連續觀看的頻道（最多 2 台）",
+    "engagement.priority.hint": "以逗號分隔優先頻道（最多 2 台）；留空維持原本共用帳號模式。登入播放最多 2 台：先保留名單內直播，空位再按主頻道清單由上到下補位，直到該場直播結束。未分配頻道不會以訪客模式開啟。Twitch 是否認列點數或連續觀看仍由平台決定。",
     "engagement.priority.invalid": "請填入最多 2 個有效 Twitch 頻道，並選擇已啟用的專用 Chrome／Edge 帳號。",
 
     "engagement.toggle.separate_windows": "直播視窗使用分開座標",
@@ -413,8 +413,8 @@ _ZH_TW: dict[str, str] = {
 
 _ZH_CN: dict[str, str] = {
     "engagement.page_assist.claim_rejected": "Twitch 拒绝奖励请求，已暂停自动领取：{url}。请先在浏览器确认登录和手动领取，再关闭并重新开启自动领取；播放仍继续。",
-    "engagement.priority.label": "优先累积点数的频道（最多 2 台）",
-    "engagement.priority.hint": "用逗号分隔优先频道（最多 2 个）；留空保持原有共用账号模式。名单中有直播时优先保持这些频道的登录播放；名单全部离线时，按主频道列表从上到下补位。其他直播不会自动以访客模式打开。Twitch 是否计入积分或连续观看仍由平台决定。",
+    "engagement.priority.label": "优先维持连续观看的频道（最多 2 台）",
+    "engagement.priority.hint": "用逗号分隔优先频道（最多 2 个）；留空保持原有共用账号模式。登录播放最多 2 个：先保留名单内直播，空位再按主频道列表从上到下补位，直到该场直播结束。未分配频道不会以访客模式打开。Twitch 是否计入积分或连续观看仍由平台决定。",
     "engagement.priority.invalid": "请填写最多 2 个有效 Twitch 频道，并启用专用 Chrome／Edge 账号。",
 
     "engagement.toggle.separate_windows": "直播窗口使用分开坐标",
@@ -793,8 +793,8 @@ _ZH_CN: dict[str, str] = {
 
 _EN: dict[str, str] = {
     "engagement.page_assist.claim_rejected": "Twitch rejected a reward request; automatic claims are paused for {url}. Check sign-in and manual claiming in the browser, then switch automatic claims off and on. Playback continues.",
-    "engagement.priority.label": "Priority channels for points (up to 2)",
-    "engagement.priority.hint": "Comma-separated priority channels (up to 2); leave blank for the original shared-account mode. When any are live, keep those channels on the signed-in profile. When all are offline, fill the slots from the main channel list in top-to-bottom order. Other live channels are not opened as guests. Twitch controls whether points or streaks are credited.",
+    "engagement.priority.label": "Priority channels for watch streaks (up to 2)",
+    "engagement.priority.hint": "Comma-separated priority channels (up to 2); leave blank for the original shared-account mode. Use at most two signed-in streams: keep live listed channels first, then fill free slots from the main list top to bottom until each broadcast ends. Unassigned channels are not opened as guests. Twitch controls whether points or streaks are credited.",
     "engagement.priority.invalid": "Enter up to 2 valid Twitch channels and enable a dedicated Chrome/Edge profile.",
 
     "engagement.toggle.separate_windows": "Use separate stream window positions",
@@ -1160,8 +1160,8 @@ _EN: dict[str, str] = {
 
 _JA: dict[str, str] = {
     "engagement.page_assist.claim_rejected": "Twitch が報酬リクエストを拒否したため、{url} の自動受取を一時停止しました。ブラウザーでログインと手動受取を確認し、自動受取をオフ／オンにしてください。再生は続行します。",
-    "engagement.priority.label": "ポイント優先チャンネル（最大2つ）",
-    "engagement.priority.hint": "優先チャンネルをカンマ区切りで入力（最大2つ）。空欄なら従来の共有アカウントモードです。リスト内で配信中のチャンネルをログイン済みプロファイルで優先し、全てオフラインならメインリストの上から順に枠を埋めます。他の配信はゲストで自動起動しません。ポイントや連続視聴の認定はTwitch側の判断です。",
+    "engagement.priority.label": "連続視聴優先チャンネル（最大2つ）",
+    "engagement.priority.hint": "優先チャンネルをカンマ区切りで入力（最大2つ）。空欄なら従来の共有アカウントモードです。ログイン再生は最大2つ。配信中の登録チャンネルを優先し、空き枠はメインリストの上から順に各配信終了まで再生します。未割当チャンネルはゲストで自動起動しません。ポイントや連続視聴の認定はTwitch側の判断です。",
     "engagement.priority.invalid": "有効なTwitchチャンネルを最大2つ指定し、専用Chrome/Edgeプロファイルを有効にしてください。",
 
     "engagement.toggle.separate_windows": "配信ウィンドウの位置を分ける",
@@ -1527,8 +1527,8 @@ _JA: dict[str, str] = {
 
 _KO: dict[str, str] = {
     "engagement.page_assist.claim_rejected": "Twitch가 보상 요청을 거부하여 {url}의 자동 수령을 일시 중지했습니다. 브라우저에서 로그인과 수동 수령을 확인한 다음 자동 수령을 껐다 켜세요. 재생은 계속됩니다.",
-    "engagement.priority.label": "포인트 우선 채널 (최대 2개)",
-    "engagement.priority.hint": "우선 채널을 쉼표로 구분해 입력하세요(최대 2개). 비우면 기존 공유 계정 모드입니다. 목록 중 방송 중인 채널을 로그인 프로필로 우선 유지하고, 모두 오프라인이면 기본 채널 목록의 위에서부터 빈 자리를 채웁니다. 나머지 방송은 게스트로 자동 실행하지 않습니다. 포인트나 연속 시청 인정은 Twitch가 결정합니다.",
+    "engagement.priority.label": "연속 시청 우선 채널 (최대 2개)",
+    "engagement.priority.hint": "우선 채널을 쉼표로 구분해 입력하세요(최대 2개). 비우면 기존 공유 계정 모드입니다. 로그인 재생은 최대 2개이며, 방송 중인 등록 채널을 우선 유지하고 빈 자리는 기본 채널 목록 위에서부터 각 방송이 끝날 때까지 채웁니다. 미할당 채널은 게스트로 자동 실행하지 않습니다. 포인트나 연속 시청 인정은 Twitch가 결정합니다.",
     "engagement.priority.invalid": "유효한 Twitch 채널을 최대 2개 입력하고 전용 Chrome/Edge 프로필을 활성화하세요.",
 
     "engagement.toggle.separate_windows": "방송 창을 서로 다른 위치에 배치",

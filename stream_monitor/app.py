@@ -1729,10 +1729,10 @@ class App(ctk.CTk):
     ) -> None:
         """Keep managed Twitch playback within the signed-in priority slots.
 
-        Live channels in the configured priority list win. If none of those
-        channels is live, the first live trigger channel in the main list is
-        promoted, up to the configured number of slots. Other managed live
-        pages are closed instead of being opened in Guest mode.
+        Live channels in the configured priority list win. Any free slot is
+        filled from the main list in order, up to two signed-in streams total.
+        An assigned page stays open through its live broadcast; unassigned
+        managed pages are closed instead of being opened in Guest mode.
         """
         settings = ViewerEngagementSettings.from_dict(
             self.config.get("viewer_engagement")
@@ -1796,10 +1796,12 @@ class App(ctk.CTk):
             return
 
         live_priorities = [name for name in priorities if name in live_statuses]
-        slots = len(priorities)
-        selected = tuple(
-            live_priorities[:slots] if live_priorities else ordered_live[:slots]
+        selected_order = live_priorities[:2]
+        selected_order.extend(
+            name for name in ordered_live
+            if name not in selected_order and len(selected_order) < 2
         )
+        selected = tuple(selected_order[:2])
         previous = self._active_points_priority_channels
         if previous is None:
             # Older versions always opened explicitly selected channels in the
