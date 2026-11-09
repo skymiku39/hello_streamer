@@ -2467,6 +2467,10 @@ class _PageAssistWorker:
             self.settings.claim_delay_seconds_min,
             self.settings.claim_delay_seconds_max,
         )
+        logger.info(
+            "Twitch claimable bonus detected for %s reason=%s delay=%.1fs",
+            self.url, hit.get("reason"), delay,
+        )
         if not self._sleep(delay):
             return False
         if self._settings_changed.is_set() and not self.settings.claim_channel_points:
@@ -2506,6 +2510,7 @@ class _PageAssistWorker:
         except Exception:
             logger.exception("Claim click failed for %s", self.url)
             return False
+        logger.info("Twitch claim button clicked for %s offset=%s,%s", self.url, dx, dy)
 
         # A hidden button is not server acceptance: Twitch can optimistically
         # hide it even when ClaimCommunityPoints returns IntegrityCheckFailed.
@@ -2518,6 +2523,9 @@ class _PageAssistWorker:
             acknowledgement = self._read_claim_ack(client)
             if acknowledgement is not None:
                 if acknowledgement.status == "rejected":
+                    logger.warning(
+                        "Twitch bonus claim rejected by server for %s", self.url
+                    )
                     return False
                 accepted = acknowledgement.status == "accepted" or accepted
             after = self._claim_still_present(client, key)

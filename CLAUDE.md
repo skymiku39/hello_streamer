@@ -9,7 +9,8 @@
 - 測試與工具一律用 `uv run`（例：`uv run pytest -q`、`uv run ruff check`）；此機器 `python` 不可用。完整測試約 5.5 分鐘，改動小時只跑相關檔案。
 - 只有 `tests/` 屬於維護中的測試；`release/`、`artifacts/`、`build/`、`dist/` 內可能有舊版副本，不要讀或修改。
 - `logs/`、`browser_profile/`、`seen_videos.db*`、`config.json` 是使用者的執行資料，除非任務明確要求，不要修改或刪除。
-- 提交只在使用者要求時進行；推送與開 PR 也同樣需要使用者明確指示。
+- 本機實際運行的是 `D:\Tools\HelloStreamer\`（打包版），要看執行狀況請查那裡的 `logs/`；repo 內的 `logs/` 是舊資料。
+- 完成一項工作且驗證通過後，直接提交（commit），不要再詢問使用者；訊息要適當、不混入無關檔案。推送與開 PR 仍需使用者明確指示。
 
 ## 委派規則（subagent 定義在 `.claude/agents/`）
 - 搜尋、讀大量檔案、整理日誌、跑測試並回報 → `worker-haiku`。

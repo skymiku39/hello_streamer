@@ -28,9 +28,14 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 ## 進行中 / 下一步
 **寶箱沒領的調查**（尚未有結論）：
 1. 向使用者確認：該視窗當時在前景／被遮住／最小化？用 `run_hello_streamer.bat` 還是打包 exe？發生時間點？
-2. 依時間點查 `logs/stream_monitor.log`（目前最後更新 10/14，沒有該次測試紀錄，需確認 log 是否寫到別處）搜尋 `claim candidate`、`no claimable bonus`、`IntegrityCheckFailed`。
+2. 依時間點查 **`D:\Tools\HelloStreamer\logs\stream_monitor.log`**（實際運行的部署版；repo 內 `logs/` 是 10/14 的舊 log，不要看）搜尋 `claim candidate`、`no claimable bonus`、`IntegrityCheckFailed`。2026-11-09 檢查：該 log 有 80 筆 `confirmed bonus claim`、無 IntegrityCheck 或領取失敗紀錄，領取整體運作正常；**已查明（2026-11-09）**：截圖是 `asbs5263`，餘額 141,857 只存在於 14:26:46–14:27:11，14:27:11 即有伺服器確認領取，寶箱約停 25 秒（輪詢 10–20 秒 + 隨機延遲 2–5 秒），無漏領。已在 `_try_claim` 補 log（偵測、點擊、被拒絕）；需重新打包部署到 `D:\Tools\HelloStreamer` 才會生效。另：`hayabi_zr` 16:40–17:10 點數停滯 30 分鐘，由 points-stall 自動重載恢復（Twitch 端未發點）。
 3. 若懷疑背景節流：看 `stream_monitor/twitch_page_assist.py` 的 `_FIND_CLAIM_JS`（約 :407）；`visible()` 與 `hitTestable()`（`elementFromPoint`）在最小化／被頁內元素遮住時會判定找不到；`document.visibilityState` 只被記錄、沒當條件。
 4. 領取流程在 `_try_claim`（約 :2440）：需聊天室可見 → 探測 → 隨機等 2–5 秒 → 再探測 → 點擊 → 輪詢 ack；輪詢間隔 10–20 秒（`config.json` 的 `claim_poll_seconds_*`）。
+
+## 本機運行環境（2026-11-09 檢查）
+- 實際運行：`D:\Tools\HelloStreamer\HelloStreamer.exe`（v1.3.1，build 於 11/8 01:29，約等於 commit `dc843b2`）；資料與 log 在 `D:\Tools\HelloStreamer\`（`logs/`、`config.json`、`browser_profile/`）。
+- 設定：`monitor_mode=trigger`、`claim_channel_points=true`，監控 21 個頻道，輪詢正常。
+- 觀察到的警告：`ramengyozaset` 劇院模式 `state=unknown` 被略過（頻道離線，影響小）；16:44 有 4 個 YouTube 頻道 `ytInitialData` 解析失敗，已當作狀態不明、未誤判下播。
 
 ## 已知問題與注意事項
 - 已知平台限制：`artifacts/functional-fixes-20261106/final-claim-test-summary.json` 記錄 `claim_platform_block: IntegrityCheckFailed`（登入／手動領取確認待驗證）；`cross_broadcast: pending_real_next_broadcast`。
