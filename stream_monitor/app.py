@@ -8,6 +8,7 @@ import logging.handlers
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -1747,6 +1748,11 @@ class App(ctk.CTk):
             self._points_main_profile_channels.clear()
             return
 
+        browser_settings = self.current_browser_settings()
+        close_offline_windows = bool(
+            browser_settings is not None
+            and getattr(browser_settings, "close_on_offline", False)
+        )
         rows_by_key = {row.key: row for row in self._channel_rows}
         ordered_live: list[str] = []
         live_statuses: dict[str, ChannelStatus] = {}
@@ -1779,6 +1785,13 @@ class App(ctk.CTk):
                 continue
             if status.url:
                 channel_statuses[name] = status
+            elif status.is_offline and close_offline_windows:
+                # Offline rows drop their active URL. Still sweep a managed
+                # page that was (re)opened for this channel, or it would hold
+                # a signed-in slot for the rest of the session.
+                channel_statuses[name] = replace(
+                    status, url=f"https://www.twitch.tv/{name}"
+                )
             if status.is_live and status.url:
                 ordered_live.append(name)
                 live_statuses[name] = status

@@ -1,6 +1,6 @@
 # PROGRESS
 
-最後更新：2026-11-09
+最後更新：2026-11-10
 
 ## 專案目標
 Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（CustomTkinter），追蹤 Twitch / YouTube 開播，通知、開直播頁，並以 CDP 頁面輔助處理 Twitch 播放恢復、Channel Points 寶箱領取與劇院模式。僅提供可攜版（資料都在執行檔同層）。
@@ -18,6 +18,7 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 2. [中] 原生視窗測試整套跑時偶發失敗、單獨跑必過：先後見過 `tests/test_app_native_integration.py::test_dialog_buttons_use_application_style[channel]` 與 `tests/test_window_tracking_integration.py::test_separate_topmost_windows_have_distinct_native_bounds`。推測是真實桌面（使用者正在使用的視窗、HelloStreamer 運行中）干擾，尚未確認根因；2026-11-09 完整測試 1453 通過、1 偶發失敗。
 3. [中] 確認 v1.3.1 是否要從 `codex/release-v1.3.1` 合併回 `main`（目前領先 main 約 80 個 commit）。
 4. [已完成] `.gitignore` 已涵蓋 logs、browser_profile、seen_videos.db*、config.json、build、dist、artifacts、release、backups、*.log。
+6. [已完成] 2026-11-10 修正「下播頻道關窗後約 1 秒又被重開、佔住登入觀看位置」並部署（02:05）；舊版備份 `D:\Tools\HelloStreamer_backup_20261110_pre-offline-reopen-fix`。原因：事件橋每輪只套用 3 列狀態且開播優先，下播列仍顯示開播，點數分配讀到「開播中但視窗不見」就重開（hayabi_zr 19:37、gracya_leejia 00:24）；另外下播列沒有網址，清理多餘視窗時漏掉，殘留視窗佔位數小時（jipandan 00:41–01:45 因此沒加點）。修法：確認下播時立即套用該列狀態（不受每輪上限、拖曳中會延到恢復後優先套用）；開啟「下播關窗」時，分配清理也涵蓋下播頻道的殘留視窗（關閉時保留，維持原行為）。測試 `tests/test_points_allocation_offline.py`；完整測試 1459 通過。部署後首輪即關閉兩個殘留視窗。
 5. [已完成] 2026-11-09 17:56 已重新打包並部署 v1.3.1（含領取 log）到 `D:\Tools\HelloStreamer`；舊版備份在 `D:\Tools\HelloStreamer_backup_20261109_pre-claim-log`。下次寶箱出現後，查 log 的 `claimable bonus detected` / `claim button clicked` 驗證。
 
 ## 已完成
