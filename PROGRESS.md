@@ -15,9 +15,10 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 
 ## 目前計畫（優先序）
 1. [高] 查清楚「本機測試時寶箱已出現卻沒自動領取」的原因（見「進行中」）。
-2. [中] 調查 `tests/test_app_native_integration.py::test_dialog_buttons_use_application_style[channel]` 整套跑時偶發失敗、單獨跑會過的不穩定問題。
+2. [中] 原生視窗測試整套跑時偶發失敗、單獨跑必過：先後見過 `tests/test_app_native_integration.py::test_dialog_buttons_use_application_style[channel]` 與 `tests/test_window_tracking_integration.py::test_separate_topmost_windows_have_distinct_native_bounds`。推測是真實桌面（使用者正在使用的視窗、HelloStreamer 運行中）干擾，尚未確認根因；2026-11-09 完整測試 1453 通過、1 偶發失敗。
 3. [中] 確認 v1.3.1 是否要從 `codex/release-v1.3.1` 合併回 `main`（目前領先 main 約 80 個 commit）。
-4. [低] 檢查 `.gitignore` 是否涵蓋 `logs/`、`browser_profile/`、`seen_videos.db*`、`build/`、`dist/`、`artifacts/`。
+4. [已完成] `.gitignore` 已涵蓋 logs、browser_profile、seen_videos.db*、config.json、build、dist、artifacts、release、backups、*.log。
+5. [中] 重新打包並部署到 `D:\Tools\HelloStreamer`，讓新增的領取 log 生效（需使用者決定時機，部署會重啟運行中的監控）。
 
 ## 已完成
 - v1.3.1 發佈內容：Twitch 播放器錯誤 #2000 有限次數重試、設定儲存失敗不留待恢復檔、Windows CDP 連線埠探索修正。
