@@ -233,6 +233,7 @@ def test_start_resumes_only_owned_live_trigger_players(monkeypatch, mode):
                         lambda urls, settings: calls.append(urls))
     probe = SimpleNamespace(
         _collect_monitor_config=lambda: (channels, 10),
+        refresh_points_priority_allocation=lambda: None,
         _monitor_seed_args=lambda: (statuses, 0),
         _controller=SimpleNamespace(start=lambda *args, **kwargs: True),
         config={}, _save_config=lambda: None, _sync_selectors_from_mode=lambda mode: None,
