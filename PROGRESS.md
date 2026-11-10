@@ -24,6 +24,8 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
    - 主因二（2026-11-10 已修，10:26 已部署；舊版備份 `D:\Tools\HelloStreamer_backup_20261110_pre-sticky-slots`）：使用者決定改成黏著——已佔位的頻道保留到下播，只有指定頻道開播可搶位；空出的位置再依主清單順序補。測試在 `tests/test_points_allocation_offline.py`。原狀況：`app.py` `refresh_points_priority_allocation` 每次都依主清單順序重算兩個位置，沒有「已分配者看到下播為止」的黏著；docstring 與 docs 說會保留，實作不符。實例：20:28 enmei_suiin 開播把看了 50 分鐘的 oldpot_o_0 擠掉，20:34 daemoncasoul 開播又把 enmei_suiin 擠掉。指定頻道（taiga_hikari、kspksp）搶位是預期行為。
    - 結構限制：只有兩個登入位置，同時開播超過兩台時，排序後面的頻道必然漏看。
    - 待使用者確認：提醒出現在哪個頻道；是否把分配改成黏著（非指定頻道不被後開播的高順位頻道擠掉）。
+8. [已修，未部署] 2026-11-10 14:29 使用者按停止再開始後，hayabi_zr 開了兩個視窗。原因：開播動作（open_keep）與點數分配開窗（points_priority_open）在不同 worker 同時呼叫 `notifier.open_url`，兩邊都先通過「已開／啟動中」檢查才登記 pending，造成重複啟動。修法：受管開窗依 URL 加鎖序列化，第二個呼叫會看到 pending 而重用。測試 `tests/test_twitch_watch_policy.py::test_concurrent_managed_opens_of_same_url_launch_once`；完整測試 1464 通過。
+9. [已修，未部署] 2026-11-10 下方控制區偶爾變三行：狀態副標只依「RunRunLuna」預留寬度，長頻道名（最多 66 字）會撐寬 CTkLabel，把「間隔」擠到下一行。修法：`app_ui._fit_status_subline` 依像素寬度截短名字。測試 `tests/test_status_subline_fit.py`。
 5. [已完成] 2026-11-09 17:56 已重新打包並部署 v1.3.1（含領取 log）到 `D:\Tools\HelloStreamer`；舊版備份在 `D:\Tools\HelloStreamer_backup_20261109_pre-claim-log`。下次寶箱出現後，查 log 的 `claimable bonus detected` / `claim button clicked` 驗證。
 
 ## 已完成

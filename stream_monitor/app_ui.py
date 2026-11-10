@@ -115,6 +115,27 @@ def _truncate_status_name(
     return name[: max(0, max_len - 1)] + "…"
 
 
+def _fit_status_subline(key: str, name: str, width: int) -> str:
+    """Render ``key`` with ``name`` shortened to fit the status column.
+
+    The column width is reserved for a short sample name; a CTkLabel grows
+    past its configured width for longer text, which widened the run group
+    and wrapped the compact panel onto an extra row whenever polling reached
+    a channel with a long display name.
+    """
+    name = _truncate_status_name(name)
+    limit = max(1, width - 16)
+    text = tr(key, name=name)
+    if _measure_text(text, size=11) <= limit:
+        return text
+    while len(name) > 1:
+        name = name[:-1]
+        text = tr(key, name=name.rstrip() + "…")
+        if _measure_text(text, size=11) <= limit:
+            return text
+    return text
+
+
 def _status_bar_text_width() -> int:
     """Fixed width for the compact status column (main + sub line).
 

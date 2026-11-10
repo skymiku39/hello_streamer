@@ -62,6 +62,7 @@ from stream_monitor.app_ui import (
     _clamped_window_geometry,
     _fit_button,
     _fit_option_menu,
+    _fit_status_subline,
     _font,
     _language_icon,
     _status_bar_text_width,
@@ -1592,7 +1593,11 @@ class App(ctk.CTk):
         if hasattr(self, "status_dot"):
             self.status_dot.configure(text_color=self._status_text_color)
         if self._status_subline_key:
-            sub = tr(self._status_subline_key, **self._status_subline_kwargs)
+            name = self._status_subline_kwargs.get("name")
+            if name is not None:
+                sub = _fit_status_subline(self._status_subline_key, name, width)
+            else:
+                sub = tr(self._status_subline_key, **self._status_subline_kwargs)
             self.status_sub_text.configure(text=sub, width=width)
         else:
             self.status_sub_text.configure(text="", width=width)
