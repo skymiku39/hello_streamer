@@ -1275,7 +1275,46 @@ def resume_managed_window_assists(
     return worker
 
 
+_MANAGED_OPEN_LOCKS: dict[str, threading.Lock] = {}
+_MANAGED_OPEN_LOCKS_GUARD = threading.Lock()
+
+
+def _managed_open_lock(url: str) -> threading.Lock:
+    with _MANAGED_OPEN_LOCKS_GUARD:
+        lock = _MANAGED_OPEN_LOCKS.get(url)
+        if lock is None:
+            lock = _MANAGED_OPEN_LOCKS[url] = threading.Lock()
+        return lock
+
+
 def open_url(
+    url: str,
+    browser_settings: BrowserSettings | dict[str, Any] | None = None,
+    *,
+    title_hints: tuple[str, ...] | list[str] | None = None,
+    manage: bool = True,
+    profile_hint: tuple[str, str] | None = None,
+) -> bool:
+    """Open *url*; concurrent managed opens of one URL launch only once.
+
+    The live-edge action and the points-allocation open run on different
+    workers. Both used to pass the "pending/open" check before either had
+    registered its launch, so the same channel got two windows. Serializing
+    managed opens per URL makes the second caller see the pending launch.
+    """
+    if not manage or not url:
+        return _open_url_impl(
+            url, browser_settings, title_hints=title_hints, manage=manage,
+            profile_hint=profile_hint,
+        )
+    with _managed_open_lock(url):
+        return _open_url_impl(
+            url, browser_settings, title_hints=title_hints, manage=manage,
+            profile_hint=profile_hint,
+        )
+
+
+def _open_url_impl(
     url: str,
     browser_settings: BrowserSettings | dict[str, Any] | None = None,
     *,

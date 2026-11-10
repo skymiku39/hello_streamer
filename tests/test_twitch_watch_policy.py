@@ -1,5 +1,7 @@
 """Explicit point recipients must not silently share login with other players."""
 
+import threading
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -119,3 +121,40 @@ def test_signin_bootstraps_the_effective_priority_profile(monkeypatch, prioritie
         signin.assert_called_once_with("account", browser_path="chrome")
     else:
         signin.assert_not_called()
+
+
+def test_concurrent_managed_opens_of_same_url_launch_once(monkeypatch, tmp_path):
+    """2026-11-10: open_keep and points_priority_open raced and opened two
+    windows for the same channel."""
+
+
+    pending: set[str] = set()
+    launches: list[str] = []
+    entered = threading.Event()
+
+    def fake_launch(url, *_a, **_k):
+        launches.append(url)
+        entered.set()
+        time.sleep(0.2)  # spawn + window tracking registration
+        pending.add(url)
+        return True
+
+    monkeypatch.setattr(notifier, "_VIEWER_ENGAGEMENT", None)
+    monkeypatch.setattr(notifier, "managed_window_launch_pending", lambda u: u in pending)
+    monkeypatch.setattr(notifier, "managed_window_is_open", lambda _u: False)
+    monkeypatch.setattr(notifier, "_open_with_browser_settings", fake_launch)
+    browser = BrowserSettings(enabled=True, user_data_dir=str(tmp_path / "account"))
+    url = "https://www.twitch.tv/hayabi_zr"
+    results: list[bool] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(notifier.open_url(url, browser)))
+        for _ in range(2)
+    ]
+    threads[0].start()
+    entered.wait(2)
+    threads[1].start()
+    for thread in threads:
+        thread.join(5)
+
+    assert launches == [url]
+    assert results == [True, True]
