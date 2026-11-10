@@ -1732,7 +1732,8 @@ class App(ctk.CTk):
 
         Live channels in the configured priority list win. Any free slot is
         filled from the main list in order, up to two signed-in streams total.
-        An assigned page stays open through its live broadcast; unassigned
+        An assigned page stays open through its live broadcast (only a live
+        priority channel can take its slot); unassigned
         managed pages are closed instead of being opened in Guest mode.
         """
         settings = ViewerEngagementSettings.from_dict(
@@ -1808,14 +1809,24 @@ class App(ctk.CTk):
             logger.debug("Keeping Twitch points allocation during incomplete poll")
             return
 
+        previous = self._active_points_priority_channels
         live_priorities = [name for name in priorities if name in live_statuses]
         selected_order = live_priorities[:2]
+        # A channel already holding a slot keeps it until its broadcast ends;
+        # a higher-ranked main-list channel going live later must not cut it
+        # off mid-stream (that loses the watch streak). Priority channels
+        # still take precedence.
+        selected_order.extend(
+            name for name in (previous or ())
+            if name in live_statuses
+            and name not in selected_order
+            and len(selected_order) < 2
+        )
         selected_order.extend(
             name for name in ordered_live
             if name not in selected_order and len(selected_order) < 2
         )
         selected = tuple(selected_order[:2])
-        previous = self._active_points_priority_channels
         if previous is None:
             # Older versions always opened explicitly selected channels in the
             # signed-in profile; unlisted channels may still have Guest windows.

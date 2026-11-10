@@ -208,3 +208,73 @@ def test_allocation_keeps_offline_window_when_close_on_offline_off(
     App.refresh_points_priority_allocation(probe)
 
     assert closed == []
+
+
+def _live(name: str) -> Any:
+    return _row(name, ChannelStatus(status=True, url=f"https://www.twitch.tv/{name}"))
+
+
+def _sticky_probe(rows: list[Any], previous: tuple[str, ...] | None) -> Any:
+    probe = _allocation_probe(rows, close_on_offline=True)
+    probe._active_points_priority_channels = previous
+    probe._points_main_profile_channels = set(previous or ())
+    return probe
+
+
+def test_higher_ranked_channel_does_not_preempt_assigned_slot(monkeypatch) -> None:
+    # 2026-11-09: enmei_suiin went live and cut off oldpot_o_0 mid-stream,
+    # then daemoncasoul cut off enmei_suiin six minutes later.
+    rows = [_live("daemoncasoul"), _live("hayabi_zr"), _live("oldpot_o_0")]
+    open_urls = {
+        "https://www.twitch.tv/hayabi_zr",
+        "https://www.twitch.tv/oldpot_o_0",
+    }
+    closed = _patch_windows(monkeypatch, open_urls)
+    probe = _sticky_probe(rows, ("hayabi_zr", "oldpot_o_0"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("hayabi_zr", "oldpot_o_0")
+    assert closed == []
+
+
+def test_freed_slot_is_filled_in_main_list_order(monkeypatch) -> None:
+    rows = [
+        _live("daemoncasoul"),
+        _row("hayabi_zr", ChannelStatus(status=False, ended_at_source="vod")),
+        _live("enmei_suiin"),
+        _live("oldpot_o_0"),
+    ]
+    _patch_windows(monkeypatch, {"https://www.twitch.tv/oldpot_o_0"})
+    probe = _sticky_probe(rows, ("hayabi_zr", "oldpot_o_0"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("oldpot_o_0", "daemoncasoul")
+
+
+def test_live_priority_channel_still_takes_a_slot(monkeypatch) -> None:
+    rows = [_live("hayabi_zr"), _live("gracya_leejia"), _live("kspksp")]
+    closed = _patch_windows(
+        monkeypatch,
+        {
+            "https://www.twitch.tv/hayabi_zr",
+            "https://www.twitch.tv/gracya_leejia",
+        },
+    )
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("kspksp", "hayabi_zr")
+    assert closed == ["https://www.twitch.tv/gracya_leejia"]
+
+
+def test_cold_start_fills_slots_in_main_list_order(monkeypatch) -> None:
+    rows = [_live("daemoncasoul"), _live("hayabi_zr"), _live("oldpot_o_0")]
+    _patch_windows(monkeypatch, set())
+    probe = _sticky_probe(rows, None)
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("daemoncasoul", "hayabi_zr")
