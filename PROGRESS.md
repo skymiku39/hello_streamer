@@ -24,8 +24,8 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
    - 主因二（2026-11-10 已修，10:26 已部署；舊版備份 `D:\Tools\HelloStreamer_backup_20261110_pre-sticky-slots`）：使用者決定改成黏著——已佔位的頻道保留到下播，只有指定頻道開播可搶位；空出的位置再依主清單順序補。測試在 `tests/test_points_allocation_offline.py`。原狀況：`app.py` `refresh_points_priority_allocation` 每次都依主清單順序重算兩個位置，沒有「已分配者看到下播為止」的黏著；docstring 與 docs 說會保留，實作不符。實例：20:28 enmei_suiin 開播把看了 50 分鐘的 oldpot_o_0 擠掉，20:34 daemoncasoul 開播又把 enmei_suiin 擠掉。指定頻道（taiga_hikari、kspksp）搶位是預期行為。
    - 結構限制：只有兩個登入位置，同時開播超過兩台時，排序後面的頻道必然漏看。
    - 待使用者確認：提醒出現在哪個頻道；是否把分配改成黏著（非指定頻道不被後開播的高順位頻道擠掉）。
-8. [已修，未部署] 2026-11-10 14:29 使用者按停止再開始後，hayabi_zr 開了兩個視窗。原因：開播動作（open_keep）與點數分配開窗（points_priority_open）在不同 worker 同時呼叫 `notifier.open_url`，兩邊都先通過「已開／啟動中」檢查才登記 pending，造成重複啟動。修法：受管開窗依 URL 加鎖序列化，第二個呼叫會看到 pending 而重用。測試 `tests/test_twitch_watch_policy.py::test_concurrent_managed_opens_of_same_url_launch_once`；完整測試 1464 通過。
-9. [已修，未部署] 2026-11-10 下方控制區偶爾變三行：狀態副標只依「RunRunLuna」預留寬度，長頻道名（最多 66 字）會撐寬 CTkLabel，把「間隔」擠到下一行。修法：`app_ui._fit_status_subline` 依像素寬度截短名字。測試 `tests/test_status_subline_fit.py`。
+8. [已完成，14:42 部署] 2026-11-10 14:29 使用者按停止再開始後，hayabi_zr 開了兩個視窗。原因：開播動作（open_keep）與點數分配開窗（points_priority_open）在不同 worker 同時呼叫 `notifier.open_url`，兩邊都先通過「已開／啟動中」檢查才登記 pending，造成重複啟動。修法：受管開窗依 URL 加鎖序列化，第二個呼叫會看到 pending 而重用。測試 `tests/test_twitch_watch_policy.py::test_concurrent_managed_opens_of_same_url_launch_once`；完整測試 1464 通過。舊版備份 `D:ToolsHelloStreamer_backup_20261110_pre-dup-window-fix`。部署後重啟，hayabi_zr、gracya_leejia 各只開一個視窗。
+9. [已完成，14:42 部署] 2026-11-10 下方控制區偶爾變三行：狀態副標只依「RunRunLuna」預留寬度，長頻道名（最多 66 字）會撐寬 CTkLabel，把「間隔」擠到下一行。修法：`app_ui._fit_status_subline` 依像素寬度截短名字。測試 `tests/test_status_subline_fit.py`。
 5. [已完成] 2026-11-09 17:56 已重新打包並部署 v1.3.1（含領取 log）到 `D:\Tools\HelloStreamer`；舊版備份在 `D:\Tools\HelloStreamer_backup_20261109_pre-claim-log`。下次寶箱出現後，查 log 的 `claimable bonus detected` / `claim button clicked` 驗證。
 
 ## 已完成
@@ -45,7 +45,7 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 1. `uv run python build.py` → `dist\HelloStreamer\`（HelloStreamer.exe + `_internal`）。
 2. 備份 `D:\Tools\HelloStreamer\HelloStreamer.exe` 與 `_internal` 到 `D:\Tools\HelloStreamer_backup_<日期>_<說明>`。
 3. 停止執行中的 HelloStreamer，換掉 exe 與 `_internal`（不動 config、logs、browser_profile、db）。
-4. 一定要帶 `--silent` 啟動，否則不會自動開始監控：用 WMI `Win32_Process.Create` 啟動 `"D:\Tools\HelloStreamer\HelloStreamer.exe" --silent`（工作目錄設為該資料夾），讓它脫離 shell 的 job。
+4. 若 `_internal` 內 VCRUNTIME DLL 被鎖無法刪除，可直接覆蓋其餘檔案，事後以 hash 比對 dist 與部署目錄確認一致。一定要帶 `--silent` 啟動，否則不會自動開始監控：用 WMI `Win32_Process.Create` 啟動 `"D:\Tools\HelloStreamer\HelloStreamer.exe" --silent`（工作目錄設為該資料夾），讓它脫離 shell 的 job。
 5. 查 `logs\stream_monitor.log` 有 `Poll complete`，且直播中的頻道 page assist 有重新 attach。重啟時受管視窗會關掉再重開，屬正常。
 
 ## 本機運行環境（2026-11-09 檢查）
