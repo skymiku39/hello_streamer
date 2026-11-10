@@ -21,7 +21,7 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 6. [已完成] 2026-11-10 修正「下播頻道關窗後約 1 秒又被重開、佔住登入觀看位置」並部署（02:05）；舊版備份 `D:\Tools\HelloStreamer_backup_20261110_pre-offline-reopen-fix`。原因：事件橋每輪只套用 3 列狀態且開播優先，下播列仍顯示開播，點數分配讀到「開播中但視窗不見」就重開（hayabi_zr 19:37、gracya_leejia 00:24）；另外下播列沒有網址，清理多餘視窗時漏掉，殘留視窗佔位數小時（jipandan 00:41–01:45 因此沒加點）。修法：確認下播時立即套用該列狀態（不受每輪上限、拖曳中會延到恢復後優先套用）；開啟「下播關窗」時，分配清理也涵蓋下播頻道的殘留視窗（關閉時保留，維持原行為）。測試 `tests/test_points_allocation_offline.py`；完整測試 1459 通過。部署後首輪即關閉兩個殘留視窗。
 7. [高] 2026-11-10 調查「仍收到連續觀看中斷提醒」（依 `watch_streak_observation.ndjson` 重建 11/09 時間軸，時間為台灣時間）：
    - 主因一（已於 02:05 部署修正）：hayabi_zr 19:37 下播、gracya_leejia 00:24 下播後視窗被重開，一路佔位到 02:05；期間開播的 ramengyozaset（20:59–02:35）、hanasakich（21:03–22:32、22:35–00:06）完全沒被看，enmei_suiin 只看 6 分鐘。
-   - 主因二（2026-11-10 已修，尚未部署）：使用者決定改成黏著——已佔位的頻道保留到下播，只有指定頻道開播可搶位；空出的位置再依主清單順序補。測試在 `tests/test_points_allocation_offline.py`。原狀況：`app.py` `refresh_points_priority_allocation` 每次都依主清單順序重算兩個位置，沒有「已分配者看到下播為止」的黏著；docstring 與 docs 說會保留，實作不符。實例：20:28 enmei_suiin 開播把看了 50 分鐘的 oldpot_o_0 擠掉，20:34 daemoncasoul 開播又把 enmei_suiin 擠掉。指定頻道（taiga_hikari、kspksp）搶位是預期行為。
+   - 主因二（2026-11-10 已修，10:26 已部署；舊版備份 `D:\Tools\HelloStreamer_backup_20261110_pre-sticky-slots`）：使用者決定改成黏著——已佔位的頻道保留到下播，只有指定頻道開播可搶位；空出的位置再依主清單順序補。測試在 `tests/test_points_allocation_offline.py`。原狀況：`app.py` `refresh_points_priority_allocation` 每次都依主清單順序重算兩個位置，沒有「已分配者看到下播為止」的黏著；docstring 與 docs 說會保留，實作不符。實例：20:28 enmei_suiin 開播把看了 50 分鐘的 oldpot_o_0 擠掉，20:34 daemoncasoul 開播又把 enmei_suiin 擠掉。指定頻道（taiga_hikari、kspksp）搶位是預期行為。
    - 結構限制：只有兩個登入位置，同時開播超過兩台時，排序後面的頻道必然漏看。
    - 待使用者確認：提醒出現在哪個頻道；是否把分配改成黏著（非指定頻道不被後開播的高順位頻道擠掉）。
 5. [已完成] 2026-11-09 17:56 已重新打包並部署 v1.3.1（含領取 log）到 `D:\Tools\HelloStreamer`；舊版備份在 `D:\Tools\HelloStreamer_backup_20261109_pre-claim-log`。下次寶箱出現後，查 log 的 `claimable bonus detected` / `claim button clicked` 驗證。
@@ -38,6 +38,13 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 2. 依時間點查 **`D:\Tools\HelloStreamer\logs\stream_monitor.log`**（實際運行的部署版；repo 內 `logs/` 是 10/14 的舊 log，不要看）搜尋 `claim candidate`、`no claimable bonus`、`IntegrityCheckFailed`。2026-11-09 檢查：該 log 有 80 筆 `confirmed bonus claim`、無 IntegrityCheck 或領取失敗紀錄，領取整體運作正常；**已查明（2026-11-09）**：截圖是 `asbs5263`，餘額 141,857 只存在於 14:26:46–14:27:11，14:27:11 即有伺服器確認領取，寶箱約停 25 秒（輪詢 10–20 秒 + 隨機延遲 2–5 秒），無漏領。已在 `_try_claim` 補 log（偵測、點擊、被拒絕）；需重新打包部署到 `D:\Tools\HelloStreamer` 才會生效。另：`hayabi_zr` 16:40–17:10 點數停滯 30 分鐘，由 points-stall 自動重載恢復（Twitch 端未發點）。
 3. 若懷疑背景節流：看 `stream_monitor/twitch_page_assist.py` 的 `_FIND_CLAIM_JS`（約 :407）；`visible()` 與 `hitTestable()`（`elementFromPoint`）在最小化／被頁內元素遮住時會判定找不到；`document.visibilityState` 只被記錄、沒當條件。
 4. 領取流程在 `_try_claim`（約 :2440）：需聊天室可見 → 探測 → 隨機等 2–5 秒 → 再探測 → 點擊 → 輪詢 ack；輪詢間隔 10–20 秒（`config.json` 的 `claim_poll_seconds_*`）。
+
+## 部署步驟（2026-11-10 整理）
+1. `uv run python build.py` → `dist\HelloStreamer\`（HelloStreamer.exe + `_internal`）。
+2. 備份 `D:\Tools\HelloStreamer\HelloStreamer.exe` 與 `_internal` 到 `D:\Tools\HelloStreamer_backup_<日期>_<說明>`。
+3. 停止執行中的 HelloStreamer，換掉 exe 與 `_internal`（不動 config、logs、browser_profile、db）。
+4. 一定要帶 `--silent` 啟動，否則不會自動開始監控：用 WMI `Win32_Process.Create` 啟動 `"D:\Tools\HelloStreamer\HelloStreamer.exe" --silent`（工作目錄設為該資料夾），讓它脫離 shell 的 job。
+5. 查 `logs\stream_monitor.log` 有 `Poll complete`，且直播中的頻道 page assist 有重新 attach。重啟時受管視窗會關掉再重開，屬正常。
 
 ## 本機運行環境（2026-11-09 檢查）
 - 實際運行：`D:\Tools\HelloStreamer\HelloStreamer.exe`（v1.3.1，build 於 11/8 01:29，約等於 commit `dc843b2`）；資料與 log 在 `D:\Tools\HelloStreamer\`（`logs/`、`config.json`、`browser_profile/`）。
