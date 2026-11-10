@@ -56,6 +56,30 @@ class PendingStatusStore:
     def set(self, key: str, status: Any) -> None:
         self._pending[key] = status
 
+    def get(self, key: str) -> Any:
+        return self._pending.get(key)
+
+    def flush_keys(self, rows: list[ChannelRowView], keys: set[str]) -> int:
+        """Apply queued updates for ``keys`` now, outside the per-tick cap.
+
+        Used for confirmed offline edges: points allocation reads row state,
+        so a row still painted live after its window was closed would be
+        treated as a live channel whose window vanished and reopened.
+        """
+        applied = 0
+        for key in keys:
+            if key not in self._pending:
+                continue
+            status = self._pending.pop(key)
+            for row in rows:
+                if row.key == key:
+                    if row_has_richer_offline_detail(row, status):
+                        break
+                    row.set_status(status)
+                    applied += 1
+                    break
+        return applied
+
     def flush(self, rows: list[ChannelRowView], *, limit: int = 3) -> int:
         """Apply queued row status updates in small batches to keep UI responsive."""
         applied = 0
@@ -108,6 +132,8 @@ class MonitorEventBridge:
         self._bus = event_bus
         self._pending = PendingStatusStore()
         self._pending_display_names = PendingDisplayNamesStore()
+        # Confirmed offline rows waiting for repaint; flushed ahead of the cap.
+        self._urgent_offline_keys: set[str] = set()
         self._one_shot_after_cycle: int | None = None
         self._live_actions_after_cycle: int | None = None
 
@@ -115,6 +141,7 @@ class MonitorEventBridge:
         """Drop buffered status updates (called when monitoring stops)."""
         self._pending.clear()
         self._pending_display_names.clear()
+        self._urgent_offline_keys.clear()
         self._one_shot_after_cycle = None
         self._live_actions_after_cycle = None
 
@@ -247,13 +274,50 @@ class MonitorEventBridge:
             entry, phase, display_name = latest_poll_activity
             sink.update_poll_subline(entry, phase, display_name)
 
+        for entry, offline_info in offline_events:
+            self._urgent_offline_keys.add(entry.key)
+            pending = self._pending.get(entry.key)
+            if not (
+                isinstance(pending, ChannelStatus) and pending.status is False
+            ):
+                # The completed-poll snapshot may still be queued behind the
+                # tick budget; never leave a confirmed offline row painted live.
+                self._pending.set(
+                    entry.key,
+                    ChannelStatus(
+                        status=False,
+                        title=str(getattr(offline_info, "title", "") or ""),
+                        ended_at_source="pending",
+                    ),
+                )
+
         if not sink.defer_channel_row_repaints:
-            applied = self._pending.flush(sink.iter_channel_rows(), limit=3)
+            applied = self._pending.flush_keys(
+                sink.iter_channel_rows(), self._urgent_offline_keys
+            )
+            self._urgent_offline_keys.clear()
+            applied += self._pending.flush(sink.iter_channel_rows(), limit=3)
             if applied:
                 logger.debug(
                     "UI status flush: %d row(s), %d queued",
                     applied,
                     len(self._pending),
+                )
+            if not poll_complete:
+                for entry, info in live_events:
+                    if sink.is_channel_active(entry):
+                        sink.apply_live_row_status(entry, info)
+            refresh_allocation = getattr(
+                sink, "refresh_points_priority_allocation", None
+            )
+            if callable(refresh_allocation) and (
+                applied or poll_complete or live_events
+            ):
+                refresh_allocation(
+                    allow_open=True,
+                    event_channels={
+                        entry.name.strip().lower() for entry, _info in live_events
+                    },
                 )
 
         mode = sink.monitor_mode
@@ -343,9 +407,6 @@ class MonitorEventBridge:
                     key = channel_key(channel["platform"], channel["name"])
                     current_channel_modes[key] = channel_mode_for(channel)
         for entry, info in live_events:
-            if not poll_complete and not sink.defer_channel_row_repaints:
-                sink.apply_live_row_status(entry, info)
-
             decision = resolve_live_action(
                 mode=mode,
                 monitor_only=getattr(entry, "monitor_only", False),

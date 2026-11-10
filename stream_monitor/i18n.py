@@ -31,6 +31,15 @@ DEFAULT_LANGUAGE = "zh_TW"
 # Translation tables
 # ---------------------------------------------------------------------------
 _ZH_TW: dict[str, str] = {
+    "engagement.page_assist.claim_rejected": "Twitch 拒絕獎勵請求，已暫停自動領取：{url}。請先在瀏覽器確認登入與手動領取，再關閉並重新開啟自動領取；播放仍繼續。",
+    "engagement.priority.label": "優先維持連續觀看的頻道（最多 2 台）",
+    "engagement.priority.hint": "以逗號分隔優先頻道（最多 2 台）；留空維持原本共用帳號模式。登入播放最多 2 台：先保留名單內直播，空位再按主頻道清單由上到下補位，直到該場直播結束。未分配頻道不會以訪客模式開啟。Twitch 是否認列點數或連續觀看仍由平台決定。",
+    "engagement.priority.invalid": "請填入最多 2 個有效 Twitch 頻道，並選擇已啟用的專用 Chrome／Edge 帳號。",
+
+    "engagement.toggle.separate_windows": "直播視窗使用分開座標",
+    "engagement.toggle.separate_windows.hint": "開窗時優先排在螢幕工作區內的空位；空間不足時錯開排列。僅調整本程式管理的視窗，不保證點數認列。",
+    "engagement.toggle.always_on_top": "直播視窗保持置頂",
+    "engagement.toggle.always_on_top.hint": "讓本程式管理的 Twitch 視窗保持置頂；可能遮住其他程式，不保證點數認列。",
     # App
     "app.title": "哈嘍主播  Hello Streamer",
     "app.title.cn": "哈嘍主播",
@@ -165,6 +174,8 @@ _ZH_TW: dict[str, str] = {
     "status.row.time.no_data": "無時間資料",
     "status.row.time.pending_detail": "未開播，待深度檢查",
     "status.row.pending_suffix": "· 待檢測",
+    "status.row.unknown": "無法確認",
+    "status.row.unavailable_hint": "查詢失敗，等待重試；保留上次狀態",
 
     # Tray
     "tray.show": "顯示主畫面",
@@ -309,6 +320,12 @@ _ZH_TW: dict[str, str] = {
     "engagement.page_assist.requirements": "請先選擇自訂 Chromium、專用帳號資料，以及獨立新視窗或獨占視窗。選項偏好會保留；手動開啟的連結不執行頁面輔助。",
     "engagement.page_assist.profile_busy": "頁面輔助未啟動：{url}。請關閉使用相同專用帳號資料的瀏覽器，再由本程式重新開啟直播。",
     "engagement.page_assist.failed": "頁面輔助無法連線或已停止：{url}。請查看 log 與瀏覽器設定；直播頁可能仍開啟。",
+    "engagement.page_assist.reconnecting": "頁面輔助正在重新連線：{url}。重試會持續進行，連線恢復後提示會消失。",
+    "engagement.page_assist.f5_verifying": "已刷新受管頁面，正在確認影片時間是否持續前進：{url}。這只能確認本機播放狀態。",
+    "engagement.page_assist.f5_retrying": "刷新後尚未確認影片播放，正在等待後分段重試（最多再刷新 2 次）：{url}。",
+    "engagement.page_assist.f5_unverified": "刷新後仍無法確認本機影片時間前進，已停止自動重試：{url}。請檢查播放頁或網路。",
+    "engagement.page_assist.f5_paused": "刷新後播放器仍為暫停狀態，為保留播放選擇未自動播放：{url}。",
+    "engagement.page_assist.points_stall_exhausted": "第二個點數餘額在兩次停滯刷新後仍未增加，已停止點數停滯重試：{url}。點數增加會重設額度；按 F5 可重新武裝。",
     "engagement.page_assist.player_2000_retrying": "播放器 #2000：{url}。等待有限重試或驗證影片時間前進，尚未確認恢復。",
     "engagement.page_assist.player_2000_unverified": "播放器 #2000 尚未確認恢復：{url}。目前未操作；請確認播放狀態、重載按鈕及網路，詳情見 log。",
     "engagement.page_assist.player_2000_exhausted": "播放器 #2000 已達 3 次重試上限：{url}。請手動重載播放器，並檢查網路、VPN／代理或擴充套件；詳情見 log。",
@@ -322,6 +339,8 @@ _ZH_TW: dict[str, str] = {
     "engagement.toggle.theater.hint": "本次頁面首次確認開啟後，就不再自動切換。窄視窗可能強制收合聊天室；若要領取寶箱，請放大視窗或關閉劇院模式。",
     "engagement.toggle.auto_refresh": "定時自動刷新頁面",
     "engagement.toggle.auto_refresh.hint": "約 45–75 分鐘（可設定區間）刷新一次；刷新後會重跑內容確認與劇院模式。",
+    "engagement.toggle.points_stall_refresh": "點數停滯時自動刷新",
+    "engagement.toggle.points_stall_refresh.hint": "第二個點數餘額連續 30 分鐘有效觀看未增加時刷新該頁；同一停滯週期最多兩次。頁內輔助仍會唯讀觀測點數；按 F5 也會檢查所有受管頁面。",
     "engagement.tips": "提醒：官方來源未說明固定心跳間隔或每 IP 觀看上限（未指明）。Twitch 禁止人為灌水觀看人數與協同假互動，請勿將本程式用於此用途。來源：https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat　https://help.twitch.tv/s/article/how-to-handle-view-follow-bots",
     "engagement.btn.save": "儲存",
     "engagement.btn.cancel": "取消",
@@ -393,6 +412,15 @@ _ZH_TW: dict[str, str] = {
 
 
 _ZH_CN: dict[str, str] = {
+    "engagement.page_assist.claim_rejected": "Twitch 拒绝奖励请求，已暂停自动领取：{url}。请先在浏览器确认登录和手动领取，再关闭并重新开启自动领取；播放仍继续。",
+    "engagement.priority.label": "优先维持连续观看的频道（最多 2 台）",
+    "engagement.priority.hint": "用逗号分隔优先频道（最多 2 个）；留空保持原有共用账号模式。登录播放最多 2 个：先保留名单内直播，空位再按主频道列表从上到下补位，直到该场直播结束。未分配频道不会以访客模式打开。Twitch 是否计入积分或连续观看仍由平台决定。",
+    "engagement.priority.invalid": "请填写最多 2 个有效 Twitch 频道，并启用专用 Chrome／Edge 账号。",
+
+    "engagement.toggle.separate_windows": "直播窗口使用分开坐标",
+    "engagement.toggle.separate_windows.hint": "打开时优先放在屏幕工作区内的空位；空间不足时错开排列。仅调整本程序管理的窗口，不保证积分计入。",
+    "engagement.toggle.always_on_top": "直播窗口保持置顶",
+    "engagement.toggle.always_on_top.hint": "让本程序管理的 Twitch 窗口保持置顶；可能遮住其他程序，不保证积分计入。",
     # App
     "app.title": "哈喽主播  Hello Streamer",
     "app.title.cn": "哈喽主播",
@@ -513,6 +541,7 @@ _ZH_CN: dict[str, str] = {
     "status.watching": "仅监测中…",
     "status.watching_once": "仅监测一次中…",
     "status.stopped": "已停止",
+    "status.monitor_restarted": "监控已自动恢复…",
     "status.empty_hint": "尚无频道，请点击「＋ 新增频道」开始",
     "status.row.placeholder": "  --  ",
     "status.row.paused": " 已暂停 ",
@@ -526,6 +555,8 @@ _ZH_CN: dict[str, str] = {
     "status.row.time.no_data": "无时间资料",
     "status.row.time.pending_detail": "未开播，待深度检查",
     "status.row.pending_suffix": "· 待检测",
+    "status.row.unknown": "无法确认",
+    "status.row.unavailable_hint": "查询失败，等待重试；保留上次状态",
 
     # Tray
     "tray.show": "显示主界面",
@@ -669,6 +700,12 @@ _ZH_CN: dict[str, str] = {
     "engagement.page_assist.requirements": "请先选择自定义 Chromium、专用账号数据，以及独立新窗口或独占窗口。选项偏好会保留；手动打开的链接不执行页面辅助。",
     "engagement.page_assist.profile_busy": "页面辅助未启动：{url}。请关闭使用相同专用账号数据的浏览器，再由本程序重新打开直播。",
     "engagement.page_assist.failed": "页面辅助无法连接或已停止：{url}。请查看 log 与浏览器设置；直播页面可能仍打开。",
+    "engagement.page_assist.reconnecting": "页面辅助正在重新连接：{url}。将持续重试，连接恢复后提示会消失。",
+    "engagement.page_assist.f5_verifying": "已刷新受管页面，正在确认视频时间是否持续前进：{url}。这只能确认本机播放状态。",
+    "engagement.page_assist.f5_retrying": "刷新后尚未确认视频播放，正在等待后分段重试（最多再刷新 2 次）：{url}。",
+    "engagement.page_assist.f5_unverified": "刷新后仍无法确认本机视频时间前进，已停止自动重试：{url}。请检查播放页或网络。",
+    "engagement.page_assist.f5_paused": "刷新后播放器仍为暂停状态，为保留播放选择未自动播放：{url}。",
+    "engagement.page_assist.points_stall_exhausted": "第二个点数余额在两次停滞刷新后仍未增加，已停止点数停滞重试：{url}。点数增加会重置额度；按 F5 可重新武装。",
     "engagement.page_assist.player_2000_retrying": "播放器 #2000：{url}。等待有限重试或验证视频时间前进，尚未确认恢复。",
     "engagement.page_assist.player_2000_unverified": "播放器 #2000 尚未确认恢复：{url}。目前未操作；请确认播放状态、重载按钮及网络，详情见 log。",
     "engagement.page_assist.player_2000_exhausted": "播放器 #2000 已达 3 次重试上限：{url}。请手动重载播放器，并检查网络、VPN／代理或扩展程序；详情见 log。",
@@ -682,6 +719,8 @@ _ZH_CN: dict[str, str] = {
     "engagement.toggle.theater.hint": "本次页面首次确认开启后，就不再自动切换。窄窗口可能强制收起聊天室；如需领取宝箱，请放大窗口或关闭剧院模式。",
     "engagement.toggle.auto_refresh": "定时自动刷新页面",
     "engagement.toggle.auto_refresh.hint": "约 45–75 分钟（可设定区间）刷新一次；刷新后会重跑内容确认与剧院模式。",
+    "engagement.toggle.points_stall_refresh": "点数停滞时自动刷新",
+    "engagement.toggle.points_stall_refresh.hint": "第二个点数余额连续 30 分钟有效观看未增加时刷新该页；同一停滞周期最多两次。页内辅助仍会只读观察点数；按 F5 也会检查所有受管页面。",
     "engagement.tips": "提醒：官方来源未说明固定心跳间隔或每 IP 观看上限（未指明）。Twitch 禁止人为刷观看人数与协同假互动，请勿将本程序用于此用途。来源：https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat　https://help.twitch.tv/s/article/how-to-handle-view-follow-bots",
     "engagement.btn.save": "保存",
     "engagement.btn.cancel": "取消",
@@ -753,6 +792,15 @@ _ZH_CN: dict[str, str] = {
 
 
 _EN: dict[str, str] = {
+    "engagement.page_assist.claim_rejected": "Twitch rejected a reward request; automatic claims are paused for {url}. Check sign-in and manual claiming in the browser, then switch automatic claims off and on. Playback continues.",
+    "engagement.priority.label": "Priority channels for watch streaks (up to 2)",
+    "engagement.priority.hint": "Comma-separated priority channels (up to 2); leave blank for the original shared-account mode. Use at most two signed-in streams: keep live listed channels first, then fill free slots from the main list top to bottom until each broadcast ends. Unassigned channels are not opened as guests. Twitch controls whether points or streaks are credited.",
+    "engagement.priority.invalid": "Enter up to 2 valid Twitch channels and enable a dedicated Chrome/Edge profile.",
+
+    "engagement.toggle.separate_windows": "Use separate stream window positions",
+    "engagement.toggle.separate_windows.hint": "Place managed windows in free monitor work-area slots, or stagger them when space is limited. This does not guarantee points credit.",
+    "engagement.toggle.always_on_top": "Keep stream windows on top",
+    "engagement.toggle.always_on_top.hint": "Keep managed Twitch windows above other applications. This may cover other windows and does not guarantee points credit.",
     "app.title": "Hello Streamer",
     "app.title.cn": "Hello Streamer",
     "app.title.en": "",
@@ -882,6 +930,8 @@ _EN: dict[str, str] = {
     "status.row.time.no_data": "No time data",
     "status.row.time.pending_detail": "Not live, pending detail check",
     "status.row.pending_suffix": "· checking",
+    "status.row.unknown": "UNKNOWN",
+    "status.row.unavailable_hint": "Query failed; retrying. Last known state shown.",
 
     "tray.show": "Show main window",
     "tray.trigger_active": "✓ Monitor + Trigger",
@@ -931,6 +981,7 @@ _EN: dict[str, str] = {
 
     "browser.title": "Browser Settings",
     "browser.tab.basic": "Basic",
+    "browser.tab.user": "Basic settings",
     "browser.tab.window": "Window",
     "browser.tab.account": "Account",
     "browser.tab.lifecycle": "Cleanup",
@@ -1019,6 +1070,12 @@ _EN: dict[str, str] = {
     "engagement.page_assist.requirements": "Choose custom Chromium, a dedicated profile, and a separate or solo-player window first. Preferences are kept; manually opened links do not run page assist.",
     "engagement.page_assist.profile_busy": "Page assist did not start: {url}. Close the browser using the same dedicated profile, then reopen the stream through this app.",
     "engagement.page_assist.failed": "Page assist could not connect or stopped: {url}. Check the log and browser settings; the stream page may still be open.",
+    "engagement.page_assist.reconnecting": "Page assist is reconnecting to {url}. It will keep retrying and clear this notice when the connection returns.",
+    "engagement.page_assist.f5_verifying": "Managed page refreshed; checking whether the local video clock advances: {url}. This only confirms local playback.",
+    "engagement.page_assist.f5_retrying": "Playback is not confirmed after refresh; waiting, then retrying in stages (up to 2 more page reloads): {url}.",
+    "engagement.page_assist.f5_unverified": "Local video-time progress is still unconfirmed after refresh; automatic retries stopped: {url}. Check the player or network.",
+    "engagement.page_assist.f5_paused": "The player is still paused after refresh. It was not auto-played, to preserve your playback choice: {url}.",
+    "engagement.page_assist.points_stall_exhausted": "The second points balance did not increase after two stall reloads, so points-stall retries stopped for {url}. A balance increase resets the allowance; F5 can re-arm it.",
     "engagement.page_assist.player_2000_retrying": "Player #2000: {url}. Waiting for a bounded retry or media-time verification; recovery is not confirmed.",
     "engagement.page_assist.player_2000_unverified": "Player #2000 recovery is unverified: {url}. No action now; check playback, the reload button and network. See the log.",
     "engagement.page_assist.player_2000_exhausted": "Player #2000 reached the 3-attempt limit: {url}. Reload the player manually; check your network, VPN/proxy or extensions. See the log.",
@@ -1032,6 +1089,8 @@ _EN: dict[str, str] = {
     "engagement.toggle.theater.hint": "Stops switching after theater mode is first confirmed on for this page. Narrow windows may hide chat; enlarge the window or disable theater mode to claim bonuses.",
     "engagement.toggle.auto_refresh": "Periodically reload the page",
     "engagement.toggle.auto_refresh.hint": "Reloads about every 45–75 minutes (configurable range); re-runs gate accept and theater after reload.",
+    "engagement.toggle.points_stall_refresh": "Reload on a stalled points balance",
+    "engagement.toggle.points_stall_refresh.hint": "Reloads that page after 30 minutes of eligible viewing with no increase in the second points balance, up to twice per stall cycle. Read-only observation remains active; F5 checks every managed page.",
     "engagement.tips": "Tips: Official sources do not state a fixed heartbeat interval or per-IP view limit (unspecified). Twitch prohibits artificial view inflation and coordinated fake engagement — do not use this app for that. Sources: https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat · https://help.twitch.tv/s/article/how-to-handle-view-follow-bots",
     "engagement.btn.save": "Save",
     "engagement.btn.cancel": "Cancel",
@@ -1100,6 +1159,15 @@ _EN: dict[str, str] = {
 
 
 _JA: dict[str, str] = {
+    "engagement.page_assist.claim_rejected": "Twitch が報酬リクエストを拒否したため、{url} の自動受取を一時停止しました。ブラウザーでログインと手動受取を確認し、自動受取をオフ／オンにしてください。再生は続行します。",
+    "engagement.priority.label": "連続視聴優先チャンネル（最大2つ）",
+    "engagement.priority.hint": "優先チャンネルをカンマ区切りで入力（最大2つ）。空欄なら従来の共有アカウントモードです。ログイン再生は最大2つ。配信中の登録チャンネルを優先し、空き枠はメインリストの上から順に各配信終了まで再生します。未割当チャンネルはゲストで自動起動しません。ポイントや連続視聴の認定はTwitch側の判断です。",
+    "engagement.priority.invalid": "有効なTwitchチャンネルを最大2つ指定し、専用Chrome/Edgeプロファイルを有効にしてください。",
+
+    "engagement.toggle.separate_windows": "配信ウィンドウの位置を分ける",
+    "engagement.toggle.separate_windows.hint": "管理するウィンドウを画面内の空き領域に配置し、空きが足りない場合は位置をずらします。ポイントの付与を保証するものではありません。",
+    "engagement.toggle.always_on_top": "配信ウィンドウを最前面に固定",
+    "engagement.toggle.always_on_top.hint": "管理する Twitch ウィンドウを最前面に固定します。他のアプリを覆う場合があり、ポイントの付与は保証されません。",
     "app.title": "ハローストリーマー",
     "app.title.cn": "ハローストリーマー",
     "app.title.en": "Hello Streamer",
@@ -1229,6 +1297,8 @@ _JA: dict[str, str] = {
     "status.row.time.no_data": "時間情報なし",
     "status.row.time.pending_detail": "未配信、詳細確認待ち",
     "status.row.pending_suffix": "· 確認待ち",
+    "status.row.unknown": "確認不可",
+    "status.row.unavailable_hint": "取得失敗・再試行待ち。前回の状態を表示。",
 
     "tray.show": "メイン画面を表示",
     "tray.trigger_active": "✓ 監視＋実行中",
@@ -1367,6 +1437,12 @@ _JA: dict[str, str] = {
     "engagement.page_assist.requirements": "カスタム Chromium、専用プロファイル、独立ウィンドウを選択してください。設定は保持されます。手動で開いたリンクには適用されません。",
     "engagement.page_assist.profile_busy": "ページアシスト未起動：{url}。同じ専用プロファイルのブラウザを閉じ、本アプリから配信を開き直してください。",
     "engagement.page_assist.failed": "ページアシスト接続失敗または停止：{url}。ログとブラウザ設定を確認してください。配信ページは開いている場合があります。",
+    "engagement.page_assist.reconnecting": "ページアシストが再接続中です：{url}。接続が戻るまで再試行し、復旧後にこの通知を消します。",
+    "engagement.page_assist.f5_verifying": "管理ページを更新しました。動画時間が進むか確認中です：{url}。これはローカル再生の確認のみです。",
+    "engagement.page_assist.f5_retrying": "更新後の再生を確認できていません。待機後に段階的に再試行します（追加のページ再読み込みは最大2回）：{url}。",
+    "engagement.page_assist.f5_unverified": "更新後もローカル動画時間の進行を確認できず、自動再試行を停止しました：{url}。プレイヤーまたはネットワークを確認してください。",
+    "engagement.page_assist.f5_paused": "更新後もプレイヤーは一時停止中です。再生設定を保つため自動再生していません：{url}。",
+    "engagement.page_assist.points_stall_exhausted": "2回の停滞再読み込み後も2つ目のポイント残高が増えなかったため、{url} の停滞再試行を停止しました。残高増加で上限が戻り、F5で再装填できます。",
     "engagement.page_assist.player_2000_retrying": "プレイヤー #2000：{url}。回数制限付き再試行または動画時間の進行を確認中です。復旧は未確認です。",
     "engagement.page_assist.player_2000_unverified": "プレイヤー #2000 の復旧未確認：{url}。現在は操作せず、再生状態、再読み込みボタン、ネットワークを確認してください。詳細はログを参照。",
     "engagement.page_assist.player_2000_exhausted": "プレイヤー #2000 は再試行の上限3回に達しました：{url}。手動でプレイヤーを再読み込みし、ネットワーク、VPN／プロキシ、拡張機能を確認してください。詳細はログを参照。",
@@ -1380,6 +1456,8 @@ _JA: dict[str, str] = {
     "engagement.toggle.theater.hint": "このページで一度オンを確認した後は、自動で切り替えません。狭いウィンドウではチャットが閉じることがあります。ボーナスを受け取るには、ウィンドウを広げるかシアターモードをオフにしてください。",
     "engagement.toggle.auto_refresh": "ページを定期リロード",
     "engagement.toggle.auto_refresh.hint": "約 45～75 分（設定可能な範囲）ごとにリロードし、その後ゲートとシアターを再実行します。",
+    "engagement.toggle.points_stall_refresh": "ポイント停滞時に自動リロード",
+    "engagement.toggle.points_stall_refresh.hint": "有効な視聴が30分続いても2つ目のポイント残高が増えない場合に、そのページを同じ停滞サイクルで最大2回リロードします。読み取り専用の監視は継続し、F5ですべての管理ページを確認します。",
     "engagement.tips": "ヒント：公式資料は固定ハートビート間隔や IP ごとの視聴上限を示していません（未指定）。Twitch は人工的な視聴水増しや協調した偽エンゲージメントを禁止しており、本アプリをその目的で使わないでください。出典：https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat　https://help.twitch.tv/s/article/how-to-handle-view-follow-bots",
     "engagement.btn.save": "保存",
     "engagement.btn.cancel": "キャンセル",
@@ -1448,6 +1526,15 @@ _JA: dict[str, str] = {
 
 
 _KO: dict[str, str] = {
+    "engagement.page_assist.claim_rejected": "Twitch가 보상 요청을 거부하여 {url}의 자동 수령을 일시 중지했습니다. 브라우저에서 로그인과 수동 수령을 확인한 다음 자동 수령을 껐다 켜세요. 재생은 계속됩니다.",
+    "engagement.priority.label": "연속 시청 우선 채널 (최대 2개)",
+    "engagement.priority.hint": "우선 채널을 쉼표로 구분해 입력하세요(최대 2개). 비우면 기존 공유 계정 모드입니다. 로그인 재생은 최대 2개이며, 방송 중인 등록 채널을 우선 유지하고 빈 자리는 기본 채널 목록 위에서부터 각 방송이 끝날 때까지 채웁니다. 미할당 채널은 게스트로 자동 실행하지 않습니다. 포인트나 연속 시청 인정은 Twitch가 결정합니다.",
+    "engagement.priority.invalid": "유효한 Twitch 채널을 최대 2개 입력하고 전용 Chrome/Edge 프로필을 활성화하세요.",
+
+    "engagement.toggle.separate_windows": "방송 창을 서로 다른 위치에 배치",
+    "engagement.toggle.separate_windows.hint": "관리하는 창을 화면의 빈 작업 영역에 배치하고 공간이 부족하면 위치를 엇갈리게 배치합니다. 포인트 적립을 보장하지 않습니다.",
+    "engagement.toggle.always_on_top": "방송 창을 항상 위에 표시",
+    "engagement.toggle.always_on_top.hint": "관리하는 Twitch 창을 다른 앱 위에 유지합니다. 다른 창을 가릴 수 있으며 포인트 적립을 보장하지 않습니다.",
     "app.title": "헬로 스트리머",
     "app.title.cn": "헬로 스트리머",
     "app.title.en": "Hello Streamer",
@@ -1577,6 +1664,8 @@ _KO: dict[str, str] = {
     "status.row.time.no_data": "시간 정보 없음",
     "status.row.time.pending_detail": "미방송, 상세 확인 대기",
     "status.row.pending_suffix": "· 확인 대기",
+    "status.row.unknown": "확인 불가",
+    "status.row.unavailable_hint": "조회 실패, 재시도 대기. 마지막 상태 표시.",
 
     "tray.show": "메인 화면 표시",
     "tray.trigger_active": "✓ 감시 + 트리거 중",
@@ -1715,6 +1804,12 @@ _KO: dict[str, str] = {
     "engagement.page_assist.requirements": "사용자 지정 Chromium, 전용 프로필, 독립 창을 먼저 선택하세요. 설정은 유지됩니다. 수동으로 연 링크에는 적용되지 않습니다.",
     "engagement.page_assist.profile_busy": "페이지 보조가 시작되지 않음: {url}. 같은 전용 프로필을 사용하는 브라우저를 닫고 이 앱에서 방송을 다시 여세요.",
     "engagement.page_assist.failed": "페이지 보조 연결 실패 또는 중지: {url}. 로그와 브라우저 설정을 확인하세요. 방송 페이지는 여전히 열려 있을 수 있습니다.",
+    "engagement.page_assist.reconnecting": "페이지 보조가 다시 연결 중입니다: {url}. 연결이 복구될 때까지 재시도하고 복구 후 알림을 지웁니다.",
+    "engagement.page_assist.f5_verifying": "관리 페이지를 새로고침했습니다. 동영상 시간이 계속 진행되는지 확인 중입니다: {url}. 로컬 재생 상태만 확인합니다.",
+    "engagement.page_assist.f5_retrying": "새로고침 후 재생이 확인되지 않았습니다. 잠시 후 단계적으로 재시도합니다(페이지 추가 새로고침 최대 2회): {url}.",
+    "engagement.page_assist.f5_unverified": "새로고침 후에도 로컬 동영상 시간 진행을 확인하지 못해 자동 재시도를 중지했습니다: {url}. 플레이어 또는 네트워크를 확인하세요.",
+    "engagement.page_assist.f5_paused": "새로고침 후에도 플레이어가 일시 정지 상태입니다. 재생 선택을 보존하기 위해 자동 재생하지 않았습니다: {url}.",
+    "engagement.page_assist.points_stall_exhausted": "두 번의 정체 새로고침 후에도 두 번째 포인트 잔액이 증가하지 않아 {url}의 정체 재시도를 중지했습니다. 잔액이 증가하면 한도가 초기화되며 F5로 다시 활성화할 수 있습니다.",
     "engagement.page_assist.player_2000_retrying": "플레이어 #2000: {url}. 제한된 재시도 또는 영상 시간 진행을 확인 중입니다. 복구는 아직 확인되지 않았습니다.",
     "engagement.page_assist.player_2000_unverified": "플레이어 #2000 복구 미확인: {url}. 현재 조작하지 않습니다. 재생 상태, 새로고침 버튼과 네트워크를 확인하세요. 자세한 내용은 로그를 참조하세요.",
     "engagement.page_assist.player_2000_exhausted": "플레이어 #2000 재시도 3회 한도 도달: {url}. 플레이어를 수동으로 새로고침하고 네트워크, VPN/프록시 또는 확장 프로그램을 확인하세요. 자세한 내용은 로그를 참조하세요.",
@@ -1728,6 +1823,8 @@ _KO: dict[str, str] = {
     "engagement.toggle.theater.hint": "이 페이지에서 켜진 상태를 한 번 확인한 후에는 자동 전환하지 않습니다. 좁은 창에서는 채팅이 숨겨질 수 있습니다. 보너스를 받으려면 창을 넓히거나 극장 모드를 끄세요.",
     "engagement.toggle.auto_refresh": "페이지 주기적 새로고침",
     "engagement.toggle.auto_refresh.hint": "약 45–75분(설정 가능 구간)마다 새로고침하며, 이후 게이트와 극장 모드를 다시 실행합니다.",
+    "engagement.toggle.points_stall_refresh": "포인트 정체 시 자동 새로고침",
+    "engagement.toggle.points_stall_refresh.hint": "유효 시청 30분 동안 두 번째 포인트 잔액이 늘지 않으면 해당 페이지를 새로고침합니다. 정체 주기당 최대 두 번이며 읽기 전용 관찰은 계속됩니다. F5는 관리 중인 모든 페이지를 확인합니다.",
     "engagement.tips": "팁: 공식 자료는 고정 하트비트 간격이나 IP당 시청 상한을 명시하지 않습니다(미지정). Twitch는 인위적 시청 수 부풀리기와 협력적 가짜 참여를 금지하므로, 이 앱을 그런 용도로 사용하지 마세요. 출처: https://help.twitch.tv/s/article/understanding-viewer-count-vs-users-in-chat · https://help.twitch.tv/s/article/how-to-handle-view-follow-bots",
     "engagement.btn.save": "저장",
     "engagement.btn.cancel": "취소",

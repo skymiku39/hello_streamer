@@ -43,7 +43,7 @@ from typing import Any
 
 import pytest
 
-from stream_monitor import notifier
+from stream_monitor import browser_win32, notifier
 from stream_monitor.action_plan import action_plan_for
 
 # ---------------------------------------------------------------------------
@@ -104,9 +104,7 @@ def _reset_tracked_hwnds() -> None:
     so any per-instance store would be a lie), which means cross-test
     contamination is a real risk if a test forgets to clean up.
     """
-    with notifier._TRACKED_HWNDS_LOCK:
-        notifier._TRACKED_WINDOWS_BY_URL.clear()
-        notifier._TITLE_FALLBACK_BLOCKED_URLS.clear()
+    browser_win32._REGISTRY.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -2349,5 +2347,18 @@ def test_engagement_bottom_is_reachable_at_minimum_dialog_height():
         dialog.update()
         assert canvas.yview()[0] > 0.0
         assert tips_bottom <= canvas.canvasy(canvas.winfo_height())
+    finally:
+        dialog.destroy()
+
+
+def test_points_stall_refresh_setting_is_opt_in_and_persisted():
+    from stream_monitor.app_dialogs import BrowserSettingsDialog
+
+    dialog = BrowserSettingsDialog(_module_ctk_root(), {}, {})
+    try:
+        setting = dialog._page_assist_feature_vars["points_stall_refresh_enabled"]
+        assert setting.get() is False
+        setting.set(True)
+        assert dialog._collect_viewer_engagement()["points_stall_refresh_enabled"] is True
     finally:
         dialog.destroy()

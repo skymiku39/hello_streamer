@@ -25,11 +25,13 @@ class _FakeMonitor:
         db,
         initial_statuses=None,
         last_activity_epoch=0.0,
+        retained_live_keys=None,
     ) -> None:
         self.channels = channels
         self.interval = interval
         self.initial_statuses = initial_statuses
         self.last_activity_epoch = last_activity_epoch
+        self.retained_live_keys = retained_live_keys
         self.event_bus = event_bus
         self.db = db
         self.is_running = False
@@ -90,6 +92,14 @@ def test_start_without_channels_stays_idle(controller) -> None:
     assert controller.mode == "idle"
     assert controller.is_running is False
     assert controller._created == []
+
+
+def test_recovered_player_keys_reach_new_monitor(controller):
+    controller.start(
+        "trigger", [{"platform": "twitch", "name": "a"}], 30,
+        retained_live_keys={"twitch:a"},
+    )
+    assert controller._created[0].retained_live_keys == {"twitch:a"}
 
 
 def test_start_trigger_creates_and_runs_monitor(controller) -> None:

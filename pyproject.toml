@@ -35,3 +35,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.pytest.ini_options]
+# Release extractions and local acceptance artifacts can contain old copies of
+# this package. Only the maintained suite should participate in discovery.
+testpaths = ["tests"]

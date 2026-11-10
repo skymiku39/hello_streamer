@@ -51,11 +51,15 @@ def test_worker_connection_failure_reaches_ui(monkeypatch):
         raise RuntimeError("endpoint unavailable")
 
     monkeypatch.setattr(
-        assist, "CdpClient", lambda: SimpleNamespace(connect=fail, close=lambda: None)
+        assist, "CdpClient", lambda: SimpleNamespace(
+            connect=fail, close=lambda: None,
+            set_event_handler=lambda _handler: None,
+        )
     )
     worker = assist._PageAssistWorker("https://www.twitch.tv/test", 12345, ViewerEngagementSettings())
+    monkeypatch.setattr(worker, "_sleep", lambda _seconds: False)
     worker._run()
-    assert drain_page_assist_status() == [(worker.url, "unavailable")]
+    assert drain_page_assist_status() == [(worker.url, "reconnecting")]
 
 
 def test_failure_messages_exist_and_format_in_every_locale():
@@ -63,9 +67,12 @@ def test_failure_messages_exist_and_format_in_every_locale():
 
     for table in i18n._TRANSLATIONS.values():
         for key in ("profile_busy", "failed", "player_2000_retrying",
-                    "player_2000_unverified", "player_2000_exhausted"):
+                    "player_2000_unverified", "player_2000_exhausted",
+                    "points_stall_exhausted"):
             text = table[f"engagement.page_assist.{key}"].format(url="https://www.twitch.tv/test")
             assert "https://www.twitch.tv/test" in text
+        assert table["engagement.toggle.points_stall_refresh"]
+        assert table["engagement.toggle.points_stall_refresh.hint"]
 
 
 def test_failure_banner_gives_profile_recovery_action_and_hides_on_recovery():
@@ -103,7 +110,10 @@ def test_failure_banner_gives_profile_recovery_action_and_hides_on_recovery():
     assert label.manager == ""
 
 
-@pytest.mark.parametrize("reason", ["player_2000_retrying", "player_2000_unverified", "player_2000_exhausted"])
+@pytest.mark.parametrize("reason", [
+    "player_2000_retrying", "player_2000_unverified", "player_2000_exhausted",
+    "points_stall_exhausted",
+])
 def test_player_recovery_outcome_reaches_localized_banner(reason):
     from unittest.mock import Mock
 

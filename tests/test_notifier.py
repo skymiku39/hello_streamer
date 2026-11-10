@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-from stream_monitor import notifier
+from stream_monitor import browser_win32, notifier
 from stream_monitor.action_plan import action_plan_for
 from stream_monitor.fetcher.base import StreamInfo
 
@@ -1464,10 +1464,7 @@ def test_configure_user32_signatures_sets_argtypes() -> None:
 # Window tracking + close-on-offline
 # ─────────────────────────────────────────────
 def _reset_tracked_hwnds() -> None:
-    with notifier._TRACKED_HWNDS_LOCK:
-        notifier._TRACKED_WINDOWS_BY_URL.clear()
-        notifier._TITLE_FALLBACK_BLOCKED_URLS.clear()
-        notifier._CLOSING_URLS.clear()
+    browser_win32._REGISTRY.reset()
 
 
 def test_register_and_snapshot_tracked_hwnds_roundtrip() -> None:

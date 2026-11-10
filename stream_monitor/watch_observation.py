@@ -1,6 +1,6 @@
-"""Opt-in Watch Streak cross-session observation (diagnostic-only).
+"""Watch Streak cross-session observation (diagnostic-only).
 
-Enabled only via ``--watch-observation``. Appends versioned NDJSON events to a
+Enabled with page assistance or via ``--watch-observation``. Appends NDJSON to a
 dedicated log under ``portable_paths().logs_dir``. Never mutates config,
 database, or browser profile; never records titles, full URLs, chat, cookies,
 tokens, or profile paths. All I/O failures are non-fatal.
@@ -66,6 +66,18 @@ def is_watch_observation_requested(argv: Sequence[str] | None = None) -> bool:
 
     tokens = list(sys.argv[1:] if argv is None else argv)
     return CLI_FLAG in tokens
+
+
+def should_enable_watch_observation(
+    argv: Sequence[str], config: Mapping[str, Any],
+) -> bool:
+    """Playback assistance includes diagnostic evidence without a launch flag."""
+    settings = config.get("viewer_engagement")
+    return is_watch_observation_requested(argv) or bool(
+        isinstance(settings, Mapping)
+        and settings.get("enabled")
+        and settings.get("page_assist_enabled")
+    )
 
 
 def observation_log_path(paths: PortablePaths | None = None) -> Path:

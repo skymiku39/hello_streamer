@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Any
 
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import deps as _monitor_deps
 from stream_monitor.monitor.types import (
-    _OFFLINE_STRIKE_THRESHOLD,
     ChannelEntry,
     ChannelStatus,
     OfflineInfo,
@@ -20,43 +20,9 @@ from stream_monitor.monitor.types import (
 
 logger = logging.getLogger(__name__)
 
-# Soft failures while LIVE: keep status, do not accumulate offline strikes.
-_YOUTUBE_SOFT_UNAVAILABLE_REASONS = frozenset(
-    {
-        "http backoff",
-        "rate limited",
-        "ytInitialData parse failure",
-        "http 403",
-        "http 408",
-        "http 5xx",
-        "request error",
-        "request timeout",
-    }
-)
-
-
-
 
 class OfflineEnqueueMixin:
     """Drives the offline commit path: prepare, build, finalize, enqueue."""
-
-    def _youtube_soft_unavailable_hold(
-        self,
-        entry: ChannelEntry,
-        *,
-        label: str,
-        reason: str,
-    ) -> bool:
-        """True when a YouTube unavailability is not proof of being offline."""
-        if not label.startswith("YouTube"):
-            return False
-        if reason in _YOUTUBE_SOFT_UNAVAILABLE_REASONS:
-            return True
-        try:
-            fetcher = _monitor_deps.get_fetcher(entry.platform)
-        except Exception:
-            return False
-        return bool(getattr(fetcher, "http_backoff_active", lambda: False)())
 
     def _offline_payload_for(
         self, entry: ChannelEntry, live_key: str, prev: Any
@@ -198,90 +164,22 @@ class OfflineEnqueueMixin:
         snap: _ProbeSnapshot | None = None,
         reason: str = "fetch returned None",
     ) -> list[tuple[ChannelEntry, StreamInfo]]:
-        """Treat fetch failures like offline misses when we still believe LIVE."""
-        live_key = _live_cache_key(entry.key)
-        deferred_youtube: tuple[ChannelEntry, Any, str] | None = None
-        deferred_twitch: tuple[ChannelEntry, str, Any, str, Any] | None = None
+        """Preserve last-known state, visibly unverified, without an offline edge.
 
+        A timeout, parse error, or exception is not evidence that a broadcast
+        ended. Only successful platform responses can consume offline strikes.
+        """
         with self._lock:
-            prev = self._last_status.get(entry.key)
-            prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
-            strikes_before = self._offline_strikes.get(live_key, 0)
-
-            if prev_status is True and self._youtube_soft_unavailable_hold(
-                entry, label=label, reason=reason
-            ):
-                logger.warning(
-                    "%s %s: %s (rate-limit/backoff), keeping prev_status=True "
-                    "strikes=%s unchanged",
-                    label,
-                    entry.key,
-                    reason,
-                    strikes_before,
-                )
-                return []
-
-            if prev_status is True:
-                miss = self._record_offline_miss(
-                    entry,
-                    live_key,
-                    prev_status,
-                    label=label,
-                    reason=reason,
-                )
-                if miss == "hold":
-                    logger.warning(
-                        "%s %s: %s, treating as offline miss "
-                        "(%d/%d) prev_status=True kept=True",
-                        label,
-                        entry.key,
-                        reason,
-                        self._offline_strikes.get(live_key, 0),
-                        _OFFLINE_STRIKE_THRESHOLD,
-                    )
-                    return []
-                if label.startswith("YouTube"):
-                    deferred_youtube = (entry, prev, label)
-                elif snap is not None:
-                    snap.twitch_offline_commit = True
-                    snap.fetcher = _monitor_deps.get_fetcher(entry.platform)
-                else:
-                    deferred_twitch = (
-                        entry,
-                        live_key,
-                        prev,
-                        label,
-                        _monitor_deps.get_fetcher(entry.platform),
-                    )
-            else:
-                logger.warning(
-                    "%s %s: %s, keeping prev_status=%s strikes=%s",
-                    label,
-                    entry.key,
-                    reason,
-                    prev_status,
-                    strikes_before,
-                )
-                if entry.key not in self._last_status:
-                    self._last_status[entry.key] = ChannelStatus(
-                        status=False,
-                        ended_at="",
-                        url=_channel_home_url(entry),
-                        ended_at_source="pending",
-                    )
-
-        if deferred_youtube is not None:
-            yt_entry, yt_prev, yt_label = deferred_youtube
-            self._enqueue_youtube_fallback_went_offline(
-                yt_entry, yt_prev, label=yt_label
+            previous = self._last_status.get(entry.key)
+            status = previous if isinstance(previous, ChannelStatus) else ChannelStatus(
+                status=previous, url=_channel_home_url(entry)
             )
-        if deferred_twitch is not None:
-            tw_entry, tw_live_key, tw_prev, tw_label, tw_fetcher = deferred_twitch
-            self._enqueue_twitch_went_offline(
-                tw_entry,
-                tw_live_key,
-                tw_prev,
-                label=tw_label,
-                fetcher=tw_fetcher,
-            )
+            self._last_status[entry.key] = replace(status, unavailable=True)
+            if snap is not None:
+                self._probe_snapshots[entry.key] = snap
+        logger.warning(
+            "%s %s: %s, last-known status=%s unavailable (no offline strike)",
+            label, entry.key, reason, status.status,
+        )
+        self._publish_channel_preview(entry)
         return []

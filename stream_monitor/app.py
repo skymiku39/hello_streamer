@@ -8,6 +8,7 @@ import logging.handlers
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,7 @@ from stream_monitor.app_ui import (
     _clamped_window_geometry,
     _fit_button,
     _fit_option_menu,
+    _fit_status_subline,
     _font,
     _language_icon,
     _status_bar_text_width,
@@ -71,16 +73,23 @@ from stream_monitor.app_ui import (
     decompose_monitor_mode,
 )
 from stream_monitor.browser_settings_model import BrowserSettings
+from stream_monitor.browser_win32 import (
+    managed_window_is_open,
+    managed_window_launch_pending,
+    restore_managed_windows,
+)
 from stream_monitor.canvas_channel_list import (
     CanvasChannelList,
     CanvasChannelRowAdapter,
 )
 from stream_monitor.channel_policy import (
+    CHANNEL_MODE_TRIGGER,
     TRIGGER_MODE,
     TRIGGER_ONCE_MODE,
     WATCH_MODE,
     WATCH_ONCE_MODE,
     base_monitor_mode,
+    channel_mode_for,
     is_one_shot_monitor_mode,
     mode_for_silent_start,
 )
@@ -94,13 +103,16 @@ from stream_monitor.launch_records import reset_launch_records
 from stream_monitor.monitor import ChannelEntry, ChannelStatus
 from stream_monitor.monitor_controller import MonitorController
 from stream_monitor.notifier import (
+    close_browser_window_for_url,
     configure_viewer_engagement,
     execute_action_plan,
     platform_services,
+    resume_managed_window_assists,
 )
 from stream_monitor.page_assist_status import drain_page_assist_status
 from stream_monitor.platform_ports import PlatformServices
 from stream_monitor.portable_storage import portable_paths
+from stream_monitor.runtime_diagnostics import RuntimeDiagnostics
 from stream_monitor.scroll_guard import ScrollRepaintGuard
 from stream_monitor.single_instance import SingleInstance
 from stream_monitor.startup import (
@@ -111,7 +123,11 @@ from stream_monitor.startup import (
 )
 from stream_monitor.tray import TrayIcon
 from stream_monitor.util import channel_key
-from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
+from stream_monitor.viewer_engagement_model import (
+    ViewerEngagementSettings,
+    active_points_channels_configured,
+    set_active_points_channels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +191,8 @@ class App(ctk.CTk):
         self.config = config_manager.load()
         self._db = SeenVideoDB()
         self._channel_rows: list[CanvasChannelRowAdapter] = []
+        self._active_points_priority_channels: tuple[str, ...] | None = None
+        self._points_main_profile_channels: set[str] = set()
         self._silent = silent
         self._truly_quitting = False
         # The persisted snapshot's saved_at is only meaningful for the very
@@ -212,8 +230,9 @@ class App(ctk.CTk):
                 generation == self._controller.generation
             ),
             on_stop=lambda: self.on_stop(is_user_action=False),
-            on_exit=self.quit_app,
+            on_exit=lambda: self.quit_app(reason="live_action"),
         )
+        set_active_points_channels(None)
         configure_viewer_engagement(
             ViewerEngagementSettings.from_dict(
                 self.config.get("viewer_engagement")
@@ -234,6 +253,7 @@ class App(ctk.CTk):
         self._build_ui()
         self._populate_channels()
         self._restore_status_cache()
+        self.refresh_points_priority_allocation()
         self._poll_events()
         self._tick_elapsed_labels()
         self.after(10_000, self._monitor_health_check)
@@ -245,7 +265,7 @@ class App(ctk.CTk):
             on_toggle_monitor=self._tray_toggle_monitor,
             on_watch_only=lambda: self.after(0, self._on_watch),
             on_stop=lambda: self.after(0, self.on_stop),
-            on_quit=self.quit_app,
+            on_quit=lambda: self.quit_app(reason="tray_menu"),
             get_mode=lambda: self._controller.mode,
         )
         self._tray.start()
@@ -311,12 +331,19 @@ class App(ctk.CTk):
         if self.minimize_to_tray_var.get():
             self._hide_window()
         else:
-            self.quit_app()
+            self.quit_app(reason="window_close")
 
-    def quit_app(self) -> None:
+    def quit_app(self, *, reason: str = "requested") -> None:
         """Full exit — called from tray menu or explicit quit."""
+        if threading.current_thread() is not threading.main_thread():
+            # pystray invokes callbacks on its own thread. Keep Tk, config
+            # and SQLite teardown on the UI thread, like every other action.
+            self.after(0, lambda: self.quit_app(reason=reason))
+            return
         if self._truly_quitting:
             return
+        self._exit_reason = reason
+        logger.info("Application shutdown requested: reason=%s", reason)
         self._truly_quitting = True
         self._action_coordinator.shutdown()
         self._scroll_guard.destroy()
@@ -1208,6 +1235,7 @@ class App(ctk.CTk):
         self._refresh_empty_hint()
         self._refresh_move_buttons()
         self._controller.update_channels(channels)
+        self.refresh_points_priority_allocation(allow_open=True)
 
     def _move_channel(self, channel: dict[str, str], offset: int) -> None:
         channels = self.config.get("channels", [])
@@ -1245,6 +1273,7 @@ class App(ctk.CTk):
         self._save_config()
         self._refresh_move_buttons()
         self._controller.update_channels(channels)
+        self.refresh_points_priority_allocation(allow_open=True)
 
 
     def _schedule_preview_repack(self, order: list[int]) -> None:
@@ -1430,6 +1459,7 @@ class App(ctk.CTk):
         self._save_config()
         channels = self.config.get("channels", [])
         self._controller.update_channels(channels)
+        self.refresh_points_priority_allocation(allow_open=True)
 
     def apply_display_names(self, display_names: dict[str, str]) -> None:
         changed = False
@@ -1449,6 +1479,7 @@ class App(ctk.CTk):
                 self._add_channel_row(ch)
                 self._save_config()
                 self._controller.update_channels(channels)
+                self.refresh_points_priority_allocation(allow_open=True)
 
     def _on_language_picker(self) -> None:
         dialog = LanguageDialog(self, on_apply=self._apply_language)
@@ -1532,6 +1563,7 @@ class App(ctk.CTk):
     def _persist_trigger_settings(self, *, save: bool = True) -> None:
         settings = self._trigger_settings_from_widgets()
         self.config["trigger_settings"] = settings.as_dict()
+        self.refresh_points_priority_allocation(allow_open=True)
         if save:
             # Switches can be toggled in quick succession.  Keep the in-memory
             # state immediate, but move the synchronous portable-config write
@@ -1561,7 +1593,11 @@ class App(ctk.CTk):
         if hasattr(self, "status_dot"):
             self.status_dot.configure(text_color=self._status_text_color)
         if self._status_subline_key:
-            sub = tr(self._status_subline_key, **self._status_subline_kwargs)
+            name = self._status_subline_kwargs.get("name")
+            if name is not None:
+                sub = _fit_status_subline(self._status_subline_key, name, width)
+            else:
+                sub = tr(self._status_subline_key, **self._status_subline_kwargs)
             self.status_sub_text.configure(text=sub, width=width)
         else:
             self.status_sub_text.configure(text="", width=width)
@@ -1659,13 +1695,19 @@ class App(ctk.CTk):
     ) -> None:
         """Start or switch the global monitor mode from a bottom-bar action."""
         channels, interval = self._collect_monitor_config()
+        self.refresh_points_priority_allocation()
         initial_statuses, epoch = self._monitor_seed_args()
+        retained_live_keys = {
+            key for key, status in initial_statuses.items()
+            if managed_window_is_open(getattr(status, "url", ""))
+        }
         if not self._controller.start(
             mode,
             channels,
             interval,
             initial_statuses=initial_statuses,
             last_activity_epoch=epoch,
+            retained_live_keys=retained_live_keys,
         ):
             return
         self.config["monitor_mode"] = mode
@@ -1674,6 +1716,211 @@ class App(ctk.CTk):
         self._apply_monitor_mode_buttons()
         self._set_status_text(status_key, color)
         self._tray.update_tooltip_key(tray_tooltip_key)
+        if mode in (TRIGGER_MODE, TRIGGER_ONCE_MODE):
+            eligible_keys = {
+                channel_key(ch.get("platform", ""), ch.get("name", ""))
+                for ch in channels if ch.get("enabled", True)
+                and channel_mode_for(ch) == CHANNEL_MODE_TRIGGER
+            }
+            resume_managed_window_assists([
+                status.url for key, status in initial_statuses.items()
+                if key in retained_live_keys & eligible_keys and status.is_live
+            ], self.current_browser_settings())
+
+    def refresh_points_priority_allocation(
+        self,
+        *,
+        allow_open: bool = False,
+        event_channels: set[str] | None = None,
+    ) -> None:
+        """Keep managed Twitch playback within the signed-in priority slots.
+
+        Live channels in the configured priority list win. Any free slot is
+        filled from the main list in order, up to two signed-in streams total.
+        An assigned page stays open through its live broadcast (only a live
+        priority channel can take its slot); unassigned
+        managed pages are closed instead of being opened in Guest mode.
+        """
+        settings = ViewerEngagementSettings.from_dict(
+            self.config.get("viewer_engagement")
+        )
+        priorities = settings.points_priority_channels
+        trigger_settings = TriggerSettings.from_mapping(
+            self.config.get("trigger_settings")
+        )
+        if not settings.enabled or not priorities:
+            set_active_points_channels(None)
+            self._active_points_priority_channels = None
+            self._points_main_profile_channels.clear()
+            return
+
+        browser_settings = self.current_browser_settings()
+        close_offline_windows = bool(
+            browser_settings is not None
+            and getattr(browser_settings, "close_on_offline", False)
+        )
+        rows_by_key = {row.key: row for row in self._channel_rows}
+        ordered_live: list[str] = []
+        live_statuses: dict[str, ChannelStatus] = {}
+        channel_statuses: dict[str, ChannelStatus] = {}
+        incomplete_status = False
+        raw_channels = self.config.get("channels")
+        channels = raw_channels if isinstance(raw_channels, list) else []
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            platform = str(channel.get("platform", "")).strip().lower()
+            name = str(channel.get("name", "")).strip().lower()
+            if (
+                platform != "twitch"
+                or not name
+                or not channel.get("enabled", True)
+                or channel_mode_for(channel) != CHANNEL_MODE_TRIGGER
+            ):
+                continue
+            row = rows_by_key.get(channel_key(platform, name))
+            if row is None or getattr(row, "verification_pending", False):
+                incomplete_status = True
+                continue
+            status = row.status_snapshot() if row is not None else None
+            if not isinstance(status, ChannelStatus):
+                incomplete_status = True
+                continue
+            if status.unavailable:
+                incomplete_status = True
+                continue
+            if status.url:
+                channel_statuses[name] = status
+            elif status.is_offline and close_offline_windows:
+                # Offline rows drop their active URL. Still sweep a managed
+                # page that was (re)opened for this channel, or it would hold
+                # a signed-in slot for the rest of the session.
+                channel_statuses[name] = replace(
+                    status, url=f"https://www.twitch.tv/{name}"
+                )
+            if status.is_live and status.url:
+                ordered_live.append(name)
+                live_statuses[name] = status
+
+        if incomplete_status:
+            # Unknown/transient channel states must not promote a lower-ranked
+            # channel. On cold start, static priorities suppress Guest fallback
+            # until a complete poll establishes the live set.
+            if self._active_points_priority_channels is None:
+                selected = tuple(priorities)
+                set_active_points_channels(selected)
+                self._active_points_priority_channels = selected
+                self._points_main_profile_channels = set(priorities)
+            logger.debug("Keeping Twitch points allocation during incomplete poll")
+            return
+
+        previous = self._active_points_priority_channels
+        live_priorities = [name for name in priorities if name in live_statuses]
+        selected_order = live_priorities[:2]
+        # A channel already holding a slot keeps it until its broadcast ends;
+        # a higher-ranked main-list channel going live later must not cut it
+        # off mid-stream (that loses the watch streak). Priority channels
+        # still take precedence.
+        selected_order.extend(
+            name for name in (previous or ())
+            if name in live_statuses
+            and name not in selected_order
+            and len(selected_order) < 2
+        )
+        selected_order.extend(
+            name for name in ordered_live
+            if name not in selected_order and len(selected_order) < 2
+        )
+        selected = tuple(selected_order[:2])
+        if previous is None:
+            # Older versions always opened explicitly selected channels in the
+            # signed-in profile; unlisted channels may still have Guest windows.
+            self._points_main_profile_channels = set(priorities)
+            prior_selected = set(priorities)
+        else:
+            prior_selected = set(previous)
+
+        set_active_points_channels(selected)
+        self._active_points_priority_channels = selected
+        newly_selected = set(selected) - prior_selected
+        urls_to_reopen: set[str] = set()
+
+        # Close only app-managed windows. Calls without title hints cannot
+        # match or close unrelated browser windows.
+        for name, status in channel_statuses.items():
+            if name not in selected:
+                if managed_window_is_open(status.url) or managed_window_launch_pending(
+                    status.url
+                ):
+                    close_browser_window_for_url(status.url)
+                    logger.info(
+                        "Closed unallocated Twitch playback: channel=%s", name
+                    )
+                self._points_main_profile_channels.discard(name)
+            elif (
+                status.is_live
+                and name in newly_selected
+                and name not in self._points_main_profile_channels
+            ):
+                if managed_window_is_open(status.url) or managed_window_launch_pending(
+                    status.url
+                ):
+                    close_browser_window_for_url(status.url)
+                    urls_to_reopen.add(name)
+                self._points_main_profile_channels.add(name)
+
+        if not allow_open or self._controller.mode not in (
+            TRIGGER_MODE, TRIGGER_ONCE_MODE
+        ):
+            return
+        if not trigger_settings.open_on_live:
+            return
+
+        plan = ActionPlan(
+            key="points_priority_open",
+            notify=False,
+            open_browser=True,
+            after_open=LifecycleEffect.NONE,
+        )
+        for name in selected:
+            status = live_statuses.get(name)
+            if (
+                status is None
+                or not status.url
+                or (event_channels is not None and name in event_channels)
+            ):
+                continue
+            if name not in urls_to_reopen and (
+                managed_window_is_open(status.url)
+                or managed_window_launch_pending(status.url)
+            ):
+                continue
+            channel = next(
+                (
+                    item for item in channels
+                    if isinstance(item, dict)
+                    and str(item.get("platform", "")).strip().lower() == "twitch"
+                    and str(item.get("name", "")).strip().lower() == name
+                ),
+                {},
+            )
+            info = StreamInfo(
+                channel=name,
+                platform="twitch",
+                is_live=True,
+                title=status.title,
+                url=status.url,
+                display_name=str(channel.get("display_name") or ""),
+                stream_status="live",
+                started_at=status.started_at,
+            )
+            if self._action_coordinator.submit(
+                plan,
+                info,
+                self.current_browser_settings(),
+                self._controller.generation,
+            ):
+                self._points_main_profile_channels.add(name)
 
     def on_monitor_cycle_complete(self) -> None:
         """Return to idle after a global one-cycle monitor run."""
@@ -1809,6 +2056,7 @@ class App(ctk.CTk):
                         dialog.viewer_engagement_result
                     )
                 )
+                self.refresh_points_priority_allocation(allow_open=True)
             self._save_config()
 
     # ------------------------------------------------------------------
@@ -1856,6 +2104,28 @@ class App(ctk.CTk):
         if plan is None:
             logger.warning("Ignoring unknown live action: %s", action)
             return
+        engagement = ViewerEngagementSettings.from_dict(
+            self.config.get("viewer_engagement")
+        )
+        if (
+            plan.open_browser
+            and info.platform.strip().lower() == "twitch"
+            and active_points_channels_configured()
+            and engagement.points_role(info.url) == "watch_only"
+        ):
+            if not plan.notify:
+                logger.info(
+                    "Skipped automatic Twitch open outside signed-in allocation: %s",
+                    info.channel,
+                )
+                return
+            plan = ActionPlan(
+                key="points_unallocated_notify",
+                notify=True,
+                open_browser=False,
+                after_open=LifecycleEffect.NONE,
+                notify_on_open_failure=False,
+            )
         if generation is None:
             generation = self._controller.generation
         self._action_coordinator.submit(
@@ -1940,13 +2210,18 @@ class App(ctk.CTk):
             return
         url = next(reversed(self._page_assist_failures))
         reason = self._page_assist_failures[url]
-        key = f"engagement.page_assist.{reason}" if reason in {
+        if reason in {
             "player_2000_retrying", "player_2000_unverified", "player_2000_exhausted",
-        } else (
-            "engagement.page_assist.profile_busy"
-            if reason in {"profile_nondebug", "profile_busy"}
-            else "engagement.page_assist.failed"
-        )
+            "f5_verifying", "f5_retrying", "f5_unverified", "f5_paused",
+            "points_stall_exhausted", "claim_rejected",
+        }:
+            key = f"engagement.page_assist.{reason}"
+        elif reason == "reconnecting":
+            key = "engagement.page_assist.reconnecting"
+        elif reason in {"profile_nondebug", "profile_busy"}:
+            key = "engagement.page_assist.profile_busy"
+        else:
+            key = "engagement.page_assist.failed"
         self._page_assist_notice.configure(text=tr(key, url=url))
         if not self._page_assist_notice.winfo_manager():
             self._page_assist_notice.pack(fill="x", pady=(6, 0))
@@ -1990,6 +2265,9 @@ class App(ctk.CTk):
             logger.info(
                 "Closed %d browser window(s) for %s (%s)", closed, entry.key, url
             )
+        elif managed_window_launch_pending(url):
+            logger.info("close_on_offline queued until window is identified for %s (%s)",
+                        entry.key, url)
         else:
             logger.warning(
                 "close_on_offline found no window for %s (%s) keywords=%r",
@@ -2166,6 +2444,7 @@ def main() -> None:
 
     # Apply the saved language as early as possible so the writable-check
     # error dialog (and any boot-time messages) also respect the user choice.
+    _preloaded_config: dict[str, Any] = {}
     try:
         _preloaded_config = config_manager.load()
         i18n.set_language(
@@ -2212,10 +2491,10 @@ def main() -> None:
     try:
         from stream_monitor.watch_observation import (
             enable_watch_observation,
-            is_watch_observation_requested,
+            should_enable_watch_observation,
         )
 
-        if is_watch_observation_requested(sys.argv[1:]):
+        if should_enable_watch_observation(sys.argv[1:], _preloaded_config):
             enable_watch_observation(paths=portable_paths())
             logger.info(
                 "Watch observation enabled → %s",
@@ -2224,12 +2503,22 @@ def main() -> None:
     except Exception:
         logger.exception("Watch observation enable failed (non-fatal)")
 
+    diagnostics = RuntimeDiagnostics(log_dir)
+    diagnostics.start(__version__)
+    exit_reason = "startup_failed"
     try:
+        restore_managed_windows(data_dir)
         app = App(silent=silent)
+        exit_reason = "unexpected_mainloop_return"
         app.mainloop()
+        exit_reason = getattr(app, "_exit_reason", exit_reason)
+        if exit_reason == "unexpected_mainloop_return":
+            logger.error("Application mainloop returned without a shutdown request")
     except KeyboardInterrupt:
+        exit_reason = "keyboard_interrupt"
         logger.info("Application interrupted by user")
     except Exception:
+        exit_reason = "unhandled_exception"
         logger.critical("Fatal application exception", exc_info=True)
         raise
     finally:
@@ -2243,6 +2532,8 @@ def main() -> None:
                 disable_watch_observation(emit_close=True)
         except Exception:
             logger.exception("Watch observation final shutdown failed")
+        diagnostics.finish(exit_reason)
+        threading.excepthook = previous_thread_excepthook
         lock.release()
 
 

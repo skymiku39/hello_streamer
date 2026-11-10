@@ -270,7 +270,8 @@ def test_fallback_exception_is_unavailable_not_silent_empty(
 
     with monitor._lock:
         assert monitor._last_status[entry.key].status is True
-        assert monitor._offline_strikes.get(_live_cache_key(entry.key)) == 1
+        assert _live_cache_key(entry.key) not in monitor._offline_strikes
+        assert monitor._last_status[entry.key].unavailable
         assert monitor._pending_offline_events == []
     assert any(
         "fallback exception" in r.message or "fallback boom" in r.message

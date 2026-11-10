@@ -44,7 +44,11 @@ from stream_monitor.notifier import (
     open_url,
 )
 from stream_monitor.url_parser import parse_channel_url
-from stream_monitor.viewer_engagement_model import page_assist_runtime_allowed
+from stream_monitor.viewer_engagement_model import (
+    ViewerEngagementSettings,
+    normalize_points_priorities,
+    page_assist_runtime_allowed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -756,6 +760,16 @@ class AppSettingsDialog(ctk.CTkToplevel):
 # ═══════════════════════════════════════════════════════════════════════════
 _VIEWER_ENGAGEMENT_TOGGLES: tuple[tuple[str, str, str], ...] = (
     (
+        "separate_windows",
+        "engagement.toggle.separate_windows",
+        "engagement.toggle.separate_windows.hint",
+    ),
+    (
+        "always_on_top",
+        "engagement.toggle.always_on_top",
+        "engagement.toggle.always_on_top.hint",
+    ),
+    (
         "force_visible",
         "engagement.toggle.force_visible",
         "engagement.toggle.force_visible.hint",
@@ -797,6 +811,11 @@ _PAGE_ASSIST_FEATURE_TOGGLES: tuple[tuple[str, str, str], ...] = (
         "auto_refresh",
         "engagement.toggle.auto_refresh",
         "engagement.toggle.auto_refresh.hint",
+    ),
+    (
+        "points_stall_refresh_enabled",
+        "engagement.toggle.points_stall_refresh",
+        "engagement.toggle.points_stall_refresh.hint",
     ),
 )
 
@@ -1493,6 +1512,23 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             justify="left",
         )
         self._engagement_tips.pack(padx=12, pady=(4, 12), anchor="w")
+        self._points_priority_label = ctk.CTkLabel(
+            engagement_card, text=tr("engagement.priority.label"),
+            font=_font(12, "bold"), anchor="w",
+        )
+        self._points_priority_label.pack(padx=12, pady=(8, 4), anchor="w")
+        self._points_priority_entry = ctk.CTkEntry(
+            engagement_card, placeholder_text="taiga_hikari, kspksp", font=_font(12),
+        )
+        self._points_priority_entry.insert(0, ", ".join(
+            ve_settings.get("points_priority_channels", [])
+        ))
+        self._points_priority_entry.pack(padx=12, pady=(0, 4), fill="x")
+        self._points_priority_hint = ctk.CTkLabel(
+            engagement_card, text=tr("engagement.priority.hint"), font=_font(11),
+            text_color="#9aa0b4", anchor="w", justify="left", wraplength=500,
+        )
+        self._points_priority_hint.pack(padx=12, pady=(0, 12), fill="x")
         self._sync_engagement_enabled_state()
 
         self._more_card = _browser_card(self._settings_pages["more"], pady=(0, 10))
@@ -1784,6 +1820,8 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             switch.configure(text=tr(label_key))
             hint.configure(text=tr(hint_key))
         self._engagement_tips.configure(text=tr("engagement.tips"))
+        self._points_priority_label.configure(text=tr("engagement.priority.label"))
+        self._points_priority_hint.configure(text=tr("engagement.priority.hint"))
         self._sync_engagement_enabled_state()
         self._profile_title.configure(text=tr("browser.profile.per_channel"))
         self.per_channel_profile_cb.configure(text=tr("browser.profile.per_channel"))
@@ -2168,6 +2206,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             data["page_assist_enabled"] = bool(self.page_assist_enabled_var.get())
         for key, _label, _hint in _PAGE_ASSIST_FEATURE_TOGGLES:
             data[key] = self._page_assist_feature_vars[key].get()
+        data["points_priority_channels"] = self._points_priority_entry.get().strip()
         return data
 
     def _snapshot_viewer_engagement(self) -> dict[str, Any]:
@@ -2378,7 +2417,15 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         if not path:
             self._set_message("browser.msg.signin_no_path", color="#ef5350")
             return
-        if self.per_channel_profile_var.get():
+        # Priority channels share this profile even when the legacy per-channel
+        # switch is checked. Bootstrap the same identity that launch will use.
+        engagement = self._collect_viewer_engagement()
+        try:
+            priorities = normalize_points_priorities(engagement["points_priority_channels"])
+        except ValueError:
+            self._set_message("engagement.priority.invalid", color="#ef5350")
+            return
+        if self.per_channel_profile_var.get() and not (engagement["enabled"] and priorities):
             self._set_message(
                 "browser.msg.signin_per_channel",
                 color="#ffb74d",
@@ -2394,7 +2441,21 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         data = self._collect()
         if data is None:
             return
+        engagement = self._collect_viewer_engagement()
+        try:
+            engagement["points_priority_channels"] = normalize_points_priorities(
+                engagement["points_priority_channels"]
+            )
+            if engagement["enabled"] and engagement["points_priority_channels"]:
+                from stream_monitor.twitch_watch_policy import route_browser
+
+                route_browser("https://www.twitch.tv/" + engagement["points_priority_channels"][0],
+                              bsm.BrowserSettings.from_dict(data),
+                              ViewerEngagementSettings.from_dict(engagement))
+        except ValueError:
+            self._set_message("engagement.priority.invalid", color="#ef5350")
+            return
         self.result = data
-        self.viewer_engagement_result = self._collect_viewer_engagement()
+        self.viewer_engagement_result = engagement
         self.destroy()
 

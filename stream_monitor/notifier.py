@@ -123,11 +123,13 @@ from stream_monitor.browser_win32 import (  # noqa: E402, F401
     close_all_tracked_windows,
     close_browser_window_for_url,
     managed_window_is_open,
+    managed_window_launch_pending,
     prune_off_topic_tracked_windows,
     set_system_keep_awake,
     tracked_hwnds_for_url,
 )
 from stream_monitor.twitch_page_assist import (  # noqa: E402
+    active_page_assist_urls,
     is_standalone_managed_window,
     should_start_page_assist,
     start_page_assist,
@@ -136,6 +138,7 @@ from stream_monitor.twitch_page_assist import (  # noqa: E402
 )
 from stream_monitor.viewer_engagement_model import (  # noqa: E402
     ViewerEngagementSettings,
+    active_points_channels_configured,
     coerce_viewer_engagement,
     is_twitch_url,
 )
@@ -162,12 +165,16 @@ _OBS_MANAGED_LOCK = threading.Lock()
 def configure_viewer_engagement(
     settings: ViewerEngagementSettings | dict[str, Any] | None,
 ) -> None:
-    """Install the active viewer-engagement settings for subsequent launches."""
+    """Install viewer settings for new launches and already-running assistants."""
     global _VIEWER_ENGAGEMENT
     _VIEWER_ENGAGEMENT = coerce_viewer_engagement(settings)
     if _VIEWER_ENGAGEMENT is None or not _VIEWER_ENGAGEMENT.page_assist_active():
         stop_all_page_assist()
         publish_page_assist_status("*", "")
+    else:
+        from stream_monitor.twitch_page_assist import update_page_assist_settings
+
+        update_page_assist_settings(_VIEWER_ENGAGEMENT)
 
 
 def _active_viewer_engagement() -> ViewerEngagementSettings | None:
@@ -221,7 +228,7 @@ def sync_observed_closes_for_tracked_windows(*, min_age_s: float = 6.0) -> int:
     for url, since in candidates:
         if now - since < max(min_age_s, 0.0):
             continue
-        if tracked_hwnds_for_url(url):
+        if tracked_hwnds_for_url(url) or managed_window_launch_pending(url):
             continue
         with _OBS_MANAGED_LOCK:
             if url not in _OBS_MANAGED_URLS:
@@ -335,7 +342,7 @@ def release_keep_awake_for_closed_tracked_windows(*, min_age_s: float = 6.0) -> 
         # an empty bucket as a user-closed window.
         if now - since < max(min_age_s, 0.0):
             continue
-        if tracked_hwnds_for_url(url):
+        if tracked_hwnds_for_url(url) or managed_window_launch_pending(url):
             continue
         stop_page_assist(url)
         with _ENGAGEMENT_AWAKE_LOCK:
@@ -719,9 +726,11 @@ def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
             "need the CLI flags to take effect at startup."
         )
 
+    if settings.get("guest_mode"):
+        args.append("--guest")
     cdp_port = settings.get("_cdp_debugging_port")
-    # 0 = Chromium-assigned ephemeral port (race-free cold start via
-    # DevToolsActivePort); positive = explicit port (tests / legacy).
+    # Windows cold starts use a nonzero port to preserve manual sign-in.
+    # Zero remains supported for Linux and existing port-zero sessions.
     if isinstance(cdp_port, int) and cdp_port >= 0:
         args.append(f"--remote-debugging-port={cdp_port}")
         # Chrome 111+ rejects CDP websocket origins unless allow-listed.
@@ -784,6 +793,8 @@ def _apply_viewer_engagement_to_launch(
         effective_settings["minimized"] = False
         effective_settings["hide_from_taskbar"] = False
     effective_settings["bring_to_front"] = bool(engagement.bring_to_front)
+    effective_settings["separate_windows"] = bool(manage and engagement.separate_windows)
+    effective_settings["always_on_top"] = bool(manage and engagement.always_on_top)
     if engagement.bring_to_front and engagement.foreground_hold_seconds > 0:
         effective_settings["foreground_hold_seconds"] = (
             engagement.foreground_hold_seconds
@@ -850,6 +861,15 @@ def _open_with_browser_settings(
     settings, but it is never tracked, so the app leaves it alone.
     """
     coerced = coerce_browser_settings(settings)
+    from stream_monitor.twitch_watch_policy import route_browser
+
+    try:
+        coerced = route_browser(
+            url, coerced, _active_viewer_engagement(), managed=manage,
+        )
+    except ValueError as exc:
+        logger.warning("Cannot apply Twitch points priority: %s", exc)
+        return False
     if coerced is None:
         return False
     settings = coerced.to_dict()
@@ -912,8 +932,8 @@ def _open_with_browser_settings(
         cdp_attach_reason = attach.reason
         cdp_attach_message = attach.message
         if attach.ok and isinstance(attach.port, int) and attach.port >= 0:
-            cdp_needs_discovery = attach.port == 0
-            cdp_port = attach.port or None
+            cdp_needs_discovery = attach.port == 0 or attach.reason == "allocated"
+            cdp_port = None if cdp_needs_discovery else attach.port
             if attach.pass_debugging_flag:
                 effective_settings["_cdp_debugging_port"] = attach.port
             logger.info(
@@ -1174,7 +1194,7 @@ def _open_with_browser_settings(
             # Track closure even when keep-awake and diagnostic observation are
             # disabled. Re-read settings because launch may outlast a UI toggle.
             _register_obs_managed_url(url)
-            start_page_assist(url, cdp_port, current_engagement)
+            start_page_assist(url, cdp_port, current_engagement.for_channel(url))
         except Exception:
             publish_page_assist_status(url, "unavailable")
             logger.exception("Failed to start Twitch page assist for %s", url)
@@ -1196,7 +1216,105 @@ def _open_with_browser_settings(
     return True
 
 
+def _resume_managed_window_assist(
+    url: str,
+    settings: BrowserSettings | dict[str, Any] | None,
+    profile_hint: tuple[str, str] | None,
+) -> None:
+    """Reattach a recovered player without launching another Chrome window."""
+    engagement = _active_viewer_engagement()
+    browser = coerce_browser_settings(settings)
+    from stream_monitor.twitch_watch_policy import route_browser
+
+    try:
+        browser = route_browser(url, browser, engagement)
+    except ValueError:
+        return
+    if browser is None or not browser.enabled or engagement is None or not is_twitch_url(url):
+        return
+    profile = _resolve_effective_user_data_dir(
+        url, browser.user_data_dir, browser.per_channel_profile, profile_hint,
+    )
+    if not profile:
+        return
+    if engagement.keep_system_awake:
+        _register_engagement_keep_awake(url)
+    if not engagement.page_assist_active() or url.rstrip("/").lower() in active_page_assist_urls():
+        return
+    from stream_monitor.cdp_client import acquire_cdp_debugging_port
+
+    try:
+        attach = acquire_cdp_debugging_port(profile)
+        current = _active_viewer_engagement()
+        if not managed_window_is_open(url) or current is None or not current.page_assist_active():
+            return
+        if attach.ok and attach.port and attach.port > 0:
+            _register_obs_managed_url(url)
+            start_page_assist(url, attach.port, current)
+            logger.info("Resumed page assist for recovered managed window %s", url)
+        else:
+            publish_page_assist_status(url, attach.reason or "unavailable")
+    except Exception:
+        logger.exception("Could not resume page assist for %s", url)
+
+
+def resume_managed_window_assists(
+    urls: list[str], settings: BrowserSettings | dict[str, Any] | None,
+) -> threading.Thread | None:
+    """Reattach surviving players even when cached live actions are suppressed."""
+    if not urls:
+        return None
+
+    def resume() -> None:
+        for url in dict.fromkeys(urls):
+            if managed_window_is_open(url):
+                _resume_managed_window_assist(url, settings, None)
+
+    worker = threading.Thread(target=resume, daemon=True, name="resume-managed-players")
+    worker.start()
+    return worker
+
+
+_MANAGED_OPEN_LOCKS: dict[str, threading.Lock] = {}
+_MANAGED_OPEN_LOCKS_GUARD = threading.Lock()
+
+
+def _managed_open_lock(url: str) -> threading.Lock:
+    with _MANAGED_OPEN_LOCKS_GUARD:
+        lock = _MANAGED_OPEN_LOCKS.get(url)
+        if lock is None:
+            lock = _MANAGED_OPEN_LOCKS[url] = threading.Lock()
+        return lock
+
+
 def open_url(
+    url: str,
+    browser_settings: BrowserSettings | dict[str, Any] | None = None,
+    *,
+    title_hints: tuple[str, ...] | list[str] | None = None,
+    manage: bool = True,
+    profile_hint: tuple[str, str] | None = None,
+) -> bool:
+    """Open *url*; concurrent managed opens of one URL launch only once.
+
+    The live-edge action and the points-allocation open run on different
+    workers. Both used to pass the "pending/open" check before either had
+    registered its launch, so the same channel got two windows. Serializing
+    managed opens per URL makes the second caller see the pending launch.
+    """
+    if not manage or not url:
+        return _open_url_impl(
+            url, browser_settings, title_hints=title_hints, manage=manage,
+            profile_hint=profile_hint,
+        )
+    with _managed_open_lock(url):
+        return _open_url_impl(
+            url, browser_settings, title_hints=title_hints, manage=manage,
+            profile_hint=profile_hint,
+        )
+
+
+def _open_url_impl(
     url: str,
     browser_settings: BrowserSettings | dict[str, Any] | None = None,
     *,
@@ -1221,8 +1339,36 @@ def open_url(
         logger.warning("Cannot open empty URL")
         return False
 
+    from stream_monitor.twitch_watch_policy import route_browser
+
+    engagement = _active_viewer_engagement()
+    try:
+        browser_settings = route_browser(
+            url, coerce_browser_settings(browser_settings), engagement,
+            managed=manage,
+        )
+    except ValueError as exc:
+        logger.warning("Cannot apply Twitch points priority: %s", exc)
+        return False
+
+    if (
+        manage
+        and browser_settings is None
+        and engagement is not None
+        and engagement.points_role(url) == "watch_only"
+        and active_points_channels_configured()
+    ):
+        logger.info("Skipping live page outside current signed-in allocation: %s", url)
+        return False
+
+    if (manage and managed_window_launch_pending(url)
+            and not _browser_win32._REGISTRY.is_closing(url)):
+        logger.info("Reusing pending managed launch for %s", url)
+        return True
+
     if manage and managed_window_is_open(url):
         logger.info("Reusing open managed window for %s", url)
+        _resume_managed_window_assist(url, browser_settings, profile_hint)
         return True
 
     hints_tuple = tuple(title_hints or ())
@@ -1239,6 +1385,11 @@ def open_url(
         ):
             return True
         custom_launch_failed = True
+
+    if engagement is not None and engagement.points_role(url) != "shared":
+        # A fallback to the everyday signed-in browser would silently defeat
+        # the user's explicit selection of which channels use their account.
+        return False
 
     block_fallback = (
         manage
