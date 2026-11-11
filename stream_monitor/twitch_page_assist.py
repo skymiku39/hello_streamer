@@ -27,6 +27,7 @@ from stream_monitor.cdp_client import (
     CdpClient,
     page_urls_match,
 )
+from stream_monitor.claim_registry import record_confirmed_claim
 from stream_monitor.page_assist_status import publish_page_assist_status
 from stream_monitor.playback_health import PlaybackHealth
 from stream_monitor.twitch_claim_ack import ClaimAcknowledgements, ClaimResult
@@ -998,6 +999,7 @@ class _PageAssistWorker:
                 # or Twitch's own delayed retry) resolves a prior rejection.
                 self._claim_blocked = False
                 self._publish_status("")
+            record_confirmed_claim(self.url)
             logger.info("Twitch confirmed bonus claim for %s server_balance=%s", self.url, result.balance)
         return result
 

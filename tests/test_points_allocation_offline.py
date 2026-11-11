@@ -12,7 +12,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from stream_monitor import app as app_module
+from stream_monitor import claim_registry
 from stream_monitor.app import App
 from stream_monitor.domain import ChannelStatus
 from stream_monitor.event_bridge import MonitorEventBridge
@@ -23,6 +26,13 @@ from stream_monitor.events import (
 )
 from stream_monitor.monitor import ChannelEntry
 from tests.test_event_bridge import _FakeRow, _RecordingSink
+
+
+@pytest.fixture(autouse=True)
+def _fresh_claim_registry():
+    claim_registry.reset_for_tests()
+    yield
+    claim_registry.reset_for_tests()
 
 
 class _StatefulRow(_FakeRow):
@@ -254,6 +264,9 @@ def test_freed_slot_is_filled_in_main_list_order(monkeypatch) -> None:
 
 
 def test_live_priority_channel_still_takes_a_slot(monkeypatch) -> None:
+    claim_registry.reset_for_tests()
+    claim_registry.record_confirmed_claim("https://www.twitch.tv/hayabi_zr")
+    claim_registry.record_confirmed_claim("https://www.twitch.tv/gracya_leejia")
     rows = [_live("hayabi_zr"), _live("gracya_leejia"), _live("kspksp")]
     closed = _patch_windows(
         monkeypatch,
@@ -278,3 +291,89 @@ def test_cold_start_fills_slots_in_main_list_order(monkeypatch) -> None:
     App.refresh_points_priority_allocation(probe)
 
     assert probe._active_points_priority_channels == ("daemoncasoul", "hayabi_zr")
+
+
+def _serve(*names: str) -> None:
+    claim_registry.reset_for_tests()
+    for name in names:
+        claim_registry.record_confirmed_claim(f"https://www.twitch.tv/{name}")
+
+
+def test_unclaimed_holders_keep_slots_against_priority_channel(monkeypatch) -> None:
+    _serve()
+    rows = [_live("hayabi_zr"), _live("gracya_leejia"), _live("kspksp")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/hayabi_zr", "https://www.twitch.tv/gracya_leejia"},
+    )
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("hayabi_zr", "gracya_leejia")
+    assert closed == []
+
+
+def test_claimed_holder_yields_slot_to_unclaimed_live_channel(monkeypatch) -> None:
+    # 2026-11-10: three live channels (daemoncasoul, oldpot_o_0, ramengyozaset)
+    # got no claim all night while other channels held both slots.
+    _serve("gracya_leejia")
+    rows = [
+        _live("daemoncasoul"),
+        _live("gracya_leejia"),
+        _live("hanasakich"),
+        _live("ramengyozaset"),
+    ]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/gracya_leejia", "https://www.twitch.tv/hanasakich"},
+    )
+    probe = _sticky_probe(rows, ("gracya_leejia", "hanasakich"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("hanasakich", "daemoncasoul")
+    assert closed == ["https://www.twitch.tv/gracya_leejia"]
+
+
+def test_unclaimed_channels_are_filled_in_list_order(monkeypatch) -> None:
+    _serve("hayabi_zr", "gracya_leejia")
+    rows = [
+        _live("hayabi_zr"),
+        _live("gracya_leejia"),
+        _live("oldpot_o_0"),
+        _live("daemoncasoul"),
+    ]
+    _patch_windows(monkeypatch, set())
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    # Both unclaimed channels outrank the claimed holders; list order decides.
+    assert set(probe._active_points_priority_channels) == {"oldpot_o_0", "daemoncasoul"}
+
+
+def test_claimed_holders_stay_when_nobody_waits(monkeypatch) -> None:
+    _serve("hayabi_zr", "gracya_leejia")
+    rows = [_live("hayabi_zr"), _live("gracya_leejia")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/hayabi_zr", "https://www.twitch.tv/gracya_leejia"},
+    )
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("hayabi_zr", "gracya_leejia")
+    assert closed == []
+
+
+def test_offline_channel_forgets_its_claim(monkeypatch) -> None:
+    _serve("hayabi_zr")
+    rows = [_row("hayabi_zr", ChannelStatus(status=False, ended_at_source="vod"))]
+    _patch_windows(monkeypatch, set())
+    probe = _sticky_probe(rows, ("hayabi_zr",))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert not claim_registry.is_served("hayabi_zr")

@@ -96,6 +96,7 @@ from stream_monitor.channel_policy import (
 from stream_monitor.channel_reorder import apply_list_move
 from stream_monitor.channel_reorder_ui import ChannelReorderMode
 from stream_monitor.channel_row import ChannelRow
+from stream_monitor.claim_registry import clear_served, is_served
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
@@ -1735,11 +1736,13 @@ class App(ctk.CTk):
     ) -> None:
         """Keep managed Twitch playback within the signed-in priority slots.
 
-        Live channels in the configured priority list win. Any free slot is
-        filled from the main list in order, up to two signed-in streams total.
-        An assigned page stays open through its live broadcast (only a live
-        priority channel can take its slot); unassigned
-        managed pages are closed instead of being opened in Guest mode.
+        Every live channel should earn one confirmed claim per broadcast.
+        Unclaimed channels come first (priority list, then main list order);
+        an unclaimed slot holder keeps its slot until it claims, after which
+        it yields to any waiting unclaimed channel. Claimed channels only keep
+        slots nobody unclaimed wants. Up to two signed-in streams total;
+        unassigned managed pages are closed instead of being opened in Guest
+        mode.
         """
         settings = ViewerEngagementSettings.from_dict(
             self.config.get("viewer_engagement")
@@ -1789,6 +1792,10 @@ class App(ctk.CTk):
             if status.unavailable:
                 incomplete_status = True
                 continue
+            if not status.is_live:
+                # A finished broadcast starts over: its next stream must earn
+                # a new confirmed claim.
+                clear_served(name)
             if status.url:
                 channel_statuses[name] = status
             elif status.is_offline and close_offline_windows:
@@ -1815,12 +1822,23 @@ class App(ctk.CTk):
             return
 
         previous = self._active_points_priority_channels
-        live_priorities = [name for name in priorities if name in live_statuses]
-        selected_order = live_priorities[:2]
-        # A channel already holding a slot keeps it until its broadcast ends;
-        # a higher-ranked main-list channel going live later must not cut it
-        # off mid-stream (that loses the watch streak). Priority channels
-        # still take precedence.
+        # Rank: priority channels first, then the main list in order.
+        rank = [name for name in priorities if name in live_statuses]
+        rank.extend(name for name in ordered_live if name not in rank)
+        unserved = [name for name in rank if not is_served(name)]
+        selected_order: list[str] = []
+        # Every live channel should earn at least one confirmed claim. A
+        # holder that has not claimed yet keeps its slot (evicting it
+        # mid-wait would waste the minutes already watched).
+        selected_order.extend(
+            name for name in (previous or ())
+            if name in live_statuses and name in unserved
+        )
+        # Free slots go to waiting unserved channels, highest rank first.
+        selected_order.extend(name for name in unserved if name not in selected_order)
+        selected_order = selected_order[:2]
+        # Only when nobody unserved is waiting may served channels keep (or
+        # take) a slot, previous holders first, then by rank.
         selected_order.extend(
             name for name in (previous or ())
             if name in live_statuses
@@ -1828,7 +1846,7 @@ class App(ctk.CTk):
             and len(selected_order) < 2
         )
         selected_order.extend(
-            name for name in ordered_live
+            name for name in rank
             if name not in selected_order and len(selected_order) < 2
         )
         selected = tuple(selected_order[:2])

@@ -1,6 +1,6 @@
 # PROGRESS
 
-最後更新：2026-11-10
+最後更新：2026-11-11
 
 ## 專案目標
 Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（CustomTkinter），追蹤 Twitch / YouTube 開播，通知、開直播頁，並以 CDP 頁面輔助處理 Twitch 播放恢復、Channel Points 寶箱領取與劇院模式。僅提供可攜版（資料都在執行檔同層）。
@@ -26,6 +26,7 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
    - 待使用者確認：提醒出現在哪個頻道；是否把分配改成黏著（非指定頻道不被後開播的高順位頻道擠掉）。
 8. [已完成，14:42 部署] 2026-11-10 14:29 使用者按停止再開始後，hayabi_zr 開了兩個視窗。原因：開播動作（open_keep）與點數分配開窗（points_priority_open）在不同 worker 同時呼叫 `notifier.open_url`，兩邊都先通過「已開／啟動中」檢查才登記 pending，造成重複啟動。修法：受管開窗依 URL 加鎖序列化，第二個呼叫會看到 pending 而重用。測試 `tests/test_twitch_watch_policy.py::test_concurrent_managed_opens_of_same_url_launch_once`；完整測試 1464 通過。舊版備份 `D:ToolsHelloStreamer_backup_20261110_pre-dup-window-fix`。部署後重啟，hayabi_zr、gracya_leejia 各只開一個視窗。
 9. [已完成，14:42 部署] 2026-11-10 下方控制區偶爾變三行：狀態副標只依「RunRunLuna」預留寬度，長頻道名（最多 66 字）會撐寬 CTkLabel，把「間隔」擠到下一行。修法：`app_ui._fit_status_subline` 依像素寬度截短名字。測試 `tests/test_status_subline_fit.py`。
+10. [已完成，待部署] 2026-11-11 改成「領獎保底」分配：11/10 夜間黛儚_卡索（86 場）、老郭です（18 場）、拉麵餃子組（14 場）連續紀錄中斷，三台整場 0 次觀看——原因是 11/10 的黏著規則讓兩個位置被 kspksp（指定）、gracya_leejia、hanasakich 等佔滿數小時（依 `watch_streak_observation.ndjson` 重建，時間為台灣時間）。使用者釐清原意：名單中每個開播頻道每場都要至少領過一次獎勵，排序靠上者優先。新規則：未領過者優先（指定清單→主清單順序）；未領過的佔位者保留到領獎（不中途踢掉）；領過後若有未領過者在等就讓位；沒人等時已領過者續佔。「領過」＝伺服器確認的領取（`stream_monitor/claim_registry.py`，僅存記憶體，下播清除、重啟歸零）。測試 `tests/test_points_allocation_offline.py`。取代 item 7 主因二的黏著規則。
 5. [已完成] 2026-11-09 17:56 已重新打包並部署 v1.3.1（含領取 log）到 `D:\Tools\HelloStreamer`；舊版備份在 `D:\Tools\HelloStreamer_backup_20261109_pre-claim-log`。下次寶箱出現後，查 log 的 `claimable bonus detected` / `claim button clicked` 驗證。
 
 ## 已完成
