@@ -1742,8 +1742,9 @@ class App(ctk.CTk):
 
         Every live channel should earn one confirmed claim per broadcast.
         Unclaimed channels come first (priority list, then main list order);
-        an unclaimed slot holder keeps its slot until it claims, its points
-        balance rises a few times, or its turn times out, after which it yields
+        an unclaimed slot holder keeps its slot until it claims or its points
+        balance rises a few times (a holder earning nothing for 20 minutes
+        gets its playback windows restarted instead), after which it yields
         to any waiting channel that had no turn yet. Channels that had their
         turn only keep slots nobody else is waiting for. Up to two signed-in streams total;
         unassigned managed pages are closed instead of being opened in Guest
@@ -1827,7 +1828,7 @@ class App(ctk.CTk):
             return
 
         previous = self._active_points_priority_channels
-        track_slot_holders(
+        stalled = track_slot_holders(
             name for name in (previous or ()) if name in live_statuses
         )
         # Rank: priority channels first, then the main list in order.
@@ -1894,6 +1895,23 @@ class App(ctk.CTk):
                     close_browser_window_for_url(status.url)
                     urls_to_reopen.add(name)
                 self._points_main_profile_channels.add(name)
+
+        if stalled & set(selected):
+            # No points for 20 minutes means the watch is not being credited
+            # (2026-11-11: the browser had lost its debugging endpoint). Close
+            # every slot window so the browser itself restarts; reopening one
+            # window would land in the same broken browser.
+            logger.warning(
+                "Twitch points stalled for %s; restarting playback windows",
+                ", ".join(sorted(stalled & set(selected))),
+            )
+            for name in selected:
+                status = live_statuses[name]
+                if managed_window_is_open(status.url) or managed_window_launch_pending(
+                    status.url
+                ):
+                    close_browser_window_for_url(status.url)
+                    urls_to_reopen.add(name)
 
         if not allow_open or self._controller.mode not in (
             TRIGGER_MODE, TRIGGER_ONCE_MODE

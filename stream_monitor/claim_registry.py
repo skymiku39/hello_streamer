@@ -10,10 +10,11 @@ holder whose balance rose ``POINTS_INCREASES_FOR_TURN`` times has had its turn
 too; that frees the slot after roughly ten minutes instead of waiting for a
 chest, which short broadcasts never reach.
 
-Both signals can be missing for hours (page assist detached, Twitch paying
-nothing). A holder that has watched for ``UNCLAIMED_TURN_SECONDS`` without
-either has therefore used up its turn as well, so waiting channels still get
-watched.
+Time alone never ends a turn. A holder whose balance has not moved for
+``STALLED_SLOT_SECONDS`` is not being credited at all (page assist detached,
+playback broken), so the allocator restarts the playback windows instead.
+Only after ``STALL_RESTART_LIMIT`` restarts changed nothing does the holder
+give up its turn, so one broken channel cannot starve the others all night.
 """
 
 from __future__ import annotations
@@ -25,8 +26,11 @@ from collections.abc import Iterable
 
 _LOCK = threading.Lock()
 _SERVED: set[str] = set()
-# Bonus chests appear roughly every 15 minutes of watching.
-UNCLAIMED_TURN_SECONDS = 20 * 60.0
+# Passive credit arrives about every five minutes; twenty without any means
+# the watch is not being counted.
+STALLED_SLOT_SECONDS = 20 * 60.0
+STALL_RESTART_LIMIT = 2
+_STALL_RESTARTS: dict[str, int] = {}
 # Passive watch credit arrives about every five minutes.
 POINTS_INCREASES_FOR_TURN = 2
 _POINTS_INCREASES: dict[str, int] = {}
@@ -53,6 +57,8 @@ def record_points_increase(url: str) -> None:
     if name:
         with _LOCK:
             _POINTS_INCREASES[name] = _POINTS_INCREASES.get(name, 0) + 1
+            if name in _SLOT_SINCE:
+                _SLOT_SINCE[name] = time.monotonic()
 
 
 def is_served(name: str) -> bool:
@@ -61,7 +67,7 @@ def is_served(name: str) -> bool:
 
 
 def had_turn(name: str) -> bool:
-    """True once the channel claimed, earned points a few times, or timed out."""
+    """True once the channel claimed, earned points a few times, or gave up."""
     key = name.strip().lower()
     with _LOCK:
         return (
@@ -71,18 +77,41 @@ def had_turn(name: str) -> bool:
         )
 
 
-def track_slot_holders(holders: Iterable[str], *, now: float | None = None) -> None:
-    """Time the current slot holders; an overdue unclaimed one used its turn."""
+def track_slot_holders(
+    holders: Iterable[str], *, now: float | None = None
+) -> set[str]:
+    """Time the current slot holders; return those whose playback is stalled.
+
+    A returned holder earned nothing for ``STALLED_SLOT_SECONDS`` and still
+    has restarts left: the caller should restart the playback windows. Once
+    the restarts are spent the holder gives up its turn instead.
+    """
     current = time.monotonic() if now is None else now
     keys = {name.strip().lower() for name in holders}
+    stalled: set[str] = set()
     with _LOCK:
         for key in list(_SLOT_SINCE):
             if key not in keys:
                 del _SLOT_SINCE[key]
         for key in keys:
             since = _SLOT_SINCE.setdefault(key, current)
-            if current - since >= UNCLAIMED_TURN_SECONDS:
+            if (
+                current - since < STALLED_SLOT_SECONDS
+                or key in _SERVED
+                or key in _TURN_USED
+                or _POINTS_INCREASES.get(key, 0) >= POINTS_INCREASES_FOR_TURN
+            ):
+                continue
+            if _STALL_RESTARTS.get(key, 0) >= STALL_RESTART_LIMIT:
                 _TURN_USED.add(key)
+                continue
+            _STALL_RESTARTS[key] = _STALL_RESTARTS.get(key, 0) + 1
+            stalled.add(key)
+        if stalled:
+            # The restart covers every window, so everyone starts a new wait.
+            for key in keys:
+                _SLOT_SINCE[key] = current
+    return stalled
 
 
 def clear_served(name: str) -> None:
@@ -93,6 +122,7 @@ def clear_served(name: str) -> None:
         _TURN_USED.discard(key)
         _SLOT_SINCE.pop(key, None)
         _POINTS_INCREASES.pop(key, None)
+        _STALL_RESTARTS.pop(key, None)
 
 
 def reset_for_tests() -> None:
@@ -101,3 +131,4 @@ def reset_for_tests() -> None:
         _TURN_USED.clear()
         _SLOT_SINCE.clear()
         _POINTS_INCREASES.clear()
+        _STALL_RESTARTS.clear()

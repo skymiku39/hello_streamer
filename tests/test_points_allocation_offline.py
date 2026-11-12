@@ -379,45 +379,55 @@ def test_offline_channel_forgets_its_claim(monkeypatch) -> None:
     assert not claim_registry.is_served("hayabi_zr")
 
 
-def test_unclaimed_holder_yields_after_its_turn_times_out(monkeypatch) -> None:
-    # 2026-11-11: page assist lost CDP at 16:31, so nobody could claim.
+def test_stalled_holders_get_windows_restarted_before_giving_up(monkeypatch) -> None:
+    # 2026-11-11: page assist lost CDP at 16:31, so no points were visible.
     # hanasakich and jipandan held both slots all night and daemoncasoul
-    # (live 21:30-02:12) was never watched.
+    # (live 21:30-02:12) was never watched. Time alone must not end a turn:
+    # 20 minutes without points means something is broken, so restart first.
     _serve()
     rows = [_live("daemoncasoul"), _live("hanasakich"), _live("jipandan")]
-    closed = _patch_windows(
-        monkeypatch,
-        {"https://www.twitch.tv/hanasakich", "https://www.twitch.tv/jipandan"},
-    )
+    urls = {"https://www.twitch.tv/hanasakich", "https://www.twitch.tv/jipandan"}
+    closed = _patch_windows(monkeypatch, urls)
     probe = _sticky_probe(rows, ("hanasakich", "jipandan"))
     clock = [1000.0]
     monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
 
     App.refresh_points_priority_allocation(probe)
-    assert probe._active_points_priority_channels == ("hanasakich", "jipandan")
-
-    clock[0] += claim_registry.UNCLAIMED_TURN_SECONDS - 1
+    clock[0] += claim_registry.STALLED_SLOT_SECONDS - 1
     App.refresh_points_priority_allocation(probe)
     assert closed == []
 
     clock[0] += 1
-    App.refresh_points_priority_allocation(probe)
+    for _ in range(claim_registry.STALL_RESTART_LIMIT):
+        closed.clear()
+        App.refresh_points_priority_allocation(probe)
+        # Both windows restart; nobody loses the slot.
+        assert set(closed) == urls
+        assert probe._active_points_priority_channels == ("hanasakich", "jipandan")
+        clock[0] += claim_registry.STALLED_SLOT_SECONDS
 
-    # One waiting channel takes one slot; the other holder stays.
+    # Restarts changed nothing: only now do the holders give up their turn.
+    closed.clear()
+    App.refresh_points_priority_allocation(probe)
     assert probe._active_points_priority_channels == ("daemoncasoul", "hanasakich")
     assert closed == ["https://www.twitch.tv/jipandan"]
 
-    # The newcomer gets its own full turn and nobody bounces back.
-    clock[0] += claim_registry.UNCLAIMED_TURN_SECONDS + 1
-    App.refresh_points_priority_allocation(probe)
-    assert probe._active_points_priority_channels == ("daemoncasoul", "hanasakich")
+
+def test_points_rise_restarts_the_stall_wait(monkeypatch) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+    claim_registry.track_slot_holders(["hayabi_zr"])
+    clock[0] = claim_registry.STALLED_SLOT_SECONDS - 60
+    claim_registry.record_points_increase("https://www.twitch.tv/hayabi_zr")
+
+    clock[0] = claim_registry.STALLED_SLOT_SECONDS + 60
+    assert claim_registry.track_slot_holders(["hayabi_zr"]) == set()
 
 
-def test_timed_out_turn_is_forgotten_when_broadcast_ends() -> None:
-    claim_registry.track_slot_holders(["hayabi_zr"], now=0.0)
-    claim_registry.track_slot_holders(
-        ["hayabi_zr"], now=claim_registry.UNCLAIMED_TURN_SECONDS
-    )
+def test_given_up_turn_is_forgotten_when_broadcast_ends() -> None:
+    step = claim_registry.STALLED_SLOT_SECONDS
+    for tick in range(claim_registry.STALL_RESTART_LIMIT + 2):
+        claim_registry.track_slot_holders(["hayabi_zr"], now=tick * step)
     assert claim_registry.had_turn("hayabi_zr")
 
     claim_registry.clear_served("hayabi_zr")
