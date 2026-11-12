@@ -423,3 +423,35 @@ def test_timed_out_turn_is_forgotten_when_broadcast_ends() -> None:
     claim_registry.clear_served("hayabi_zr")
 
     assert not claim_registry.had_turn("hayabi_zr")
+
+
+def test_holder_yields_after_points_rose_a_few_times(monkeypatch) -> None:
+    # 2026-11-11: 4lianyun streamed for ten minutes (21:54-22:04); waiting
+    # for a chest (~15 min) or the 20-minute turn would always miss it.
+    _serve()
+    rows = [_live("hanasakich"), _live("jipandan"), _live("4lianyun")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/hanasakich", "https://www.twitch.tv/jipandan"},
+    )
+    probe = _sticky_probe(rows, ("hanasakich", "jipandan"))
+
+    claim_registry.record_points_increase("https://www.twitch.tv/hanasakich")
+    App.refresh_points_priority_allocation(probe)
+    assert closed == []  # one rise is not enough
+
+    claim_registry.record_points_increase("https://www.twitch.tv/hanasakich")
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("jipandan", "4lianyun")
+    assert closed == ["https://www.twitch.tv/hanasakich"]
+
+
+def test_points_rises_are_forgotten_when_broadcast_ends() -> None:
+    for _ in range(claim_registry.POINTS_INCREASES_FOR_TURN):
+        claim_registry.record_points_increase("https://www.twitch.tv/hayabi_zr")
+    assert claim_registry.had_turn("hayabi_zr")
+
+    claim_registry.clear_served("hayabi_zr")
+
+    assert not claim_registry.had_turn("hayabi_zr")

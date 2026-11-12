@@ -1742,8 +1742,8 @@ class App(ctk.CTk):
 
         Every live channel should earn one confirmed claim per broadcast.
         Unclaimed channels come first (priority list, then main list order);
-        an unclaimed slot holder keeps its slot until it claims or its turn
-        times out (claims can be impossible for hours), after which it yields
+        an unclaimed slot holder keeps its slot until it claims, its points
+        balance rises a few times, or its turn times out, after which it yields
         to any waiting channel that had no turn yet. Channels that had their
         turn only keep slots nobody else is waiting for. Up to two signed-in streams total;
         unassigned managed pages are closed instead of being opened in Guest

@@ -27,7 +27,10 @@ from stream_monitor.cdp_client import (
     CdpClient,
     page_urls_match,
 )
-from stream_monitor.claim_registry import record_confirmed_claim
+from stream_monitor.claim_registry import (
+    record_confirmed_claim,
+    record_points_increase,
+)
 from stream_monitor.page_assist_status import publish_page_assist_status
 from stream_monitor.playback_health import PlaybackHealth
 from stream_monitor.twitch_claim_ack import ClaimAcknowledgements, ClaimResult
@@ -1604,6 +1607,7 @@ class _PageAssistWorker:
             self._points_stall_attempts = 0
             self._points_stall_exhausted = False
             self._reset_points_media_sample()
+            record_points_increase(self.url)
             logger.info(
                 "Twitch second points balance increased for %s: %d -> %d; "
                 "stall timer and retry allowance reset",
