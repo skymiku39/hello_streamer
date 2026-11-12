@@ -377,3 +377,49 @@ def test_offline_channel_forgets_its_claim(monkeypatch) -> None:
     App.refresh_points_priority_allocation(probe)
 
     assert not claim_registry.is_served("hayabi_zr")
+
+
+def test_unclaimed_holder_yields_after_its_turn_times_out(monkeypatch) -> None:
+    # 2026-11-11: page assist lost CDP at 16:31, so nobody could claim.
+    # hanasakich and jipandan held both slots all night and daemoncasoul
+    # (live 21:30-02:12) was never watched.
+    _serve()
+    rows = [_live("daemoncasoul"), _live("hanasakich"), _live("jipandan")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/hanasakich", "https://www.twitch.tv/jipandan"},
+    )
+    probe = _sticky_probe(rows, ("hanasakich", "jipandan"))
+    clock = [1000.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+
+    App.refresh_points_priority_allocation(probe)
+    assert probe._active_points_priority_channels == ("hanasakich", "jipandan")
+
+    clock[0] += claim_registry.UNCLAIMED_TURN_SECONDS - 1
+    App.refresh_points_priority_allocation(probe)
+    assert closed == []
+
+    clock[0] += 1
+    App.refresh_points_priority_allocation(probe)
+
+    # One waiting channel takes one slot; the other holder stays.
+    assert probe._active_points_priority_channels == ("daemoncasoul", "hanasakich")
+    assert closed == ["https://www.twitch.tv/jipandan"]
+
+    # The newcomer gets its own full turn and nobody bounces back.
+    clock[0] += claim_registry.UNCLAIMED_TURN_SECONDS + 1
+    App.refresh_points_priority_allocation(probe)
+    assert probe._active_points_priority_channels == ("daemoncasoul", "hanasakich")
+
+
+def test_timed_out_turn_is_forgotten_when_broadcast_ends() -> None:
+    claim_registry.track_slot_holders(["hayabi_zr"], now=0.0)
+    claim_registry.track_slot_holders(
+        ["hayabi_zr"], now=claim_registry.UNCLAIMED_TURN_SECONDS
+    )
+    assert claim_registry.had_turn("hayabi_zr")
+
+    claim_registry.clear_served("hayabi_zr")
+
+    assert not claim_registry.had_turn("hayabi_zr")

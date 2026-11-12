@@ -4,15 +4,26 @@ A channel counts as "served" once a native, server-confirmed bonus claim landed
 during its current broadcast. The signed-in slot allocator uses this so every
 live channel gets at least one claim before an already-served channel keeps a
 slot. Records live in memory only and are cleared when the broadcast ends.
+
+Claims can be impossible for hours (page assist detached, Twitch withholding
+the chest). A holder that has watched for ``UNCLAIMED_TURN_SECONDS`` without a
+confirmed claim has therefore used up its turn and yields like a served one,
+so waiting channels still get watched.
 """
 
 from __future__ import annotations
 
 import re
 import threading
+import time
+from collections.abc import Iterable
 
 _LOCK = threading.Lock()
 _SERVED: set[str] = set()
+# Bonus chests appear roughly every 15 minutes of watching.
+UNCLAIMED_TURN_SECONDS = 20 * 60.0
+_SLOT_SINCE: dict[str, float] = {}
+_TURN_USED: set[str] = set()
 _CHANNEL_RE = re.compile(r"twitch\.tv/([^/?#\s]+)", re.IGNORECASE)
 
 
@@ -33,12 +44,38 @@ def is_served(name: str) -> bool:
         return name.strip().lower() in _SERVED
 
 
-def clear_served(name: str) -> None:
-    """Forget a channel's claim when its broadcast ends."""
+def had_turn(name: str) -> bool:
+    """True once the channel claimed, or held a slot long enough without one."""
+    key = name.strip().lower()
     with _LOCK:
-        _SERVED.discard(name.strip().lower())
+        return key in _SERVED or key in _TURN_USED
+
+
+def track_slot_holders(holders: Iterable[str], *, now: float | None = None) -> None:
+    """Time the current slot holders; an overdue unclaimed one used its turn."""
+    current = time.monotonic() if now is None else now
+    keys = {name.strip().lower() for name in holders}
+    with _LOCK:
+        for key in list(_SLOT_SINCE):
+            if key not in keys:
+                del _SLOT_SINCE[key]
+        for key in keys:
+            since = _SLOT_SINCE.setdefault(key, current)
+            if current - since >= UNCLAIMED_TURN_SECONDS:
+                _TURN_USED.add(key)
+
+
+def clear_served(name: str) -> None:
+    """Forget a channel's claim and turn when its broadcast ends."""
+    key = name.strip().lower()
+    with _LOCK:
+        _SERVED.discard(key)
+        _TURN_USED.discard(key)
+        _SLOT_SINCE.pop(key, None)
 
 
 def reset_for_tests() -> None:
     with _LOCK:
         _SERVED.clear()
+        _TURN_USED.clear()
+        _SLOT_SINCE.clear()

@@ -96,7 +96,11 @@ from stream_monitor.channel_policy import (
 from stream_monitor.channel_reorder import apply_list_move
 from stream_monitor.channel_reorder_ui import ChannelReorderMode
 from stream_monitor.channel_row import ChannelRow
-from stream_monitor.claim_registry import clear_served, is_served
+from stream_monitor.claim_registry import (
+    clear_served,
+    had_turn,
+    track_slot_holders,
+)
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
@@ -1738,9 +1742,10 @@ class App(ctk.CTk):
 
         Every live channel should earn one confirmed claim per broadcast.
         Unclaimed channels come first (priority list, then main list order);
-        an unclaimed slot holder keeps its slot until it claims, after which
-        it yields to any waiting unclaimed channel. Claimed channels only keep
-        slots nobody unclaimed wants. Up to two signed-in streams total;
+        an unclaimed slot holder keeps its slot until it claims or its turn
+        times out (claims can be impossible for hours), after which it yields
+        to any waiting channel that had no turn yet. Channels that had their
+        turn only keep slots nobody else is waiting for. Up to two signed-in streams total;
         unassigned managed pages are closed instead of being opened in Guest
         mode.
         """
@@ -1822,10 +1827,13 @@ class App(ctk.CTk):
             return
 
         previous = self._active_points_priority_channels
+        track_slot_holders(
+            name for name in (previous or ()) if name in live_statuses
+        )
         # Rank: priority channels first, then the main list in order.
         rank = [name for name in priorities if name in live_statuses]
         rank.extend(name for name in ordered_live if name not in rank)
-        unserved = [name for name in rank if not is_served(name)]
+        unserved = [name for name in rank if not had_turn(name)]
         selected_order: list[str] = []
         # Every live channel should earn at least one confirmed claim. A
         # holder that has not claimed yet keeps its slot (evicting it
