@@ -1745,8 +1745,9 @@ class App(ctk.CTk):
         an unclaimed slot holder keeps its slot until it claims or its points
         balance rises a few times (a holder earning nothing for 20 minutes
         gets its playback windows restarted instead), after which it yields
-        to any waiting channel that had no turn yet. Channels that had their
-        turn only keep slots nobody else is waiting for. Up to two signed-in streams total;
+        to any waiting channel that had no turn yet. Slots nobody unserved
+        needs go to channels that had their turn, by rank (not to whoever
+        held the slot before). Up to two signed-in streams total;
         unassigned managed pages are closed instead of being opened in Guest
         mode.
         """
@@ -1846,14 +1847,10 @@ class App(ctk.CTk):
         # Free slots go to waiting unserved channels, highest rank first.
         selected_order.extend(name for name in unserved if name not in selected_order)
         selected_order = selected_order[:2]
-        # Only when nobody unserved is waiting may served channels keep (or
-        # take) a slot, previous holders first, then by rank.
-        selected_order.extend(
-            name for name in (previous or ())
-            if name in live_statuses
-            and name not in selected_order
-            and len(selected_order) < 2
-        )
+        # Slots no unserved channel needs go to served channels strictly by
+        # rank: the lowest-ranked served holder is the one that yields, and
+        # a higher-ranked channel gets its slot back once the others had
+        # their turn.
         selected_order.extend(
             name for name in rank
             if name not in selected_order and len(selected_order) < 2

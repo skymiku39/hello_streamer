@@ -368,6 +368,41 @@ def test_claimed_holders_stay_when_nobody_waits(monkeypatch) -> None:
     assert closed == []
 
 
+def test_lowest_ranked_claimed_holder_is_the_one_that_yields(monkeypatch) -> None:
+    # 2026-11-12 17:37: 4lianyun went live and daemoncasoul (first in the
+    # main list) lost its slot instead of hayabi_zr (sixth), because the
+    # holder tuple happened to list hayabi_zr first.
+    _serve("daemoncasoul", "hayabi_zr")
+    rows = [_live("daemoncasoul"), _live("4lianyun"), _live("hayabi_zr")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/daemoncasoul", "https://www.twitch.tv/hayabi_zr"},
+    )
+    probe = _sticky_probe(rows, ("hayabi_zr", "daemoncasoul"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("4lianyun", "daemoncasoul")
+    assert closed == ["https://www.twitch.tv/hayabi_zr"]
+
+
+def test_higher_ranked_channel_returns_once_everyone_claimed(monkeypatch) -> None:
+    # 2026-11-12 17:45: after 4lianyun claimed, daemoncasoul stayed closed
+    # while the two lower-ranked channels kept both slots.
+    _serve("daemoncasoul", "4lianyun", "hayabi_zr")
+    rows = [_live("daemoncasoul"), _live("4lianyun"), _live("hayabi_zr")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/4lianyun", "https://www.twitch.tv/hayabi_zr"},
+    )
+    probe = _sticky_probe(rows, ("4lianyun", "hayabi_zr"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("daemoncasoul", "4lianyun")
+    assert closed == ["https://www.twitch.tv/hayabi_zr"]
+
+
 def test_offline_channel_forgets_its_claim(monkeypatch) -> None:
     _serve("hayabi_zr")
     rows = [_row("hayabi_zr", ChannelStatus(status=False, ended_at_source="vod"))]
