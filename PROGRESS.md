@@ -22,7 +22,7 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 7. [高] 2026-11-10 調查「仍收到連續觀看中斷提醒」（依 `watch_streak_observation.ndjson` 重建 11/09 時間軸，時間為台灣時間）：
    - 主因一（已於 02:05 部署修正）：hayabi_zr 19:37 下播、gracya_leejia 00:24 下播後視窗被重開，一路佔位到 02:05；期間開播的 ramengyozaset（20:59–02:35）、hanasakich（21:03–22:32、22:35–00:06）完全沒被看，enmei_suiin 只看 6 分鐘。
    - 主因二（2026-11-10 已修，10:26 已部署；舊版備份 `D:\Tools\HelloStreamer_backup_20261110_pre-sticky-slots`）：使用者決定改成黏著——已佔位的頻道保留到下播，只有指定頻道開播可搶位；空出的位置再依主清單順序補。測試在 `tests/test_points_allocation_offline.py`。原狀況：`app.py` `refresh_points_priority_allocation` 每次都依主清單順序重算兩個位置，沒有「已分配者看到下播為止」的黏著；docstring 與 docs 說會保留，實作不符。實例：20:28 enmei_suiin 開播把看了 50 分鐘的 oldpot_o_0 擠掉，20:34 daemoncasoul 開播又把 enmei_suiin 擠掉。指定頻道（taiga_hikari、kspksp）搶位是預期行為。
-   - 結構限制：只有兩個登入位置，同時開播超過兩台時，排序後面的頻道必然漏看。
+   - 結構限制：只有兩個登入位置，同時開播超過兩台時，排序後面的頻道必然漏看。（2026-11-14 實測：開到 3 個位置，第 3 台 0 點，Twitch 只認列 2 台，見 item 16。）
    - 待使用者確認：提醒出現在哪個頻道；是否把分配改成黏著（非指定頻道不被後開播的高順位頻道擠掉）。
 8. [已完成，14:42 部署] 2026-11-10 14:29 使用者按停止再開始後，hayabi_zr 開了兩個視窗。原因：開播動作（open_keep）與點數分配開窗（points_priority_open）在不同 worker 同時呼叫 `notifier.open_url`，兩邊都先通過「已開／啟動中」檢查才登記 pending，造成重複啟動。修法：受管開窗依 URL 加鎖序列化，第二個呼叫會看到 pending 而重用。測試 `tests/test_twitch_watch_policy.py::test_concurrent_managed_opens_of_same_url_launch_once`；完整測試 1464 通過。舊版備份 `D:ToolsHelloStreamer_backup_20261110_pre-dup-window-fix`。部署後重啟，hayabi_zr、gracya_leejia 各只開一個視窗。
 9. [已完成，14:42 部署] 2026-11-10 下方控制區偶爾變三行：狀態副標只依「RunRunLuna」預留寬度，長頻道名（最多 66 字）會撐寬 CTkLabel，把「間隔」擠到下一行。修法：`app_ui._fit_status_subline` 依像素寬度截短名字。測試 `tests/test_status_subline_fit.py`。
@@ -42,6 +42,13 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
     - 缺口（已修，見 item 15）：kspksp（指定）20:38 拿到位置，20:49 已加點 2 次算輪過，之後 20:49–22:04、22:05–01:15 共約 3 小時點數不動（播放器顯示 playing），page assist 的 F5（21:19、21:49、22:35、23:06）沒救回，01:11 的定期刷新後才恢復。item 13 的「20 分鐘無點數 → 重啟全部視窗」在 `claim_registry.track_slot_holders` 只對**未輪過**的佔位者生效，已輪過者（含指定頻道）不會觸發，所以整晚 0 次 `points stalled`。與 item 13 字面「佔位者 20 分鐘點數完全沒增加 → 重啟」不一致。
     - 未處理的小問題：下播關窗後 1 秒被重開又關（runrunluna 11:33、sumitaninasi 12:19，`Closed unallocated` 重複 40 多行，只有日誌雜訊）；黛儚 15:30 視窗在沒有關閉紀錄下被重開一次，原因未查。
 15. [已完成，2026-11-14 01:40 部署] 停滯重啟擴及已輪過的佔位者（使用者決定）。原因見 item 14 的 kspksp 缺口。現行：所有佔位者 20 分鐘無點數、無領取 → 關閉所有佔位視窗重開，每次最多 2 次；點數上升或領到會恢復重啟次數（證明上次重啟有效），之後再停滯可以再重啟。重啟用完後：未輪過者放棄本場順位（不變），已輪過者照排序保留位置、不再重啟，直到點數再上升。代價：重啟會關掉所有佔位視窗，另一台正常的頻道也會中斷約十幾秒。commit `c7e10f2`；測試 `tests/test_points_allocation_offline.py`（23 通過），完整測試 1483 通過。部署後 kspksp、taiga_hikari 1 秒內 attach。舊版備份 `D:\Tools\HelloStreamer_backup_20261114_pre-served-stall`。尚未實際觀察到已輪過者觸發重啟。
+16. [已完成，2026-11-14 部署] 登入觀看位置數量實測 + 小問題修正（使用者要求）。
+    - 新設定 `viewer_engagement.points_slot_count`（預設 2，限制 1–4，沒有 UI，只能改 config.json），commit `d20c8f4`。
+    - **3 個位置實測（02:08–02:39，30 分鐘）**：kspksp、taiga_hikari 各點數增加 8 次、領到 2 次；第 3 台 hanasakich 播放正常（playing、劇院模式、餘額有讀到 77230）卻 **0 次增加、0 次領取**，02:28 的停滯重啟也沒救回。hanasakich 在 2 個位置時是正常的（11/13 22:37 領到過）。結論：**此帳號 Twitch 只認列同時 2 台**，多開的位置拿不到點數，還會每 20 分鐘觸發停滯重啟、打斷正常的兩台。已改回 2。
+    - **4 個位置未實測**：02:39 時只剩 3 台開播（oldpot_o_0 已下播）。3 台時第 3 台已經 0 點，4 台預期相同；若要再確認，等有 4 台同時開播時把設定改成 4 觀察 30 分鐘。
+    - 修正「下播關窗後 1 秒被重開」（commit `b1fee77`）：11/13 19:41 hayabi_zr 下播關窗後，列狀態仍短暫顯示開播，分配就重開視窗，之後連續記 40 多行 `Closed unallocated`。根因是下播關窗和列狀態更新之間的時間差，沒有完全查清；改法是下播關窗後 120 秒內不把該頻道當成開播（收到新的 went_live 就解除），並且 `Closed unallocated` 每個頻道只記一次（被分配到位置後重置）。部署後 02:40 hanasakich 被關閉只記 1 行。
+    - YouTube `ytInitialData` 解析失敗：4 台每次都同時失敗（約每 12 分鐘一次），是 YouTube 回了不同的頁面，處理方式本來就安全（當作狀態不明）。只在警告裡多記頁面大小與標題（commit `dadc261`），下次可以看出是同意頁、驗證頁還是錯誤頁。
+    - 完整測試 1492 通過。舊版備份 `D:\Tools\HelloStreamer_backup_20261114_pre-slot-count`（含 config.json）。目前運行：2 個位置，kspksp、taiga_hikari。
 5. [已完成] 2026-11-09 17:56 已重新打包並部署 v1.3.1（含領取 log）到 `D:\Tools\HelloStreamer`；舊版備份在 `D:\Tools\HelloStreamer_backup_20261109_pre-claim-log`。下次寶箱出現後，查 log 的 `claimable bonus detected` / `claim button clicked` 驗證。
 
 ## 已完成
