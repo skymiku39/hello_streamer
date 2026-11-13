@@ -198,6 +198,10 @@ class App(ctk.CTk):
         self._channel_rows: list[CanvasChannelRowAdapter] = []
         self._active_points_priority_channels: tuple[str, ...] | None = None
         self._points_main_profile_channels: set[str] = set()
+        # Channels whose window close_on_offline just closed -> monotonic time.
+        self._offline_closed_at: dict[str, float] = {}
+        # Unallocated channels already logged as closed (dedupes log spam).
+        self._unallocated_closed_logged: set[str] = set()
         self._silent = silent
         self._truly_quitting = False
         # The persisted snapshot's saved_at is only meaningful for the very
@@ -1732,6 +1736,21 @@ class App(ctk.CTk):
                 if key in retained_live_keys & eligible_keys and status.is_live
             ], self.current_browser_settings())
 
+    _OFFLINE_REOPEN_GUARD_SECONDS = 120.0
+
+    def _recently_closed_for_offline(
+        self, name: str, event_channels: set[str] | None
+    ) -> bool:
+        closed_at = self._offline_closed_at.get(name)
+        if closed_at is None:
+            return False
+        if (event_channels is not None and name in event_channels) or (
+            time.monotonic() - closed_at >= self._OFFLINE_REOPEN_GUARD_SECONDS
+        ):
+            del self._offline_closed_at[name]
+            return False
+        return True
+
     def refresh_points_priority_allocation(
         self,
         *,
@@ -1813,6 +1832,16 @@ class App(ctk.CTk):
                 channel_statuses[name] = replace(
                     status, url=f"https://www.twitch.tv/{name}"
                 )
+            if (
+                status.is_live
+                and status.url
+                and self._recently_closed_for_offline(name, event_channels)
+            ):
+                # 2026-11-13 19:41: hayabi_zr's window was closed for offline,
+                # the row still read live for a moment and the allocator
+                # reopened it 1 s later. Trust the offline edge until the row
+                # catches up or a new went_live arrives.
+                continue
             if status.is_live and status.url:
                 ordered_live.append(name)
                 live_statuses[name] = status
@@ -1868,6 +1897,7 @@ class App(ctk.CTk):
 
         set_active_points_channels(selected)
         self._active_points_priority_channels = selected
+        self._unallocated_closed_logged.difference_update(selected)
         newly_selected = set(selected) - prior_selected
         urls_to_reopen: set[str] = set()
 
@@ -1879,9 +1909,12 @@ class App(ctk.CTk):
                     status.url
                 ):
                     close_browser_window_for_url(status.url)
-                    logger.info(
-                        "Closed unallocated Twitch playback: channel=%s", name
-                    )
+                    logged = self._unallocated_closed_logged
+                    if name not in logged:
+                        logged.add(name)
+                        logger.info(
+                            "Closed unallocated Twitch playback: channel=%s", name
+                        )
                 self._points_main_profile_channels.discard(name)
             elif (
                 status.is_live
@@ -2274,6 +2307,8 @@ class App(ctk.CTk):
     ) -> None:
         """Close any browser window we opened for this channel."""
         url = getattr(offline_info, "url", "") or ""
+        if entry.platform.strip().lower() == "twitch" and entry.name:
+            self._offline_closed_at[entry.name.strip().lower()] = time.monotonic()
         if not url:
             logger.warning(
                 "close_on_offline skipped for %s: offline payload has empty url",

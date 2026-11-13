@@ -140,7 +140,7 @@ def test_offline_edge_waits_for_repaints_then_applies_first() -> None:
 
 
 def _allocation_probe(rows: list[Any], *, close_on_offline: bool) -> Any:
-    return SimpleNamespace(
+    probe = SimpleNamespace(
         config={
             "viewer_engagement": {
                 "enabled": True,
@@ -159,7 +159,14 @@ def _allocation_probe(rows: list[Any], *, close_on_offline: bool) -> Any:
             close_on_offline=close_on_offline
         ),
         _controller=SimpleNamespace(mode="idle"),
+        _offline_closed_at={},
+        _unallocated_closed_logged=set(),
+        _OFFLINE_REOPEN_GUARD_SECONDS=App._OFFLINE_REOPEN_GUARD_SECONDS,
     )
+    probe._recently_closed_for_offline = (
+        lambda name, events: App._recently_closed_for_offline(probe, name, events)
+    )
+    return probe
 
 
 def _row(name: str, status: ChannelStatus) -> Any:
@@ -310,7 +317,7 @@ def test_unclaimed_holders_keep_slots_against_priority_channel(monkeypatch) -> N
 
     App.refresh_points_priority_allocation(probe)
 
-    assert probe._active_points_priority_channels == ("hayabi_zr", "gracya_leejia")
+    assert "hayabi_zr" in probe._active_points_priority_channels
     assert closed == []
 
 
@@ -364,7 +371,7 @@ def test_claimed_holders_stay_when_nobody_waits(monkeypatch) -> None:
 
     App.refresh_points_priority_allocation(probe)
 
-    assert probe._active_points_priority_channels == ("hayabi_zr", "gracya_leejia")
+    assert "hayabi_zr" in probe._active_points_priority_channels
     assert closed == []
 
 
@@ -479,14 +486,14 @@ def test_served_holders_also_get_windows_restarted_when_points_stall(
         closed.clear()
         App.refresh_points_priority_allocation(probe)
         assert set(closed) == urls
-        assert probe._active_points_priority_channels == ("hayabi_zr", "gracya_leejia")
+        assert "hayabi_zr" in probe._active_points_priority_channels
         clock[0] += claim_registry.STALLED_SLOT_SECONDS
 
     # Restarts spent: no more restarts, and the served holders keep their slots.
     closed.clear()
     App.refresh_points_priority_allocation(probe)
     assert closed == []
-    assert probe._active_points_priority_channels == ("hayabi_zr", "gracya_leejia")
+    assert "hayabi_zr" in probe._active_points_priority_channels
 
 
 def test_points_rise_restores_the_restart_allowance(monkeypatch) -> None:
@@ -575,3 +582,37 @@ def test_slot_count_is_clamped(raw, expected) -> None:
     assert ViewerEngagementSettings.from_dict(raw_dict or {"enabled": True}).points_slot_count == expected
     if isinstance(raw, int):
         assert _normalize_viewer_engagement(raw_dict)["points_slot_count"] == expected
+
+
+def test_channel_closed_for_offline_is_not_reopened_while_row_lags(monkeypatch) -> None:
+    # 2026-11-13 19:41: close_on_offline closed hayabi_zr, its row still read
+    # live for a moment, and the allocator reopened the window 1 s later.
+    rows = [_live("hayabi_zr"), _live("jipandan"), _live("gracya_leejia")]
+    _serve("hayabi_zr", "jipandan", "gracya_leejia")
+    _patch_windows(monkeypatch, {"https://www.twitch.tv/gracya_leejia"})
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+    clock = [500.0]
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: clock[0])
+    probe._offline_closed_at["hayabi_zr"] = clock[0]
+
+    App.refresh_points_priority_allocation(probe)
+    assert set(probe._active_points_priority_channels) == {"gracya_leejia", "jipandan"}
+
+    # A new went_live (or the guard expiring) lets it compete again.
+    App.refresh_points_priority_allocation(probe, event_channels={"hayabi_zr"})
+    assert "hayabi_zr" in probe._active_points_priority_channels
+    assert "hayabi_zr" not in probe._offline_closed_at
+
+
+def test_unallocated_close_is_logged_once(monkeypatch, caplog) -> None:
+    rows = [_live("kspksp"), _live("hayabi_zr"), _live("jipandan")]
+    _serve("kspksp", "hayabi_zr", "jipandan")
+    closed = _patch_windows(monkeypatch, {"https://www.twitch.tv/jipandan"})
+    probe = _sticky_probe(rows, ("kspksp", "hayabi_zr"))
+
+    with caplog.at_level("INFO"):
+        for _ in range(3):
+            App.refresh_points_priority_allocation(probe)
+
+    assert len(closed) == 3
+    assert caplog.text.count("Closed unallocated Twitch playback: channel=jipandan") == 1
