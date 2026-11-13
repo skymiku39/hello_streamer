@@ -612,9 +612,18 @@ class YouTubeFetcher(StreamFetcher):
         if not isinstance(data, dict):
             # Missing/invalid bootstrap JSON is unavailable, not an empty feed.
             self.last_unavailable_reason = "ytInitialData parse failure"
+            # All YouTube channels fail at the same moments (2026-11-13), so
+            # record what page came back instead (consent, captcha, error).
+            title_match = re.search(
+                r"<title[^>]*>(.*?)</title>", html[:20000], re.IGNORECASE | re.DOTALL
+            )
             logger.warning(
-                "YouTube ytInitialData missing or invalid for %s",
+                "YouTube ytInitialData missing or invalid for %s "
+                "(html_len=%d title=%r has_var=%s)",
                 channel_name,
+                len(html),
+                (title_match.group(1).strip()[:80] if title_match else ""),
+                "ytInitialData" in html,
             )
             return None
 
