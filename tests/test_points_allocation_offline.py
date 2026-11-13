@@ -550,3 +550,28 @@ def test_points_rises_are_forgotten_when_broadcast_ends() -> None:
     claim_registry.clear_served("hayabi_zr")
 
     assert not claim_registry.had_turn("hayabi_zr")
+
+
+@pytest.mark.parametrize("slots", [3, 4])
+def test_slot_count_setting_fills_more_signed_in_slots(monkeypatch, slots) -> None:
+    # 2026-11-14 experiment: does Twitch credit more than two streams at once?
+    names = ["kspksp", "hayabi_zr", "gracya_leejia", "hanasakich", "oldpot_o_0"]
+    rows = [_live(name) for name in names]
+    _patch_windows(monkeypatch, set())
+    probe = _sticky_probe(rows, ())
+    probe.config["viewer_engagement"]["points_slot_count"] = slots
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == tuple(names[:slots])
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, 2), ("x", 2), (0, 1), (3, 3), (9, 4)])
+def test_slot_count_is_clamped(raw, expected) -> None:
+    from stream_monitor.config_manager import _normalize_viewer_engagement
+    from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
+
+    raw_dict = {} if raw is None else {"points_slot_count": raw}
+    assert ViewerEngagementSettings.from_dict(raw_dict or {"enabled": True}).points_slot_count == expected
+    if isinstance(raw, int):
+        assert _normalize_viewer_engagement(raw_dict)["points_slot_count"] == expected

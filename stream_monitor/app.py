@@ -1747,7 +1747,8 @@ class App(ctk.CTk):
         gets its playback windows restarted instead), after which it yields
         to any waiting channel that had no turn yet. Slots nobody unserved
         needs go to channels that had their turn, by rank (not to whoever
-        held the slot before). Up to two signed-in streams total;
+        held the slot before). Up to ``points_slot_count`` signed-in
+        streams (default two);
         unassigned managed pages are closed instead of being opened in Guest
         mode.
         """
@@ -1846,16 +1847,17 @@ class App(ctk.CTk):
         )
         # Free slots go to waiting unserved channels, highest rank first.
         selected_order.extend(name for name in unserved if name not in selected_order)
-        selected_order = selected_order[:2]
+        slots = settings.points_slot_count
+        selected_order = selected_order[:slots]
         # Slots no unserved channel needs go to served channels strictly by
         # rank: the lowest-ranked served holder is the one that yields, and
         # a higher-ranked channel gets its slot back once the others had
         # their turn.
         selected_order.extend(
             name for name in rank
-            if name not in selected_order and len(selected_order) < 2
+            if name not in selected_order and len(selected_order) < slots
         )
-        selected = tuple(selected_order[:2])
+        selected = tuple(selected_order[:slots])
         if previous is None:
             # Older versions always opened explicitly selected channels in the
             # signed-in profile; unlisted channels may still have Guest windows.
