@@ -39,8 +39,9 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
     - 部署（commit `9f8ec59`）：重啟後領取紀錄歸零，三台都算未領過，位置依排序給黛儚、漣韵（18:08:35 兩個視窗 attach，播放與劇院模式正常），早日視窗關閉，等其中一台輪過才回來。舊版備份 `D:\Tools\HelloStreamer_backup_20261112_pre-rank-slots`。尚未實際觀察到「都輪過後依排序還位」這一步。
     - 同日觀察（10:49 部署後）：sumitaninasi、runrunluna、黛儚、早日、漣韵五台都有伺服器確認領取；漣韵開播 1 秒內拿到位置、8 分鐘後領到；停滯重啟未觸發過，尚未實際驗證。
     - 2026-11-14 01:30 檢查（log 只涵蓋 11/13 16:31 起）：部署版 exe 與 `_internal` 和 `dist` hash 一致（= `9f8ec59`），程序自 11/12 18:08 持續執行。「輪過後依排序還位」已實際觀察到：19:02（jipandan 加點 2 次）、22:11（oldpot_o_0）、22:37（hanasakich 領到）後都把位置還給排序較高的 gracya_leejia；下播（hayabi_zr 19:41、jipandan 23:55）沒有再被重開。52 次領取全部伺服器確認，無 IntegrityCheck。
-    - **發現缺口（待使用者決定）**：kspksp（指定）20:38 拿到位置，20:49 已加點 2 次算輪過，之後 20:49–22:04、22:05–01:15 共約 3 小時點數不動（播放器顯示 playing），page assist 的 F5（21:19、21:49、22:35、23:06）沒救回，01:11 的定期刷新後才恢復。item 13 的「20 分鐘無點數 → 重啟全部視窗」在 `claim_registry.track_slot_holders` 只對**未輪過**的佔位者生效，已輪過者（含指定頻道）不會觸發，所以整晚 0 次 `points stalled`。與 item 13 字面「佔位者 20 分鐘點數完全沒增加 → 重啟」不一致。
+    - 缺口（已修，見 item 15）：kspksp（指定）20:38 拿到位置，20:49 已加點 2 次算輪過，之後 20:49–22:04、22:05–01:15 共約 3 小時點數不動（播放器顯示 playing），page assist 的 F5（21:19、21:49、22:35、23:06）沒救回，01:11 的定期刷新後才恢復。item 13 的「20 分鐘無點數 → 重啟全部視窗」在 `claim_registry.track_slot_holders` 只對**未輪過**的佔位者生效，已輪過者（含指定頻道）不會觸發，所以整晚 0 次 `points stalled`。與 item 13 字面「佔位者 20 分鐘點數完全沒增加 → 重啟」不一致。
     - 未處理的小問題：下播關窗後 1 秒被重開又關（runrunluna 11:33、sumitaninasi 12:19，`Closed unallocated` 重複 40 多行，只有日誌雜訊）；黛儚 15:30 視窗在沒有關閉紀錄下被重開一次，原因未查。
+15. [已完成，2026-11-14 01:40 部署] 停滯重啟擴及已輪過的佔位者（使用者決定）。原因見 item 14 的 kspksp 缺口。現行：所有佔位者 20 分鐘無點數、無領取 → 關閉所有佔位視窗重開，每次最多 2 次；點數上升或領到會恢復重啟次數（證明上次重啟有效），之後再停滯可以再重啟。重啟用完後：未輪過者放棄本場順位（不變），已輪過者照排序保留位置、不再重啟，直到點數再上升。代價：重啟會關掉所有佔位視窗，另一台正常的頻道也會中斷約十幾秒。commit `c7e10f2`；測試 `tests/test_points_allocation_offline.py`（23 通過），完整測試 1483 通過。部署後 kspksp、taiga_hikari 1 秒內 attach。舊版備份 `D:\Tools\HelloStreamer_backup_20261114_pre-served-stall`。尚未實際觀察到已輪過者觸發重啟。
 5. [已完成] 2026-11-09 17:56 已重新打包並部署 v1.3.1（含領取 log）到 `D:\Tools\HelloStreamer`；舊版備份在 `D:\Tools\HelloStreamer_backup_20261109_pre-claim-log`。下次寶箱出現後，查 log 的 `claimable bonus detected` / `claim button clicked` 驗證。
 
 ## 已完成
