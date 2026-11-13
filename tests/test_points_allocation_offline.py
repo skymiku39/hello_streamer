@@ -459,6 +459,56 @@ def test_points_rise_restarts_the_stall_wait(monkeypatch) -> None:
     assert claim_registry.track_slot_holders(["hayabi_zr"]) == set()
 
 
+def test_served_holders_also_get_windows_restarted_when_points_stall(
+    monkeypatch,
+) -> None:
+    # 2026-11-13: kspksp had its turn by 20:49, then earned nothing for
+    # about three hours (20:49-22:04, 22:05-01:15) while the player said
+    # "playing"; the stall restart only watched unserved holders.
+    _serve("hayabi_zr", "gracya_leejia")
+    rows = [_live("hayabi_zr"), _live("gracya_leejia")]
+    urls = {"https://www.twitch.tv/hayabi_zr", "https://www.twitch.tv/gracya_leejia"}
+    closed = _patch_windows(monkeypatch, urls)
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+    clock = [1000.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+
+    App.refresh_points_priority_allocation(probe)
+    clock[0] += claim_registry.STALLED_SLOT_SECONDS
+    for _ in range(claim_registry.STALL_RESTART_LIMIT):
+        closed.clear()
+        App.refresh_points_priority_allocation(probe)
+        assert set(closed) == urls
+        assert probe._active_points_priority_channels == ("hayabi_zr", "gracya_leejia")
+        clock[0] += claim_registry.STALLED_SLOT_SECONDS
+
+    # Restarts spent: no more restarts, and the served holders keep their slots.
+    closed.clear()
+    App.refresh_points_priority_allocation(probe)
+    assert closed == []
+    assert probe._active_points_priority_channels == ("hayabi_zr", "gracya_leejia")
+
+
+def test_points_rise_restores_the_restart_allowance(monkeypatch) -> None:
+    _serve("kspksp")
+    step = claim_registry.STALLED_SLOT_SECONDS
+    clock = [0.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+    claim_registry.track_slot_holders(["kspksp"])
+    for _ in range(claim_registry.STALL_RESTART_LIMIT):
+        clock[0] += step
+        assert claim_registry.track_slot_holders(["kspksp"]) == {"kspksp"}
+    clock[0] += step
+    assert claim_registry.track_slot_holders(["kspksp"]) == set()
+
+    # A later rise proves playback recovered; the next stall restarts again.
+    claim_registry.record_points_increase("https://www.twitch.tv/kspksp")
+    clock[0] += step - 1
+    assert claim_registry.track_slot_holders(["kspksp"]) == set()
+    clock[0] += 1
+    assert claim_registry.track_slot_holders(["kspksp"]) == {"kspksp"}
+
+
 def test_given_up_turn_is_forgotten_when_broadcast_ends() -> None:
     step = claim_registry.STALLED_SLOT_SECONDS
     for tick in range(claim_registry.STALL_RESTART_LIMIT + 2):

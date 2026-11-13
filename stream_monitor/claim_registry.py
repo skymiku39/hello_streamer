@@ -15,6 +15,10 @@ Time alone never ends a turn. A holder whose balance has not moved for
 playback broken), so the allocator restarts the playback windows instead.
 Only after ``STALL_RESTART_LIMIT`` restarts changed nothing does the holder
 give up its turn, so one broken channel cannot starve the others all night.
+Holders that already had their turn are watched the same way (2026-11-13:
+kspksp went three hours without points after its turn); once their restarts
+are spent they simply keep the slot their rank gives them. Any rise or claim
+restores the restart allowance, since it proves the last restart worked.
 """
 
 from __future__ import annotations
@@ -49,6 +53,9 @@ def record_confirmed_claim(url: str) -> None:
     if name:
         with _LOCK:
             _SERVED.add(name)
+            _STALL_RESTARTS.pop(name, None)
+            if name in _SLOT_SINCE:
+                _SLOT_SINCE[name] = time.monotonic()
 
 
 def record_points_increase(url: str) -> None:
@@ -57,6 +64,7 @@ def record_points_increase(url: str) -> None:
     if name:
         with _LOCK:
             _POINTS_INCREASES[name] = _POINTS_INCREASES.get(name, 0) + 1
+            _STALL_RESTARTS.pop(name, None)
             if name in _SLOT_SINCE:
                 _SLOT_SINCE[name] = time.monotonic()
 
@@ -95,14 +103,11 @@ def track_slot_holders(
                 del _SLOT_SINCE[key]
         for key in keys:
             since = _SLOT_SINCE.setdefault(key, current)
-            if (
-                current - since < STALLED_SLOT_SECONDS
-                or key in _SERVED
-                or key in _TURN_USED
-                or _POINTS_INCREASES.get(key, 0) >= POINTS_INCREASES_FOR_TURN
-            ):
+            if current - since < STALLED_SLOT_SECONDS:
                 continue
             if _STALL_RESTARTS.get(key, 0) >= STALL_RESTART_LIMIT:
+                # Restarts changed nothing. An unserved holder gives up its
+                # turn; a served one already had it and keeps its rank.
                 _TURN_USED.add(key)
                 continue
             _STALL_RESTARTS[key] = _STALL_RESTARTS.get(key, 0) + 1
