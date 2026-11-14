@@ -272,8 +272,9 @@ def test_freed_slot_is_filled_in_main_list_order(monkeypatch) -> None:
 
 def test_live_priority_channel_still_takes_a_slot(monkeypatch) -> None:
     claim_registry.reset_for_tests()
-    claim_registry.record_confirmed_claim("https://www.twitch.tv/hayabi_zr")
-    claim_registry.record_confirmed_claim("https://www.twitch.tv/gracya_leejia")
+    for name in ("hayabi_zr", "gracya_leejia"):
+        claim_registry.record_confirmed_claim(f"https://www.twitch.tv/{name}")
+        claim_registry.credit_watch_seconds(name, claim_registry.MIN_TURN_WATCH_SECONDS)
     rows = [_live("hayabi_zr"), _live("gracya_leejia"), _live("kspksp")]
     closed = _patch_windows(
         monkeypatch,
@@ -304,6 +305,7 @@ def _serve(*names: str) -> None:
     claim_registry.reset_for_tests()
     for name in names:
         claim_registry.record_confirmed_claim(f"https://www.twitch.tv/{name}")
+        claim_registry.credit_watch_seconds(name, claim_registry.MIN_TURN_WATCH_SECONDS)
 
 
 def test_unclaimed_holders_keep_slots_against_priority_channel(monkeypatch) -> None:
@@ -537,6 +539,7 @@ def test_holder_yields_after_points_rose_a_few_times(monkeypatch) -> None:
         {"https://www.twitch.tv/hanasakich", "https://www.twitch.tv/jipandan"},
     )
     probe = _sticky_probe(rows, ("hanasakich", "jipandan"))
+    claim_registry.credit_watch_seconds("hanasakich", claim_registry.MIN_TURN_WATCH_SECONDS)
 
     claim_registry.record_points_increase("https://www.twitch.tv/hanasakich")
     App.refresh_points_priority_allocation(probe)
@@ -552,6 +555,7 @@ def test_holder_yields_after_points_rose_a_few_times(monkeypatch) -> None:
 def test_points_rises_are_forgotten_when_broadcast_ends() -> None:
     for _ in range(claim_registry.POINTS_INCREASES_FOR_TURN):
         claim_registry.record_points_increase("https://www.twitch.tv/hayabi_zr")
+    claim_registry.credit_watch_seconds("hayabi_zr", claim_registry.MIN_TURN_WATCH_SECONDS)
     assert claim_registry.had_turn("hayabi_zr")
 
     claim_registry.clear_served("hayabi_zr")
@@ -616,3 +620,48 @@ def test_unallocated_close_is_logged_once(monkeypatch, caplog) -> None:
 
     assert len(closed) == 3
     assert caplog.text.count("Closed unallocated Twitch playback: channel=jipandan") == 1
+
+
+def test_arrival_chest_does_not_end_the_turn(monkeypatch) -> None:
+    # 2026-11-14 20:53: jipandan went live, Twitch offered a chest on arrival,
+    # the claim landed 21 s after the window opened and the slot went straight
+    # back to gracya_leejia. jipandan was not watched again for 77 minutes.
+    _serve("gracya_leejia", "4lianyun")
+    clock = [1000.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+    rows = [_live("4lianyun"), _live("gracya_leejia"), _live("jipandan")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/4lianyun", "https://www.twitch.tv/jipandan"},
+    )
+    probe = _sticky_probe(rows, ("jipandan", "4lianyun"))
+    App.refresh_points_priority_allocation(probe)
+
+    clock[0] += 21
+    claim_registry.record_confirmed_claim("https://www.twitch.tv/jipandan")
+    claim_registry.record_points_increase("https://www.twitch.tv/jipandan")
+    App.refresh_points_priority_allocation(probe)
+
+    assert "jipandan" in probe._active_points_priority_channels
+    assert closed == []
+
+    clock[0] += claim_registry.MIN_TURN_WATCH_SECONDS
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("4lianyun", "gracya_leejia")
+    assert closed == ["https://www.twitch.tv/jipandan"]
+
+
+def test_watch_time_only_counts_while_holding_a_slot() -> None:
+    claim_registry.reset_for_tests()
+    half = claim_registry.MIN_TURN_WATCH_SECONDS / 2
+    claim_registry.record_confirmed_claim("https://www.twitch.tv/jipandan")
+    claim_registry.track_slot_holders(["jipandan"], now=0.0)
+    claim_registry.track_slot_holders(["jipandan"], now=half)
+    claim_registry.track_slot_holders([], now=half + 1)
+    claim_registry.track_slot_holders(["jipandan"], now=half + 5000)  # not held
+    assert not claim_registry.had_turn("jipandan")
+
+    claim_registry.track_slot_holders(["jipandan"], now=half + 5000 + half)
+
+    assert claim_registry.had_turn("jipandan")

@@ -10,6 +10,12 @@ holder whose balance rose ``POINTS_INCREASES_FOR_TURN`` times has had its turn
 too; that frees the slot after roughly ten minutes instead of waiting for a
 chest, which short broadcasts never reach.
 
+Neither proof ends the turn before the channel held a slot for
+``MIN_TURN_WATCH_SECONDS``. Twitch offers a chest to a viewer the moment they
+arrive, so a claim can land seconds after the window opens (2026-11-14:
+jipandan claimed 21 s after opening, lost its slot at once and was never
+watched again for the remaining 77 minutes of the broadcast).
+
 Time alone never ends a turn. A holder whose balance has not moved for
 ``STALLED_SLOT_SECONDS`` is not being credited at all (page assist detached,
 playback broken), so the allocator restarts the playback windows instead.
@@ -40,6 +46,11 @@ POINTS_INCREASES_FOR_TURN = 2
 _POINTS_INCREASES: dict[str, int] = {}
 _SLOT_SINCE: dict[str, float] = {}
 _TURN_USED: set[str] = set()
+# Two passive credits take about ten minutes; an arrival chest takes seconds.
+MIN_TURN_WATCH_SECONDS = 10 * 60.0
+_WATCHED_SECONDS: dict[str, float] = {}
+_LAST_TRACK: float | None = None
+_LAST_HOLDERS: set[str] = set()
 _CHANNEL_RE = re.compile(r"twitch\.tv/([^/?#\s]+)", re.IGNORECASE)
 
 
@@ -75,14 +86,28 @@ def is_served(name: str) -> bool:
 
 
 def had_turn(name: str) -> bool:
-    """True once the channel claimed, earned points a few times, or gave up."""
+    """True once the channel gave up, or was credited after a real watch.
+
+    Credited means a confirmed claim or a few points rises; a real watch means
+    ``MIN_TURN_WATCH_SECONDS`` in a slot during this broadcast.
+    """
     key = name.strip().lower()
     with _LOCK:
-        return (
+        if key in _TURN_USED:
+            return True
+        credited = (
             key in _SERVED
             or _POINTS_INCREASES.get(key, 0) >= POINTS_INCREASES_FOR_TURN
-            or key in _TURN_USED
         )
+        return credited and _WATCHED_SECONDS.get(key, 0.0) >= MIN_TURN_WATCH_SECONDS
+
+
+def credit_watch_seconds(name: str, seconds: float) -> None:
+    """Add slot time for a channel (tests, or callers that timed it themselves)."""
+    key = name.strip().lower()
+    if key and seconds > 0:
+        with _LOCK:
+            _WATCHED_SECONDS[key] = _WATCHED_SECONDS.get(key, 0.0) + seconds
 
 
 def track_slot_holders(
@@ -97,7 +122,16 @@ def track_slot_holders(
     current = time.monotonic() if now is None else now
     keys = {name.strip().lower() for name in holders}
     stalled: set[str] = set()
+    global _LAST_TRACK, _LAST_HOLDERS
     with _LOCK:
+        if _LAST_TRACK is not None and current > _LAST_TRACK:
+            # Only channels holding a slot at both ends of the interval watched it.
+            for key in keys & _LAST_HOLDERS:
+                _WATCHED_SECONDS[key] = (
+                    _WATCHED_SECONDS.get(key, 0.0) + current - _LAST_TRACK
+                )
+        _LAST_TRACK = current
+        _LAST_HOLDERS = set(keys)
         for key in list(_SLOT_SINCE):
             if key not in keys:
                 del _SLOT_SINCE[key]
@@ -128,10 +162,15 @@ def clear_served(name: str) -> None:
         _SLOT_SINCE.pop(key, None)
         _POINTS_INCREASES.pop(key, None)
         _STALL_RESTARTS.pop(key, None)
+        _WATCHED_SECONDS.pop(key, None)
 
 
 def reset_for_tests() -> None:
+    global _LAST_TRACK, _LAST_HOLDERS
     with _LOCK:
+        _WATCHED_SECONDS.clear()
+        _LAST_TRACK = None
+        _LAST_HOLDERS = set()
         _SERVED.clear()
         _TURN_USED.clear()
         _SLOT_SINCE.clear()
