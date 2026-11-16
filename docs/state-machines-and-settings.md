@@ -1,6 +1,6 @@
 # 狀態機、設定連動與各狀態 UI 呈現
 
-- 版本：stream-monitor 1.2.0
+- 版本：以 `stream_monitor/__init__.py` 的 `__version__` 為準
 - 範圍：主視窗（頻道清單／控制列）與瀏覽器設定對話框
 - 目的：說明專案有哪些狀態機、設定之間的連動（前置／互斥／解鎖）關係，以及「每一種狀態在 UI 上如何被呈現」，並標註對應的驗證測試。
 
@@ -66,7 +66,7 @@
 
 按下「開始」會依目前分段選擇啟動對應模式；監聽中變更分段會切換至新組合（等同舊版直接按另一顆啟動鈕）。觸發設定列改為「通知」與「開啟」兩組開關，語意與 `TriggerSettings` 相同。控制列以 `CompactFlowFrame` 在 `<Configure>` 與語系刷新時做 flex-wrap 重排（`layout_flow_rows`），確保最小視窗寬（920）與較長語系下含 info 鈕在內的控制項皆留在面板內，而不是被 pack 擠壓或裁切。主視窗 `minsize` 維持 920（標題列固定寬控制項所需）；驗收以 `winfo_width`／`winfo_height` 實測為準。
 
-一次性模式的消費點是「按下按鈕後的下一個 `cycle_id` 對應的 `PollStatusUpdate`」，不會把按鈕按下前已在佇列中的輪詢當成這一次；且在本輪 LIVE／離線事件都派送完成後才停止，避免漏掉本輪事件。若程式在本輪完成前關閉，設定會保留一次性模式，下一次以靜默啟動時會繼續執行一次；完成後則保存為對應的持續模式，避免每次啟動重複執行。
+一次性模式的消費點是「按下按鈕後的下一個 `cycle_id` 對應的 `PollStatusUpdate`」，不會把按鈕按下前已在佇列中的輪詢當成這一次；且在本輪 LIVE／離線事件都派送完成後才停止，避免漏掉本輪事件。若程式在本輪完成前關閉（例如異常結束），設定檔可能仍保存一次性模式；下一次以靜默啟動時，程式不會重放一次性模式，而是改回對應的持續模式（`trigger_once` → `trigger`、`watch_once` → `watch`，見 `mode_for_silent_start`）並寫回設定檔後啟動。正常完成一輪時同樣保存為對應的持續模式，避免每次啟動重複執行。
 
 > YouTube soft-unavailable（429／backoff／parse failure 等）在仍為 LIVE 時不累積 offline strikes；詳見 `tests/test_rate_limit_resilience.py`。
 
