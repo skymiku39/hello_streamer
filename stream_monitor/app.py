@@ -2432,8 +2432,9 @@ class App(ctk.CTk):
             self.config = config_manager.save(self.config)
         except OSError:
             # A transient Windows file lock must not terminate a Tk callback
-            # or leave the application half-closed. The atomic temp file is
-            # retained for recovery on the next launch.
+            # or leave the application half-closed. On failure the original
+            # config file is unchanged, the temp file has already been
+            # removed, and this change was not written to disk.
             logger.exception("Config save failed; keeping application alive")
 
     def _on_close(self) -> None:
