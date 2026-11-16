@@ -33,7 +33,7 @@ jobs:
         run: uv python install 3.11
 
       - name: Install Dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
 
       - name: Ruff
         run: uv run ruff check .
