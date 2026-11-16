@@ -101,6 +101,14 @@ class YouTubePlatformProbe:
         with session.lock:
             is_baselined = entry.key in session.youtube_baselined
             fallback_title = session.fallback_triggered_live.get(entry.key)
+            # Snapshot before the loop below rewrites live_payload: these are
+            # the streams the pre-sleep cache already knew to be live.
+            cached_live_ids = {
+                key.rsplit("|", 1)[-1]
+                for key in session.live_payload
+                if _entry_key_from_live_cache_key(key) == entry.key
+                and key != _live_cache_key(entry.key)
+            }
 
         unseen_live_items: list[VideoItem] = []
         pending_seen: list[tuple[str, str, str, str, str]] = []
@@ -182,12 +190,35 @@ class YouTubePlatformProbe:
             info = _video_item_to_stream_info(item, entry.name)
             new_events.append((entry, info))
 
+        with session.lock:
+            prev = session.last_status.get(entry.key)
+            prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
+        suppress_for_wake = facade.wake_verify_mode and prev_status is True
+        if suppress_for_wake and cached_live_ids:
+            # Wake drops these events; only the cached stream may be marked
+            # seen.  A different LIVE video started during sleep must stay
+            # unseen so the next normal round emits its went_live (#53).
+            deferred_ids = {
+                item.video_id
+                for item in unseen_live_items
+                if item.video_id not in cached_live_ids
+            }
+            if deferred_ids:
+                logger.info(
+                    "YouTube %s: wake_verify deferring new live video(s) %s",
+                    entry.key,
+                    sorted(deferred_ids),
+                )
+                pending_seen = [
+                    args
+                    for args in pending_seen
+                    if not (args[3] == "LIVE" and args[0] in deferred_ids)
+                ]
+
         snap.youtube_pending_seen = pending_seen
         with session.lock:
             session.probe_snapshots[entry.key] = snap
-            prev = session.last_status.get(entry.key)
-            prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
-        if facade.wake_verify_mode and prev_status is True:
+        if suppress_for_wake:
             return []
         return new_events
 
