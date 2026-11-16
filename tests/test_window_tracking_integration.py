@@ -15,6 +15,7 @@ from stream_monitor.cdp_client import CdpClient, read_devtools_active_port
 from stream_monitor.notifier import _resolve_browser_executable
 
 
+@pytest.mark.native_desktop
 @pytest.mark.skipif(os.name != "nt", reason="Native HWND layout requires Windows")
 def test_separate_topmost_windows_have_distinct_native_bounds(tmp_path, monkeypatch):
     import ctypes

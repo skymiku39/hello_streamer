@@ -40,3 +40,10 @@ select = ["E4", "E7", "E9", "F", "I"]
 # Release extractions and local acceptance artifacts can contain old copies of
 # this package. Only the maintained suite should participate in discovery.
 testpaths = ["tests"]
+# Tests that drive real native windows are flaky on a busy desktop (#22):
+# excluded by default, run them alone on a clean desktop with
+# `uv run pytest -m native_desktop`.
+addopts = ["-m", "not native_desktop"]
+markers = [
+    "native_desktop: needs a clean Windows desktop; excluded from the default run",
+]
