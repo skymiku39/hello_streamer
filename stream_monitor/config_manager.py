@@ -108,6 +108,7 @@ DEFAULT_VIEWER_ENGAGEMENT: dict[str, Any] = {
     "theater_delay_seconds": 8,
     "points_stall_refresh_enabled": False,
     "points_priority_channels": [],
+    "points_slot_count": 2,
     "auto_refresh": False,
     "refresh_minutes_min": 45,
     "refresh_minutes_max": 75,
@@ -384,12 +385,14 @@ _VIEWER_ENGAGEMENT_INT_KEYS = frozenset(
         "claim_poll_seconds_min",
         "claim_poll_seconds_max",
         "theater_delay_seconds",
+        "points_slot_count",
         "refresh_minutes_min",
         "refresh_minutes_max",
     }
 )
 
 _VIEWER_ENGAGEMENT_MIN_BOUNDS: dict[str, int] = {
+    "points_slot_count": 1,
     "foreground_hold_seconds": 0,
     "claim_delay_seconds_min": 0,
     "claim_delay_seconds_max": 1,
@@ -424,6 +427,7 @@ def _normalize_viewer_engagement(value: Any) -> dict[str, Any]:
                 )
             else:
                 normalized[key] = _coerce_bool(value[key], normalized[key])
+    normalized["points_slot_count"] = min(4, normalized["points_slot_count"])
     # Keep fuzzy ranges ordered so callers can sample without clamping again.
     if normalized["claim_delay_seconds_max"] < normalized["claim_delay_seconds_min"]:
         normalized["claim_delay_seconds_max"] = normalized["claim_delay_seconds_min"]

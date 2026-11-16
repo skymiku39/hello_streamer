@@ -12,7 +12,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from stream_monitor import app as app_module
+from stream_monitor import claim_registry
 from stream_monitor.app import App
 from stream_monitor.domain import ChannelStatus
 from stream_monitor.event_bridge import MonitorEventBridge
@@ -23,6 +26,13 @@ from stream_monitor.events import (
 )
 from stream_monitor.monitor import ChannelEntry
 from tests.test_event_bridge import _FakeRow, _RecordingSink
+
+
+@pytest.fixture(autouse=True)
+def _fresh_claim_registry():
+    claim_registry.reset_for_tests()
+    yield
+    claim_registry.reset_for_tests()
 
 
 class _StatefulRow(_FakeRow):
@@ -130,7 +140,7 @@ def test_offline_edge_waits_for_repaints_then_applies_first() -> None:
 
 
 def _allocation_probe(rows: list[Any], *, close_on_offline: bool) -> Any:
-    return SimpleNamespace(
+    probe = SimpleNamespace(
         config={
             "viewer_engagement": {
                 "enabled": True,
@@ -149,7 +159,14 @@ def _allocation_probe(rows: list[Any], *, close_on_offline: bool) -> Any:
             close_on_offline=close_on_offline
         ),
         _controller=SimpleNamespace(mode="idle"),
+        _offline_closed_at={},
+        _unallocated_closed_logged=set(),
+        _OFFLINE_REOPEN_GUARD_SECONDS=App._OFFLINE_REOPEN_GUARD_SECONDS,
     )
+    probe._recently_closed_for_offline = (
+        lambda name, events: App._recently_closed_for_offline(probe, name, events)
+    )
+    return probe
 
 
 def _row(name: str, status: ChannelStatus) -> Any:
@@ -254,6 +271,10 @@ def test_freed_slot_is_filled_in_main_list_order(monkeypatch) -> None:
 
 
 def test_live_priority_channel_still_takes_a_slot(monkeypatch) -> None:
+    claim_registry.reset_for_tests()
+    for name in ("hayabi_zr", "gracya_leejia"):
+        claim_registry.record_confirmed_claim(f"https://www.twitch.tv/{name}")
+        claim_registry.credit_watch_seconds(name, claim_registry.MIN_TURN_WATCH_SECONDS)
     rows = [_live("hayabi_zr"), _live("gracya_leejia"), _live("kspksp")]
     closed = _patch_windows(
         monkeypatch,
@@ -278,3 +299,369 @@ def test_cold_start_fills_slots_in_main_list_order(monkeypatch) -> None:
     App.refresh_points_priority_allocation(probe)
 
     assert probe._active_points_priority_channels == ("daemoncasoul", "hayabi_zr")
+
+
+def _serve(*names: str) -> None:
+    claim_registry.reset_for_tests()
+    for name in names:
+        claim_registry.record_confirmed_claim(f"https://www.twitch.tv/{name}")
+        claim_registry.credit_watch_seconds(name, claim_registry.MIN_TURN_WATCH_SECONDS)
+
+
+def test_unclaimed_holders_keep_slots_against_priority_channel(monkeypatch) -> None:
+    _serve()
+    rows = [_live("hayabi_zr"), _live("gracya_leejia"), _live("kspksp")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/hayabi_zr", "https://www.twitch.tv/gracya_leejia"},
+    )
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert "hayabi_zr" in probe._active_points_priority_channels
+    assert closed == []
+
+
+def test_claimed_holder_yields_slot_to_unclaimed_live_channel(monkeypatch) -> None:
+    # 2026-11-10: three live channels (daemoncasoul, oldpot_o_0, ramengyozaset)
+    # got no claim all night while other channels held both slots.
+    _serve("gracya_leejia")
+    rows = [
+        _live("daemoncasoul"),
+        _live("gracya_leejia"),
+        _live("hanasakich"),
+        _live("ramengyozaset"),
+    ]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/gracya_leejia", "https://www.twitch.tv/hanasakich"},
+    )
+    probe = _sticky_probe(rows, ("gracya_leejia", "hanasakich"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("hanasakich", "daemoncasoul")
+    assert closed == ["https://www.twitch.tv/gracya_leejia"]
+
+
+def test_unclaimed_channels_are_filled_in_list_order(monkeypatch) -> None:
+    _serve("hayabi_zr", "gracya_leejia")
+    rows = [
+        _live("hayabi_zr"),
+        _live("gracya_leejia"),
+        _live("oldpot_o_0"),
+        _live("daemoncasoul"),
+    ]
+    _patch_windows(monkeypatch, set())
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    # Both unclaimed channels outrank the claimed holders; list order decides.
+    assert set(probe._active_points_priority_channels) == {"oldpot_o_0", "daemoncasoul"}
+
+
+def test_claimed_holders_stay_when_nobody_waits(monkeypatch) -> None:
+    _serve("hayabi_zr", "gracya_leejia")
+    rows = [_live("hayabi_zr"), _live("gracya_leejia")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/hayabi_zr", "https://www.twitch.tv/gracya_leejia"},
+    )
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert "hayabi_zr" in probe._active_points_priority_channels
+    assert closed == []
+
+
+def test_lowest_ranked_claimed_holder_is_the_one_that_yields(monkeypatch) -> None:
+    # 2026-11-12 17:37: 4lianyun went live and daemoncasoul (first in the
+    # main list) lost its slot instead of hayabi_zr (sixth), because the
+    # holder tuple happened to list hayabi_zr first.
+    _serve("daemoncasoul", "hayabi_zr")
+    rows = [_live("daemoncasoul"), _live("4lianyun"), _live("hayabi_zr")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/daemoncasoul", "https://www.twitch.tv/hayabi_zr"},
+    )
+    probe = _sticky_probe(rows, ("hayabi_zr", "daemoncasoul"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("4lianyun", "daemoncasoul")
+    assert closed == ["https://www.twitch.tv/hayabi_zr"]
+
+
+def test_higher_ranked_channel_returns_once_everyone_claimed(monkeypatch) -> None:
+    # 2026-11-12 17:45: after 4lianyun claimed, daemoncasoul stayed closed
+    # while the two lower-ranked channels kept both slots.
+    _serve("daemoncasoul", "4lianyun", "hayabi_zr")
+    rows = [_live("daemoncasoul"), _live("4lianyun"), _live("hayabi_zr")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/4lianyun", "https://www.twitch.tv/hayabi_zr"},
+    )
+    probe = _sticky_probe(rows, ("4lianyun", "hayabi_zr"))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("daemoncasoul", "4lianyun")
+    assert closed == ["https://www.twitch.tv/hayabi_zr"]
+
+
+def test_offline_channel_forgets_its_claim(monkeypatch) -> None:
+    _serve("hayabi_zr")
+    rows = [_row("hayabi_zr", ChannelStatus(status=False, ended_at_source="vod"))]
+    _patch_windows(monkeypatch, set())
+    probe = _sticky_probe(rows, ("hayabi_zr",))
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert not claim_registry.is_served("hayabi_zr")
+
+
+def test_stalled_holders_get_windows_restarted_before_giving_up(monkeypatch) -> None:
+    # 2026-11-11: page assist lost CDP at 16:31, so no points were visible.
+    # hanasakich and jipandan held both slots all night and daemoncasoul
+    # (live 21:30-02:12) was never watched. Time alone must not end a turn:
+    # 20 minutes without points means something is broken, so restart first.
+    _serve()
+    rows = [_live("daemoncasoul"), _live("hanasakich"), _live("jipandan")]
+    urls = {"https://www.twitch.tv/hanasakich", "https://www.twitch.tv/jipandan"}
+    closed = _patch_windows(monkeypatch, urls)
+    probe = _sticky_probe(rows, ("hanasakich", "jipandan"))
+    clock = [1000.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+
+    App.refresh_points_priority_allocation(probe)
+    clock[0] += claim_registry.STALLED_SLOT_SECONDS - 1
+    App.refresh_points_priority_allocation(probe)
+    assert closed == []
+
+    clock[0] += 1
+    for _ in range(claim_registry.STALL_RESTART_LIMIT):
+        closed.clear()
+        App.refresh_points_priority_allocation(probe)
+        # Both windows restart; nobody loses the slot.
+        assert set(closed) == urls
+        assert probe._active_points_priority_channels == ("hanasakich", "jipandan")
+        clock[0] += claim_registry.STALLED_SLOT_SECONDS
+
+    # Restarts changed nothing: only now do the holders give up their turn.
+    closed.clear()
+    App.refresh_points_priority_allocation(probe)
+    assert probe._active_points_priority_channels == ("daemoncasoul", "hanasakich")
+    assert closed == ["https://www.twitch.tv/jipandan"]
+
+
+def test_points_rise_restarts_the_stall_wait(monkeypatch) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+    claim_registry.track_slot_holders(["hayabi_zr"])
+    clock[0] = claim_registry.STALLED_SLOT_SECONDS - 60
+    claim_registry.record_points_increase("https://www.twitch.tv/hayabi_zr")
+
+    clock[0] = claim_registry.STALLED_SLOT_SECONDS + 60
+    assert claim_registry.track_slot_holders(["hayabi_zr"]) == set()
+
+
+def test_served_holders_also_get_windows_restarted_when_points_stall(
+    monkeypatch,
+) -> None:
+    # 2026-11-13: kspksp had its turn by 20:49, then earned nothing for
+    # about three hours (20:49-22:04, 22:05-01:15) while the player said
+    # "playing"; the stall restart only watched unserved holders.
+    _serve("hayabi_zr", "gracya_leejia")
+    rows = [_live("hayabi_zr"), _live("gracya_leejia")]
+    urls = {"https://www.twitch.tv/hayabi_zr", "https://www.twitch.tv/gracya_leejia"}
+    closed = _patch_windows(monkeypatch, urls)
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+    clock = [1000.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+
+    App.refresh_points_priority_allocation(probe)
+    clock[0] += claim_registry.STALLED_SLOT_SECONDS
+    for _ in range(claim_registry.STALL_RESTART_LIMIT):
+        closed.clear()
+        App.refresh_points_priority_allocation(probe)
+        assert set(closed) == urls
+        assert "hayabi_zr" in probe._active_points_priority_channels
+        clock[0] += claim_registry.STALLED_SLOT_SECONDS
+
+    # Restarts spent: no more restarts, and the served holders keep their slots.
+    closed.clear()
+    App.refresh_points_priority_allocation(probe)
+    assert closed == []
+    assert "hayabi_zr" in probe._active_points_priority_channels
+
+
+def test_points_rise_restores_the_restart_allowance(monkeypatch) -> None:
+    _serve("kspksp")
+    step = claim_registry.STALLED_SLOT_SECONDS
+    clock = [0.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+    claim_registry.track_slot_holders(["kspksp"])
+    for _ in range(claim_registry.STALL_RESTART_LIMIT):
+        clock[0] += step
+        assert claim_registry.track_slot_holders(["kspksp"]) == {"kspksp"}
+    clock[0] += step
+    assert claim_registry.track_slot_holders(["kspksp"]) == set()
+
+    # A later rise proves playback recovered; the next stall restarts again.
+    claim_registry.record_points_increase("https://www.twitch.tv/kspksp")
+    clock[0] += step - 1
+    assert claim_registry.track_slot_holders(["kspksp"]) == set()
+    clock[0] += 1
+    assert claim_registry.track_slot_holders(["kspksp"]) == {"kspksp"}
+
+
+def test_given_up_turn_is_forgotten_when_broadcast_ends() -> None:
+    step = claim_registry.STALLED_SLOT_SECONDS
+    for tick in range(claim_registry.STALL_RESTART_LIMIT + 2):
+        claim_registry.track_slot_holders(["hayabi_zr"], now=tick * step)
+    assert claim_registry.had_turn("hayabi_zr")
+
+    claim_registry.clear_served("hayabi_zr")
+
+    assert not claim_registry.had_turn("hayabi_zr")
+
+
+def test_holder_yields_after_points_rose_a_few_times(monkeypatch) -> None:
+    # 2026-11-11: 4lianyun streamed for ten minutes (21:54-22:04); waiting
+    # for a chest (~15 min) or the 20-minute turn would always miss it.
+    _serve()
+    rows = [_live("hanasakich"), _live("jipandan"), _live("4lianyun")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/hanasakich", "https://www.twitch.tv/jipandan"},
+    )
+    probe = _sticky_probe(rows, ("hanasakich", "jipandan"))
+    claim_registry.credit_watch_seconds("hanasakich", claim_registry.MIN_TURN_WATCH_SECONDS)
+
+    claim_registry.record_points_increase("https://www.twitch.tv/hanasakich")
+    App.refresh_points_priority_allocation(probe)
+    assert closed == []  # one rise is not enough
+
+    claim_registry.record_points_increase("https://www.twitch.tv/hanasakich")
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("jipandan", "4lianyun")
+    assert closed == ["https://www.twitch.tv/hanasakich"]
+
+
+def test_points_rises_are_forgotten_when_broadcast_ends() -> None:
+    for _ in range(claim_registry.POINTS_INCREASES_FOR_TURN):
+        claim_registry.record_points_increase("https://www.twitch.tv/hayabi_zr")
+    claim_registry.credit_watch_seconds("hayabi_zr", claim_registry.MIN_TURN_WATCH_SECONDS)
+    assert claim_registry.had_turn("hayabi_zr")
+
+    claim_registry.clear_served("hayabi_zr")
+
+    assert not claim_registry.had_turn("hayabi_zr")
+
+
+@pytest.mark.parametrize("slots", [3, 4])
+def test_slot_count_setting_fills_more_signed_in_slots(monkeypatch, slots) -> None:
+    # 2026-11-14 experiment: does Twitch credit more than two streams at once?
+    names = ["kspksp", "hayabi_zr", "gracya_leejia", "hanasakich", "oldpot_o_0"]
+    rows = [_live(name) for name in names]
+    _patch_windows(monkeypatch, set())
+    probe = _sticky_probe(rows, ())
+    probe.config["viewer_engagement"]["points_slot_count"] = slots
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == tuple(names[:slots])
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(None, 2), ("x", 2), (0, 1), (3, 3), (9, 4)])
+def test_slot_count_is_clamped(raw, expected) -> None:
+    from stream_monitor.config_manager import _normalize_viewer_engagement
+    from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
+
+    raw_dict = {} if raw is None else {"points_slot_count": raw}
+    assert ViewerEngagementSettings.from_dict(raw_dict or {"enabled": True}).points_slot_count == expected
+    if isinstance(raw, int):
+        assert _normalize_viewer_engagement(raw_dict)["points_slot_count"] == expected
+
+
+def test_channel_closed_for_offline_is_not_reopened_while_row_lags(monkeypatch) -> None:
+    # 2026-11-13 19:41: close_on_offline closed hayabi_zr, its row still read
+    # live for a moment, and the allocator reopened the window 1 s later.
+    rows = [_live("hayabi_zr"), _live("jipandan"), _live("gracya_leejia")]
+    _serve("hayabi_zr", "jipandan", "gracya_leejia")
+    _patch_windows(monkeypatch, {"https://www.twitch.tv/gracya_leejia"})
+    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+    clock = [500.0]
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: clock[0])
+    probe._offline_closed_at["hayabi_zr"] = clock[0]
+
+    App.refresh_points_priority_allocation(probe)
+    assert set(probe._active_points_priority_channels) == {"gracya_leejia", "jipandan"}
+
+    # A new went_live (or the guard expiring) lets it compete again.
+    App.refresh_points_priority_allocation(probe, event_channels={"hayabi_zr"})
+    assert "hayabi_zr" in probe._active_points_priority_channels
+    assert "hayabi_zr" not in probe._offline_closed_at
+
+
+def test_unallocated_close_is_logged_once(monkeypatch, caplog) -> None:
+    rows = [_live("kspksp"), _live("hayabi_zr"), _live("jipandan")]
+    _serve("kspksp", "hayabi_zr", "jipandan")
+    closed = _patch_windows(monkeypatch, {"https://www.twitch.tv/jipandan"})
+    probe = _sticky_probe(rows, ("kspksp", "hayabi_zr"))
+
+    with caplog.at_level("INFO"):
+        for _ in range(3):
+            App.refresh_points_priority_allocation(probe)
+
+    assert len(closed) == 3
+    assert caplog.text.count("Closed unallocated Twitch playback: channel=jipandan") == 1
+
+
+def test_arrival_chest_does_not_end_the_turn(monkeypatch) -> None:
+    # 2026-11-14 20:53: jipandan went live, Twitch offered a chest on arrival,
+    # the claim landed 21 s after the window opened and the slot went straight
+    # back to gracya_leejia. jipandan was not watched again for 77 minutes.
+    _serve("gracya_leejia", "4lianyun")
+    clock = [1000.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+    rows = [_live("4lianyun"), _live("gracya_leejia"), _live("jipandan")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/4lianyun", "https://www.twitch.tv/jipandan"},
+    )
+    probe = _sticky_probe(rows, ("jipandan", "4lianyun"))
+    App.refresh_points_priority_allocation(probe)
+
+    clock[0] += 21
+    claim_registry.record_confirmed_claim("https://www.twitch.tv/jipandan")
+    claim_registry.record_points_increase("https://www.twitch.tv/jipandan")
+    App.refresh_points_priority_allocation(probe)
+
+    assert "jipandan" in probe._active_points_priority_channels
+    assert closed == []
+
+    clock[0] += claim_registry.MIN_TURN_WATCH_SECONDS
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("4lianyun", "gracya_leejia")
+    assert closed == ["https://www.twitch.tv/jipandan"]
+
+
+def test_watch_time_only_counts_while_holding_a_slot() -> None:
+    claim_registry.reset_for_tests()
+    half = claim_registry.MIN_TURN_WATCH_SECONDS / 2
+    claim_registry.record_confirmed_claim("https://www.twitch.tv/jipandan")
+    claim_registry.track_slot_holders(["jipandan"], now=0.0)
+    claim_registry.track_slot_holders(["jipandan"], now=half)
+    claim_registry.track_slot_holders([], now=half + 1)
+    claim_registry.track_slot_holders(["jipandan"], now=half + 5000)  # not held
+    assert not claim_registry.had_turn("jipandan")
+
+    claim_registry.track_slot_holders(["jipandan"], now=half + 5000 + half)
+
+    assert claim_registry.had_turn("jipandan")

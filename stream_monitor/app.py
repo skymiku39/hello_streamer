@@ -96,6 +96,11 @@ from stream_monitor.channel_policy import (
 from stream_monitor.channel_reorder import apply_list_move
 from stream_monitor.channel_reorder_ui import ChannelReorderMode
 from stream_monitor.channel_row import ChannelRow
+from stream_monitor.claim_registry import (
+    clear_served,
+    had_turn,
+    track_slot_holders,
+)
 from stream_monitor.db import SeenVideoDB
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.i18n import tr
@@ -193,6 +198,10 @@ class App(ctk.CTk):
         self._channel_rows: list[CanvasChannelRowAdapter] = []
         self._active_points_priority_channels: tuple[str, ...] | None = None
         self._points_main_profile_channels: set[str] = set()
+        # Channels whose window close_on_offline just closed -> monotonic time.
+        self._offline_closed_at: dict[str, float] = {}
+        # Unallocated channels already logged as closed (dedupes log spam).
+        self._unallocated_closed_logged: set[str] = set()
         self._silent = silent
         self._truly_quitting = False
         # The persisted snapshot's saved_at is only meaningful for the very
@@ -1727,6 +1736,21 @@ class App(ctk.CTk):
                 if key in retained_live_keys & eligible_keys and status.is_live
             ], self.current_browser_settings())
 
+    _OFFLINE_REOPEN_GUARD_SECONDS = 120.0
+
+    def _recently_closed_for_offline(
+        self, name: str, event_channels: set[str] | None
+    ) -> bool:
+        closed_at = self._offline_closed_at.get(name)
+        if closed_at is None:
+            return False
+        if (event_channels is not None and name in event_channels) or (
+            time.monotonic() - closed_at >= self._OFFLINE_REOPEN_GUARD_SECONDS
+        ):
+            del self._offline_closed_at[name]
+            return False
+        return True
+
     def refresh_points_priority_allocation(
         self,
         *,
@@ -1735,11 +1759,17 @@ class App(ctk.CTk):
     ) -> None:
         """Keep managed Twitch playback within the signed-in priority slots.
 
-        Live channels in the configured priority list win. Any free slot is
-        filled from the main list in order, up to two signed-in streams total.
-        An assigned page stays open through its live broadcast (only a live
-        priority channel can take its slot); unassigned
-        managed pages are closed instead of being opened in Guest mode.
+        Every live channel should earn one confirmed claim per broadcast.
+        Unclaimed channels come first (priority list, then main list order);
+        an unclaimed slot holder keeps its slot until it claims or its points
+        balance rises a few times (a holder earning nothing for 20 minutes
+        gets its playback windows restarted instead), after which it yields
+        to any waiting channel that had no turn yet. Slots nobody unserved
+        needs go to channels that had their turn, by rank (not to whoever
+        held the slot before). Up to ``points_slot_count`` signed-in
+        streams (default two);
+        unassigned managed pages are closed instead of being opened in Guest
+        mode.
         """
         settings = ViewerEngagementSettings.from_dict(
             self.config.get("viewer_engagement")
@@ -1789,6 +1819,10 @@ class App(ctk.CTk):
             if status.unavailable:
                 incomplete_status = True
                 continue
+            if not status.is_live:
+                # A finished broadcast starts over: its next stream must earn
+                # a new confirmed claim.
+                clear_served(name)
             if status.url:
                 channel_statuses[name] = status
             elif status.is_offline and close_offline_windows:
@@ -1798,6 +1832,16 @@ class App(ctk.CTk):
                 channel_statuses[name] = replace(
                     status, url=f"https://www.twitch.tv/{name}"
                 )
+            if (
+                status.is_live
+                and status.url
+                and self._recently_closed_for_offline(name, event_channels)
+            ):
+                # 2026-11-13 19:41: hayabi_zr's window was closed for offline,
+                # the row still read live for a moment and the allocator
+                # reopened it 1 s later. Trust the offline edge until the row
+                # catches up or a new went_live arrives.
+                continue
             if status.is_live and status.url:
                 ordered_live.append(name)
                 live_statuses[name] = status
@@ -1815,23 +1859,34 @@ class App(ctk.CTk):
             return
 
         previous = self._active_points_priority_channels
-        live_priorities = [name for name in priorities if name in live_statuses]
-        selected_order = live_priorities[:2]
-        # A channel already holding a slot keeps it until its broadcast ends;
-        # a higher-ranked main-list channel going live later must not cut it
-        # off mid-stream (that loses the watch streak). Priority channels
-        # still take precedence.
+        stalled = track_slot_holders(
+            name for name in (previous or ()) if name in live_statuses
+        )
+        # Rank: priority channels first, then the main list in order.
+        rank = [name for name in priorities if name in live_statuses]
+        rank.extend(name for name in ordered_live if name not in rank)
+        unserved = [name for name in rank if not had_turn(name)]
+        selected_order: list[str] = []
+        # Every live channel should earn at least one confirmed claim. A
+        # holder that has not claimed yet keeps its slot (evicting it
+        # mid-wait would waste the minutes already watched).
         selected_order.extend(
             name for name in (previous or ())
-            if name in live_statuses
-            and name not in selected_order
-            and len(selected_order) < 2
+            if name in live_statuses and name in unserved
         )
+        # Free slots go to waiting unserved channels, highest rank first.
+        selected_order.extend(name for name in unserved if name not in selected_order)
+        slots = settings.points_slot_count
+        selected_order = selected_order[:slots]
+        # Slots no unserved channel needs go to served channels strictly by
+        # rank: the lowest-ranked served holder is the one that yields, and
+        # a higher-ranked channel gets its slot back once the others had
+        # their turn.
         selected_order.extend(
-            name for name in ordered_live
-            if name not in selected_order and len(selected_order) < 2
+            name for name in rank
+            if name not in selected_order and len(selected_order) < slots
         )
-        selected = tuple(selected_order[:2])
+        selected = tuple(selected_order[:slots])
         if previous is None:
             # Older versions always opened explicitly selected channels in the
             # signed-in profile; unlisted channels may still have Guest windows.
@@ -1842,6 +1897,7 @@ class App(ctk.CTk):
 
         set_active_points_channels(selected)
         self._active_points_priority_channels = selected
+        self._unallocated_closed_logged.difference_update(selected)
         newly_selected = set(selected) - prior_selected
         urls_to_reopen: set[str] = set()
 
@@ -1853,9 +1909,12 @@ class App(ctk.CTk):
                     status.url
                 ):
                     close_browser_window_for_url(status.url)
-                    logger.info(
-                        "Closed unallocated Twitch playback: channel=%s", name
-                    )
+                    logged = self._unallocated_closed_logged
+                    if name not in logged:
+                        logged.add(name)
+                        logger.info(
+                            "Closed unallocated Twitch playback: channel=%s", name
+                        )
                 self._points_main_profile_channels.discard(name)
             elif (
                 status.is_live
@@ -1868,6 +1927,23 @@ class App(ctk.CTk):
                     close_browser_window_for_url(status.url)
                     urls_to_reopen.add(name)
                 self._points_main_profile_channels.add(name)
+
+        if stalled & set(selected):
+            # No points for 20 minutes means the watch is not being credited
+            # (2026-11-11: the browser had lost its debugging endpoint). Close
+            # every slot window so the browser itself restarts; reopening one
+            # window would land in the same broken browser.
+            logger.warning(
+                "Twitch points stalled for %s; restarting playback windows",
+                ", ".join(sorted(stalled & set(selected))),
+            )
+            for name in selected:
+                status = live_statuses[name]
+                if managed_window_is_open(status.url) or managed_window_launch_pending(
+                    status.url
+                ):
+                    close_browser_window_for_url(status.url)
+                    urls_to_reopen.add(name)
 
         if not allow_open or self._controller.mode not in (
             TRIGGER_MODE, TRIGGER_ONCE_MODE
@@ -2231,6 +2307,8 @@ class App(ctk.CTk):
     ) -> None:
         """Close any browser window we opened for this channel."""
         url = getattr(offline_info, "url", "") or ""
+        if entry.platform.strip().lower() == "twitch" and entry.name:
+            self._offline_closed_at[entry.name.strip().lower()] = time.monotonic()
         if not url:
             logger.warning(
                 "close_on_offline skipped for %s: offline payload has empty url",

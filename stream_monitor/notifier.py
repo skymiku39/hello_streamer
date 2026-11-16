@@ -634,6 +634,25 @@ def _wants_geometry_flags(
     return False
 
 
+def _launch_debugging_port(attach: Any) -> int | None:
+    """Port to put on the launch command line, or None to omit the flag.
+
+    A running browser proven through its fixed-port process may be shutting
+    down (all its windows just closed). The new launch then becomes the
+    profile's browser, and without the flag it would run with no debugging
+    endpoint until every window is closed again. Repeating the same port is
+    ignored by a live browser and keeps the endpoint if it is replaced.
+    """
+    port = getattr(attach, "port", None)
+    if not isinstance(port, int) or port < 0:
+        return None
+    if getattr(attach, "pass_debugging_flag", False):
+        return port
+    if getattr(attach, "reason", "") == "process" and port > 0:
+        return port
+    return None
+
+
 def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
     """Compose browser CLI arguments from a normalized browser_settings dict.
 
@@ -934,8 +953,9 @@ def _open_with_browser_settings(
         if attach.ok and isinstance(attach.port, int) and attach.port >= 0:
             cdp_needs_discovery = attach.port == 0 or attach.reason == "allocated"
             cdp_port = None if cdp_needs_discovery else attach.port
-            if attach.pass_debugging_flag:
-                effective_settings["_cdp_debugging_port"] = attach.port
+            launch_port = _launch_debugging_port(attach)
+            if launch_port is not None:
+                effective_settings["_cdp_debugging_port"] = launch_port
             logger.info(
                 "Twitch page assist CDP port %s for %s (reason=%s)",
                 cdp_port,
