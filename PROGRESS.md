@@ -1,6 +1,6 @@
 # PROGRESS
 
-最後更新：2026-11-15
+最後更新：2026-11-16
 
 ## 專案目標
 Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（CustomTkinter），追蹤 Twitch / YouTube 開播，通知、開直播頁，並以 CDP 頁面輔助處理 Twitch 播放恢復、Channel Points 寶箱領取與劇院模式。僅提供可攜版（資料都在執行檔同層）。
@@ -49,12 +49,13 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
     - 修正「下播關窗後 1 秒被重開」（commit `b1fee77`）：11/13 19:41 hayabi_zr 下播關窗後，列狀態仍短暫顯示開播，分配就重開視窗，之後連續記 40 多行 `Closed unallocated`。根因是下播關窗和列狀態更新之間的時間差，沒有完全查清；改法是下播關窗後 120 秒內不把該頻道當成開播（收到新的 went_live 就解除），並且 `Closed unallocated` 每個頻道只記一次（被分配到位置後重置）。部署後 02:40 hanasakich 被關閉只記 1 行。
     - YouTube `ytInitialData` 解析失敗：4 台每次都同時失敗（約每 12 分鐘一次），是 YouTube 回了不同的頁面，處理方式本來就安全（當作狀態不明）。只在警告裡多記頁面大小與標題（commit `dadc261`），下次可以看出是同意頁、驗證頁還是錯誤頁。
     - 完整測試 1492 通過。舊版備份 `D:\Tools\HelloStreamer_backup_20261114_pre-slot-count`（含 config.json）。目前運行：2 個位置，kspksp、taiga_hikari。
-17. [已完成，待部署] 2026-11-15 輪過條件加上「在位置上看滿 10 分鐘」（使用者回報 https://www.twitch.tv/videos/2928542265 沒連觀）。
+17. [已完成，2026-11-16 09:48 部署] 2026-11-15 輪過條件加上「在位置上看滿 10 分鐘」（使用者回報 https://www.twitch.tv/videos/2928542265 沒連觀）。
     - 經過（台灣時間，查 `D:\Tools\HelloStreamer\logs`）：該影片是 jipandan（阿吉嘓）11/14 20:53–22:10 的場次。20:53:02 開窗（gracya_leejia 讓位），20:53:15 一進場就偵測到寶箱，20:53:23 伺服器確認領取，同一秒視窗被關、位置還給 gracya_leejia；之後 77 分鐘位置都在 4lianyun、gracya_leejia（兩台都已輪過、排序較高）手上，jipandan 整場只看了 21 秒。
     - 根因：item 10 的「領到寶箱＝輪過」假設寶箱要看約 15 分鐘才有，但 Twitch 會在觀眾剛進場時就給一個寶箱。同晚 oldpot_o_0 21:46 也是開窗 24 秒領到就被關；hanasakich 20:03 是 4.5 分鐘。
     - 修法（`claim_registry.MIN_TURN_WATCH_SECONDS = 600`）：輪過＝（領到寶箱 或 點數增加 2 次）**且** 本場在位置上累計滿 10 分鐘；下播清除。10 分鐘是我（Claude）選的：對齊「點數增加 2 次約 10 分鐘」；Twitch 認列連觀實際需要多久沒有官方數字，若仍中斷可再調高。停滯重啟用完而放棄順位（`_TURN_USED`）不受此限。
     - 代價：新開播頻道至少佔位 10 分鐘，排序最低的已輪過頻道會被擠掉這 10 分鐘。
-    - 測試 `tests/test_points_allocation_offline.py`（36 通過）；完整測試 1494 通過。尚未打包部署。
+    - 測試 `tests/test_points_allocation_offline.py`（36 通過）；完整測試 1494 通過。
+    - 部署（commit `dac156c`）：dist 與部署目錄 hash 一致，09:48 重啟後輪詢正常；當時 20 個頻道全部離線，**尚未實際觀察到新規則**——下次有頻道在兩個位置已滿時開播，查 log 確認它開窗後至少留 10 分鐘才出現 `Closed unallocated`。舊版備份 `D:\Tools\HelloStreamer_backup_20261116_pre-min-watch`（含 config.json）。
 5. [已完成] 2026-11-09 17:56 已重新打包並部署 v1.3.1（含領取 log）到 `D:\Tools\HelloStreamer`；舊版備份在 `D:\Tools\HelloStreamer_backup_20261109_pre-claim-log`。下次寶箱出現後，查 log 的 `claimable bonus detected` / `claim button clicked` 驗證。
 
 ## 已完成
