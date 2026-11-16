@@ -177,5 +177,14 @@ class ProbeFacade:
 
     def maybe_log_stable_twitch_status(
         self, entry: ChannelEntry, info: StreamInfo, prev_status: Any
+    ) -> ChannelStatus | None:
+        """Caller holds ``session.lock``. Returns a row to VOD-upgrade, if any."""
+        return self._monitor._maybe_log_stable_twitch_status(
+            entry, info, prev_status
+        )
+
+    def upgrade_stable_twitch_offline_vod(
+        self, entry: ChannelEntry, candidate: ChannelStatus
     ) -> None:
-        self._monitor._maybe_log_stable_twitch_status(entry, info, prev_status)
+        """Network lookup: caller must NOT hold ``session.lock``."""
+        self._monitor._upgrade_stable_twitch_offline_vod(entry, candidate)

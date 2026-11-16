@@ -200,7 +200,12 @@ class TwitchPlatformProbe:
                 session.last_status[entry.key] = offline_cs
 
         with session.lock:
-            facade.maybe_log_stable_twitch_status(entry, info, prev_status)
+            upgrade_from = facade.maybe_log_stable_twitch_status(
+                entry, info, prev_status
+            )
+        if upgrade_from is not None:
+            # VOD lookup hits the network; never run it under session.lock.
+            facade.upgrade_stable_twitch_offline_vod(entry, upgrade_from)
         facade.publish_preview(entry, from_probe=False)
         return facade.noop_commit
 
