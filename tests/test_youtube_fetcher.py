@@ -768,4 +768,25 @@ def test_parse_failure_warning_logs_text_after_assignment(monkeypatch, caplog) -
 
     message = next(r.getMessage() for r in caplog.records if "ytInitialData" in r.getMessage())
     assert "title='Some - YouTube'" in message
-    assert "head='BROKEN{;</script>'" in message
+    assert "ytInitialData = BROKEN{;</script>" in message
+
+
+def test_extract_json_var_reads_window_bracket_assignment() -> None:
+    html = '<script>window["ytInitialData"] = {"ok": 2};</script>'
+    assert YouTubeFetcher()._extract_json_var(html, "ytInitialData") == {"ok": 2}
+
+
+def test_extract_json_var_reads_json_parse_single_quoted_hex_escapes() -> None:
+    html = (
+        "<script>var ytInitialData = JSON.parse("
+        r"'{\x22ok\x22:3,\x22t\x22:\x22it\'s \u4e2d\x22}');</script>"
+    )
+    assert YouTubeFetcher()._extract_json_var(html, "ytInitialData") == {
+        "ok": 3,
+        "t": "it's \u4e2d",
+    }
+
+
+def test_extract_json_var_reads_json_string_literal() -> None:
+    html = '<script>var ytInitialData = "{\\"ok\\": 4}";</script>'
+    assert YouTubeFetcher()._extract_json_var(html, "ytInitialData") == {"ok": 4}
