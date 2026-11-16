@@ -142,6 +142,9 @@ def test_offline_edge_waits_for_repaints_then_applies_first() -> None:
 def _allocation_probe(rows: list[Any], *, close_on_offline: bool) -> Any:
     probe = SimpleNamespace(
         config={
+            # These tests jump the clock in big steps; a slow poll interval
+            # keeps the jumps from counting as tracking interruptions (#60).
+            "check_interval": 3600,
             "viewer_engagement": {
                 "enabled": True,
                 "points_priority_channels": ["kspksp"],
@@ -665,6 +668,60 @@ def test_watch_time_only_counts_while_holding_a_slot() -> None:
     claim_registry.track_slot_holders(["jipandan"], now=half + 5000 + half)
 
     assert claim_registry.had_turn("jipandan")
+
+
+_GAP = claim_registry.MAX_TRACK_GAP_SECONDS
+
+
+def test_gap_after_monitor_stop_is_not_watch_time() -> None:
+    # Issue #60: a 15-minute stop must not be credited as watching.
+    claim_registry.record_confirmed_claim("https://www.twitch.tv/jipandan")
+    claim_registry.track_slot_holders(["jipandan"], now=0.0, max_gap=_GAP)
+    claim_registry.track_slot_holders(["jipandan"], now=10.0, max_gap=_GAP)
+
+    claim_registry.track_slot_holders(["jipandan"], now=10.0 + 15 * 60, max_gap=_GAP)
+
+    assert claim_registry._WATCHED_SECONDS["jipandan"] == 10.0
+    assert not claim_registry.had_turn("jipandan")
+    assert claim_registry.is_served("jipandan")  # claim record is kept
+
+
+def test_gap_longer_than_stall_window_does_not_report_stall() -> None:
+    def track(now: float) -> set[str]:
+        return claim_registry.track_slot_holders(["hayabi_zr"], now=now, max_gap=_GAP)
+
+    track(0.0)
+    resume = 25 * 60.0
+
+    assert track(resume) == set()
+    assert claim_registry._STALL_RESTARTS.get("hayabi_zr", 0) == 0
+    # The stall wait restarted at the resume, so a full window must pass again.
+    now = resume
+    while now < resume + claim_registry.STALLED_SLOT_SECONDS - 10:
+        now += 10.0
+        assert track(now) == set()
+    assert track(now + 10.0) == {"hayabi_zr"}
+    assert claim_registry._STALL_RESTARTS["hayabi_zr"] == 1
+
+
+def test_normal_polling_interval_still_accumulates_watch_time() -> None:
+    for tick in range(7):
+        claim_registry.track_slot_holders(["jipandan"], now=tick * 10.0, max_gap=_GAP)
+
+    assert claim_registry._WATCHED_SECONDS["jipandan"] == 60.0
+
+
+def test_gap_limit_scales_with_a_slow_poll_interval() -> None:
+    # The poll interval has no upper bound; a fixed limit would make every
+    # slow poll look like an interruption and nobody would earn a turn.
+    assert claim_registry.track_gap_limit(10) == claim_registry.MAX_TRACK_GAP_SECONDS
+    limit = claim_registry.track_gap_limit(300)
+    assert limit == 900
+
+    claim_registry.track_slot_holders(["jipandan"], now=0.0, max_gap=limit)
+    claim_registry.track_slot_holders(["jipandan"], now=300.0, max_gap=limit)
+
+    assert claim_registry._WATCHED_SECONDS["jipandan"] == 300.0
 
 
 def _reopening_probe(rows: list[Any], previous: tuple[str, ...]) -> Any:

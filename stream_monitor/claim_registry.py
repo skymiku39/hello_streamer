@@ -50,6 +50,11 @@ _TURN_USED: set[str] = set()
 MIN_TURN_WATCH_SECONDS = 10 * 60.0
 _WATCHED_SECONDS: dict[str, float] = {}
 _LAST_TRACK: float | None = None
+# A gap between two tracking calls longer than this (and longer than a few
+# poll intervals, see ``track_gap_limit``) means tracking was off: monitoring
+# was stopped or the computer slept. That time is not watch time and not a
+# stall (#60).
+MAX_TRACK_GAP_SECONDS = 120.0
 _LAST_HOLDERS: set[str] = set()
 _CHANNEL_RE = re.compile(r"twitch\.tv/([^/?#\s]+)", re.IGNORECASE)
 
@@ -110,21 +115,43 @@ def credit_watch_seconds(name: str, seconds: float) -> None:
             _WATCHED_SECONDS[key] = _WATCHED_SECONDS.get(key, 0.0) + seconds
 
 
+def track_gap_limit(poll_interval_seconds: float) -> float:
+    """Longest gap between tracking calls that still counts as watching.
+
+    The poll interval is user-configurable with no upper bound, so the limit
+    scales with it; a fixed limit would stop slow polls from ever earning a
+    turn.
+    """
+    return max(MAX_TRACK_GAP_SECONDS, 3.0 * poll_interval_seconds)
+
+
 def track_slot_holders(
-    holders: Iterable[str], *, now: float | None = None
+    holders: Iterable[str],
+    *,
+    now: float | None = None,
+    max_gap: float | None = None,
 ) -> set[str]:
     """Time the current slot holders; return those whose playback is stalled.
 
     A returned holder earned nothing for ``STALLED_SLOT_SECONDS`` and still
     has restarts left: the caller should restart the playback windows. Once
     the restarts are spent the holder gives up its turn instead.
+
+    When ``max_gap`` is given and more time than that passed since the last
+    call, tracking was interrupted: the gap earns no watch time and every
+    holder's stall timer restarts now.
     """
     current = time.monotonic() if now is None else now
     keys = {name.strip().lower() for name in holders}
     stalled: set[str] = set()
     global _LAST_TRACK, _LAST_HOLDERS
     with _LOCK:
-        if _LAST_TRACK is not None and current > _LAST_TRACK:
+        interrupted = (
+            max_gap is not None
+            and _LAST_TRACK is not None
+            and current - _LAST_TRACK > max_gap
+        )
+        if _LAST_TRACK is not None and current > _LAST_TRACK and not interrupted:
             # Only channels holding a slot at both ends of the interval watched it.
             for key in keys & _LAST_HOLDERS:
                 _WATCHED_SECONDS[key] = (
@@ -135,6 +162,11 @@ def track_slot_holders(
         for key in list(_SLOT_SINCE):
             if key not in keys:
                 del _SLOT_SINCE[key]
+        if interrupted:
+            # Monitoring was off: the gap is neither watch time nor a stall.
+            for key in keys:
+                _SLOT_SINCE[key] = current
+            return stalled
         for key in keys:
             since = _SLOT_SINCE.setdefault(key, current)
             if current - since < STALLED_SLOT_SECONDS:
