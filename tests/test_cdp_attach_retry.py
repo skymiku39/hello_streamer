@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 from unittest.mock import Mock
 
 import pytest
@@ -64,6 +65,9 @@ def harness(monkeypatch):
         notifier, "_apply_new_browser_window_settings_async", lambda *a, **k: None,
     )
     monkeypatch.setattr(notifier, "_enum_browser_hwnds", lambda *_a, **_k: set())
+    # Cache platform.uname() first: on Python 3.11 its first call shells out
+    # through subprocess.Popen, which is faked below.
+    platform.uname()
     monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
     monkeypatch.setattr(notifier, "_OBS_MANAGED_URLS", set())
     monkeypatch.setattr(notifier, "_OBS_MANAGED_SINCE", {})
