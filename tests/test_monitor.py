@@ -3790,6 +3790,83 @@ def test_recovered_player_keeps_offline_edge_after_long_gap(monkeypatch, tmp_pat
         db.close()
 
 
+def _youtube_entry_strikes(monitor: Monitor, entry: ChannelEntry) -> dict[str, int]:
+    return {
+        key: value
+        for key, value in monitor._offline_strikes.items()
+        if key.split("|", 1)[0] == entry.key
+    }
+
+
+def _seeded_live_youtube_monitor(
+    db: SeenVideoDB, entry: ChannelEntry, url: str
+) -> Monitor:
+    return Monitor(
+        channels=[{"platform": "youtube", "name": entry.name}], db=db, interval=10,
+        initial_statuses={
+            entry.key: ChannelStatus(status=True, url=url, title="Seeded live")
+        },
+        last_activity_epoch=time.time() - 3600,
+        retained_live_keys={entry.key},
+    )
+
+
+def test_seeded_youtube_live_goes_offline_after_two_strikes(monkeypatch, tmp_path):
+    """#52: a seeded LIVE row has no live payload yet must still strike twice."""
+    vod = VideoItem(
+        video_id="old", title="Old VOD", style="DEFAULT",
+        url="https://www.youtube.com/watch?v=old", display_name="YT",
+    )
+    fetcher = FakeYouTubeFetcher([[vod], [vod]])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    entry = ChannelEntry(platform="youtube", name="yt")
+    original_url = "https://www.youtube.com/watch?v=live1"
+    monitor = _seeded_live_youtube_monitor(db, entry, original_url)
+    try:
+        _check_and_commit(monitor, entry)
+        assert monitor._last_status[entry.key].status is True
+        assert monitor._pending_offline_events == []
+        assert list(_youtube_entry_strikes(monitor, entry).values()) == [1]
+
+        _check_and_commit(monitor, entry)
+        assert monitor._last_status[entry.key].status is False
+        assert len(monitor._pending_offline_events) == 1
+        offline_entry, payload = monitor._pending_offline_events[0]
+        assert offline_entry.key == entry.key
+        assert payload.url == original_url
+        assert _youtube_entry_strikes(monitor, entry) == {}
+    finally:
+        db.close()
+
+
+def test_seeded_youtube_live_strike_clears_when_live_returns(monkeypatch, tmp_path):
+    vod = VideoItem(
+        video_id="old", title="Old VOD", style="DEFAULT",
+        url="https://www.youtube.com/watch?v=old", display_name="YT",
+    )
+    live = VideoItem(
+        video_id="live1", title="Seeded live", style="LIVE",
+        url="https://www.youtube.com/watch?v=live1", display_name="YT",
+    )
+    fetcher = FakeYouTubeFetcher([[vod], [live, vod]])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    entry = ChannelEntry(platform="youtube", name="yt")
+    monitor = _seeded_live_youtube_monitor(db, entry, live.url)
+    try:
+        _check_and_commit(monitor, entry)
+        assert monitor._last_status[entry.key].status is True
+        assert list(_youtube_entry_strikes(monitor, entry).values()) == [1]
+
+        _check_and_commit(monitor, entry)
+        assert monitor._last_status[entry.key].status is True
+        assert monitor._pending_offline_events == []
+        assert _youtube_entry_strikes(monitor, entry) == {}
+    finally:
+        db.close()
+
+
 def test_start_preserves_seeded_live_status(monkeypatch, tmp_path) -> None:
     """``start()`` must not wipe the seed populated by ``__init__``.
 

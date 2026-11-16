@@ -273,6 +273,24 @@ class YouTubePlatformProbe:
                 session.live_payload.pop(fallback_alias_key, None)
                 session.offline_strikes.pop(fallback_alias_key, None)
                 session.fallback_triggered_live.pop(entry.key, None)
+            elif (
+                prev_channel is not None
+                and prev_channel.status is True
+                and not facade.wake_verify_mode
+                and not any(
+                    _entry_key_from_live_cache_key(key) == entry.key
+                    for key in session.live_payload
+                )
+            ):
+                # A LIVE row seeded from the status cache has no payload; give
+                # it one so the missing LIVE row goes through the strike path.
+                session.live_payload[_live_cache_key(entry.key)] = OfflineInfo(
+                    url=prev_channel.url,
+                    title=prev_channel.title,
+                    platform=entry.platform,
+                    name=entry.name,
+                    display_name=session.display_names.get(entry.key, ""),
+                )
 
             active_live_ids = set(observed_live_ids)
             stale_candidates = [
