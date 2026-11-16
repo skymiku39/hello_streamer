@@ -6,7 +6,9 @@ import json
 import logging
 import os
 import threading
+import time
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +145,16 @@ MIN_CHECK_INTERVAL = 10
 # paths. Keep the replace-based write atomic when those callbacks happen close
 # together in the same process.
 _SAVE_LOCK = threading.Lock()
+
+# Transient file locks (antivirus, indexers) usually clear within moments.
+_READ_RETRY_ATTEMPTS = 3
+_READ_RETRY_DELAY_SECONDS = 0.1
+_REPLACE_RETRY_ATTEMPTS = 5
+_REPLACE_RETRY_DELAY_SECONDS = 0.1
+
+# True when a config file exists on disk but load() could not read it (and
+# could not move it aside).  save() must back it up before overwriting it.
+_unreadable_on_disk = False
 
 _BOOL_TRUTHY = frozenset({"true", "yes", "1", "on"})
 _BOOL_FALSY = frozenset({"false", "no", "0", "off", ""})
@@ -560,11 +572,12 @@ def load() -> dict[str, Any]:
     corrupt_backed_up = False
     read_succeeded = False
     temp_recovered = False
+    global _unreadable_on_disk
+    unreadable = False
     if path.exists():
         disk_existed = True
         try:
-            with path.open("r", encoding="utf-8-sig") as f:
-                raw = json.load(f)
+            raw = _read_json_with_retry(path)
             read_succeeded = True
             if isinstance(raw, dict):
                 stored = raw
@@ -587,6 +600,7 @@ def load() -> dict[str, Any]:
                     exc_info=True,
                 )
         except OSError:
+            unreadable = True
             logger.warning("Could not read config file: %s", path, exc_info=True)
 
     if corrupt and not corrupt_backed_up and path.exists():
@@ -604,6 +618,10 @@ def load() -> dict[str, Any]:
                 path,
                 exc_info=True,
             )
+
+    if corrupt and not corrupt_backed_up and path.exists():
+        unreadable = True
+    _unreadable_on_disk = unreadable
 
     if corrupt and not corrupt_backed_up:
         # Never destroy the only copy of an unreadable config.  The app can
@@ -678,6 +696,44 @@ def load() -> dict[str, Any]:
     return finalized
 
 
+def _read_json_with_retry(path: Path) -> Any:
+    """Read JSON, retrying briefly on OSError (e.g. a transient file lock)."""
+    for attempt in range(1, _READ_RETRY_ATTEMPTS + 1):
+        try:
+            with path.open("r", encoding="utf-8-sig") as f:
+                return json.load(f)
+        except OSError:
+            if attempt >= _READ_RETRY_ATTEMPTS:
+                raise
+            time.sleep(_READ_RETRY_DELAY_SECONDS)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _backup_unreadable_config(path: Path) -> None:
+    """Copy the on-disk config aside; raises OSError if that is not possible."""
+    import shutil
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    candidate = path.with_name(f"{path.name}.unreadable-{stamp}")
+    index = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}.unreadable-{stamp}.{index}")
+        index += 1
+    shutil.copyfile(path, candidate)
+    logger.warning("Unreadable config backed up to %s before overwrite", candidate)
+
+
+def _replace_with_retry(temp_path: Path, path: Path) -> None:
+    for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
+        try:
+            temp_path.replace(path)
+            return
+        except PermissionError:
+            if attempt >= _REPLACE_RETRY_ATTEMPTS:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_SECONDS)
+
+
 def _next_corrupt_backup_path(path: Path) -> Path:
     """Return a non-destructive destination for an invalid config file."""
     candidate = path.with_name(f"{path.name}.corrupt")
@@ -690,9 +746,15 @@ def _next_corrupt_backup_path(path: Path) -> Path:
 
 def save(config: dict[str, Any]) -> dict[str, Any]:
     """Persist config to disk and return the canonical in-memory form."""
+    global _unreadable_on_disk
     with _SAVE_LOCK:
         path = _config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        if _unreadable_on_disk:
+            if path.exists():
+                # Raises OSError (flag kept, original untouched) if still locked.
+                _backup_unreadable_config(path)
+            _unreadable_on_disk = False
         temp_path = path.with_name(f".{path.name}.tmp")
         normalized = _finalize_config(config, apply_legacy_migration=False)
         try:
@@ -701,7 +763,7 @@ def save(config: dict[str, Any]) -> dict[str, Any]:
                 f.write("\n")
                 f.flush()
                 os.fsync(f.fileno())
-            temp_path.replace(path)
+            _replace_with_retry(temp_path, path)
         except Exception:
             # A handled failure is a rejected save, not an interrupted one.
             # Callers may roll back (notably launch-records reset); load() must

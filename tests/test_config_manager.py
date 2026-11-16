@@ -1161,3 +1161,142 @@ def test_load_inserts_missing_legacy_keys(tmp_path, monkeypatch) -> None:
     assert config["language"] == config_manager.DEFAULT_CONFIG["language"]
     assert "close_off_topic_pages" in config["browser_settings"]
     assert "hide_from_taskbar" in config["browser_settings"]
+
+
+# --- issue #46: read/save failure safety -----------------------------------
+
+
+def _fast_retries(monkeypatch) -> None:
+    monkeypatch.setattr(config_manager, "_READ_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(config_manager, "_REPLACE_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(config_manager, "_unreadable_on_disk", False)
+
+
+def _lock_reads(monkeypatch, path: Path, failures: int | None) -> dict:
+    """Make opening ``path`` for reading fail ``failures`` times (None = always)."""
+    real_open = Path.open
+    state = {"calls": 0, "locked": True}
+
+    def fake_open(self, mode="r", *args, **kwargs):
+        if self == path and "r" in mode and state["locked"]:
+            state["calls"] += 1
+            if failures is None or state["calls"] <= failures:
+                raise PermissionError("locked")
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fake_open)
+    return state
+
+
+def _write_saved_config(path: Path) -> str:
+    path.write_text(
+        json.dumps({"channels": [{"url": "https://example.com/c"}], "interval": 77}),
+        encoding="utf-8",
+    )
+    return path.read_text(encoding="utf-8")
+
+
+def test_load_retries_transient_read_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+    _fast_retries(monkeypatch)
+    _write_saved_config(path)
+    state = _lock_reads(monkeypatch, path, failures=1)
+    config_manager.load()
+    assert state["calls"] >= 2
+    assert config_manager._unreadable_on_disk is False
+
+
+def test_persistent_read_error_backs_up_before_save(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+    _fast_retries(monkeypatch)
+    original = _write_saved_config(path)
+    state = _lock_reads(monkeypatch, path, failures=None)
+    cfg = config_manager.load()
+    assert state["calls"] == 3
+    assert config_manager._unreadable_on_disk is True
+    state["locked"] = False
+    config_manager.save(cfg)
+    backups = list(tmp_path.glob("config.json.unreadable-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == original
+    assert config_manager._unreadable_on_disk is False
+    assert path.read_text(encoding="utf-8") != original
+
+
+def test_save_fails_without_overwriting_when_backup_fails(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+    _fast_retries(monkeypatch)
+    original = _write_saved_config(path)
+    state = _lock_reads(monkeypatch, path, failures=None)
+    cfg = config_manager.load()
+
+    def failing_copy(*args, **kwargs):
+        raise PermissionError("still locked")
+
+    monkeypatch.setattr("shutil.copyfile", failing_copy)
+    with pytest.raises(OSError):
+        config_manager.save(cfg)
+    state["locked"] = False
+    assert path.read_text(encoding="utf-8") == original
+    assert config_manager._unreadable_on_disk is True
+    assert not list(tmp_path.glob("config.json.unreadable-*"))
+
+
+def test_save_retries_transient_replace_permission_error(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+    _fast_retries(monkeypatch)
+    real_replace = Path.replace
+    calls = {"n": 0}
+
+    def flaky_replace(self, target):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise PermissionError("locked")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    config_manager.save(deepcopy(config_manager.DEFAULT_CONFIG))
+    assert calls["n"] == 3
+    assert path.exists()
+
+
+def test_save_persistent_replace_failure_keeps_original(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+    _fast_retries(monkeypatch)
+    original = _write_saved_config(path)
+    calls = {"n": 0}
+
+    def failing_replace(self, target):
+        calls["n"] += 1
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+    with pytest.raises(PermissionError):
+        config_manager.save(deepcopy(config_manager.DEFAULT_CONFIG))
+    assert calls["n"] == 5
+    assert path.read_text(encoding="utf-8") == original
+    assert not (tmp_path / ".config.json.tmp").exists()
+
+
+def test_missing_file_sets_no_flag_and_save_makes_no_backup(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+    _fast_retries(monkeypatch)
+    cfg = config_manager.load()
+    assert config_manager._unreadable_on_disk is False
+    config_manager.save(cfg)
+    assert path.exists()
+    assert not list(tmp_path.glob("config.json.unreadable-*"))
