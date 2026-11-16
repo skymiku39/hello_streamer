@@ -98,6 +98,7 @@ from stream_monitor.channel_reorder_ui import ChannelReorderMode
 from stream_monitor.channel_row import ChannelRow
 from stream_monitor.claim_registry import (
     clear_served,
+    consume_stall_restart,
     had_turn,
     take_endpoint_restart,
     track_gap_limit,
@@ -1931,21 +1932,25 @@ class App(ctk.CTk):
                     urls_to_reopen.add(name)
                 self._points_main_profile_channels.add(name)
 
-        restart_reason = ""
-        if stalled & set(selected):
-            # No points for 20 minutes means the watch is not being credited
-            # (2026-11-11: the browser had lost its debugging endpoint).
-            restart_reason = "Twitch points stalled for " + ", ".join(
-                sorted(stalled & set(selected))
-            )
-        elif (
-            selected
-            and allow_open
+        can_open = bool(
+            allow_open
             and trigger_settings.open_on_live
             and self._controller.mode in (TRIGGER_MODE, TRIGGER_ONCE_MODE)
-            and take_endpoint_restart()
-        ):
-            # Only when the same call reopens the windows it closes.
+        )
+        # Restart only when the same call reopens the windows it closes;
+        # otherwise the stall or endpoint request waits for a call that can
+        # (#21, #61: watch/idle mode would lose the windows for good).
+        can_restart = bool(selected) and can_open
+        stalled_selected = stalled & set(selected)
+        restart_reason = ""
+        if can_restart and stalled_selected:
+            # No points for 20 minutes means the watch is not being credited
+            # (2026-11-11: the browser had lost its debugging endpoint).
+            consume_stall_restart(stalled_selected)
+            restart_reason = "Twitch points stalled for " + ", ".join(
+                sorted(stalled_selected)
+            )
+        elif can_restart and take_endpoint_restart():
             restart_reason = "Twitch browser has no debugging endpoint"
         if restart_reason:
             # Close every slot window so the browser itself restarts;
@@ -1959,11 +1964,7 @@ class App(ctk.CTk):
                     close_browser_window_for_url(status.url)
                     urls_to_reopen.add(name)
 
-        if not allow_open or self._controller.mode not in (
-            TRIGGER_MODE, TRIGGER_ONCE_MODE
-        ):
-            return
-        if not trigger_settings.open_on_live:
+        if not can_open:
             return
 
         plan = ActionPlan(

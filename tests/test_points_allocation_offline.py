@@ -435,29 +435,39 @@ def test_stalled_holders_get_windows_restarted_before_giving_up(monkeypatch) -> 
     rows = [_live("daemoncasoul"), _live("hanasakich"), _live("jipandan")]
     urls = {"https://www.twitch.tv/hanasakich", "https://www.twitch.tv/jipandan"}
     closed = _patch_windows(monkeypatch, urls)
-    probe = _sticky_probe(rows, ("hanasakich", "jipandan"))
+    # A restart closes windows, so it needs a call that reopens them (#61).
+    probe = _reopening_probe(rows, ("hanasakich", "jipandan"))
     clock = [1000.0]
     monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
 
-    App.refresh_points_priority_allocation(probe)
+    App.refresh_points_priority_allocation(probe, allow_open=True)
     clock[0] += claim_registry.STALLED_SLOT_SECONDS - 1
-    App.refresh_points_priority_allocation(probe)
+    App.refresh_points_priority_allocation(probe, allow_open=True)
     assert closed == []
+    assert probe.submitted == []
 
     clock[0] += 1
-    for _ in range(claim_registry.STALL_RESTART_LIMIT):
+    for count in range(1, claim_registry.STALL_RESTART_LIMIT + 1):
         closed.clear()
-        App.refresh_points_priority_allocation(probe)
-        # Both windows restart; nobody loses the slot.
+        probe.submitted.clear()
+        App.refresh_points_priority_allocation(probe, allow_open=True)
+        # Both windows restart in the same call; nobody loses the slot.
         assert set(closed) == urls
+        assert sorted(probe.submitted) == ["hanasakich", "jipandan"]
         assert probe._active_points_priority_channels == ("hanasakich", "jipandan")
+        assert claim_registry._STALL_RESTARTS == {
+            "hanasakich": count,
+            "jipandan": count,
+        }
         clock[0] += claim_registry.STALLED_SLOT_SECONDS
 
     # Restarts changed nothing: only now do the holders give up their turn.
     closed.clear()
-    App.refresh_points_priority_allocation(probe)
+    probe.submitted.clear()
+    App.refresh_points_priority_allocation(probe, allow_open=True)
     assert probe._active_points_priority_channels == ("daemoncasoul", "hanasakich")
     assert closed == ["https://www.twitch.tv/jipandan"]
+    assert probe.submitted == ["daemoncasoul"]
 
 
 def test_points_rise_restarts_the_stall_wait(monkeypatch) -> None:
@@ -481,23 +491,25 @@ def test_served_holders_also_get_windows_restarted_when_points_stall(
     rows = [_live("hayabi_zr"), _live("gracya_leejia")]
     urls = {"https://www.twitch.tv/hayabi_zr", "https://www.twitch.tv/gracya_leejia"}
     closed = _patch_windows(monkeypatch, urls)
-    probe = _sticky_probe(rows, ("hayabi_zr", "gracya_leejia"))
+    probe = _reopening_probe(rows, ("hayabi_zr", "gracya_leejia"))
     clock = [1000.0]
     monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
 
-    App.refresh_points_priority_allocation(probe)
+    App.refresh_points_priority_allocation(probe, allow_open=True)
     clock[0] += claim_registry.STALLED_SLOT_SECONDS
     for _ in range(claim_registry.STALL_RESTART_LIMIT):
         closed.clear()
-        App.refresh_points_priority_allocation(probe)
+        App.refresh_points_priority_allocation(probe, allow_open=True)
         assert set(closed) == urls
         assert "hayabi_zr" in probe._active_points_priority_channels
         clock[0] += claim_registry.STALLED_SLOT_SECONDS
 
     # Restarts spent: no more restarts, and the served holders keep their slots.
     closed.clear()
-    App.refresh_points_priority_allocation(probe)
+    probe.submitted.clear()
+    App.refresh_points_priority_allocation(probe, allow_open=True)
     assert closed == []
+    assert probe.submitted == []
     assert "hayabi_zr" in probe._active_points_priority_channels
 
 
@@ -510,6 +522,7 @@ def test_points_rise_restores_the_restart_allowance(monkeypatch) -> None:
     for _ in range(claim_registry.STALL_RESTART_LIMIT):
         clock[0] += step
         assert claim_registry.track_slot_holders(["kspksp"]) == {"kspksp"}
+        claim_registry.consume_stall_restart({"kspksp"})
     clock[0] += step
     assert claim_registry.track_slot_holders(["kspksp"]) == set()
 
@@ -524,7 +537,8 @@ def test_points_rise_restores_the_restart_allowance(monkeypatch) -> None:
 def test_given_up_turn_is_forgotten_when_broadcast_ends() -> None:
     step = claim_registry.STALLED_SLOT_SECONDS
     for tick in range(claim_registry.STALL_RESTART_LIMIT + 2):
-        claim_registry.track_slot_holders(["hayabi_zr"], now=tick * step)
+        stalled = claim_registry.track_slot_holders(["hayabi_zr"], now=tick * step)
+        claim_registry.consume_stall_restart(stalled)
     assert claim_registry.had_turn("hayabi_zr")
 
     claim_registry.clear_served("hayabi_zr")
@@ -701,7 +715,8 @@ def test_gap_longer_than_stall_window_does_not_report_stall() -> None:
         now += 10.0
         assert track(now) == set()
     assert track(now + 10.0) == {"hayabi_zr"}
-    assert claim_registry._STALL_RESTARTS["hayabi_zr"] == 1
+    # Reporting spends nothing; the caller consumes when it restarts (#61).
+    assert claim_registry._STALL_RESTARTS.get("hayabi_zr", 0) == 0
 
 
 def test_normal_polling_interval_still_accumulates_watch_time() -> None:
@@ -799,3 +814,118 @@ def test_attach_clears_a_pending_endpoint_restart() -> None:
     claim_registry.note_endpoint_attached()
 
     assert not claim_registry.take_endpoint_restart(now=1000.0)
+
+
+def _stalled_pair(monkeypatch) -> tuple[Any, list[str], set[str], list[float]]:
+    _serve()
+    rows = [_live("hanasakich"), _live("jipandan")]
+    urls = {"https://www.twitch.tv/hanasakich", "https://www.twitch.tv/jipandan"}
+    closed = _patch_windows(monkeypatch, urls)
+    probe = _reopening_probe(rows, ("hanasakich", "jipandan"))
+    clock = [1000.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+    App.refresh_points_priority_allocation(probe)
+    clock[0] += claim_registry.STALLED_SLOT_SECONDS
+    return probe, closed, urls, clock
+
+
+def _block_reopen(probe: Any, how: str) -> dict[str, Any]:
+    """Make the next call unable to reopen windows; return its kwargs."""
+    if how == "allow_open":
+        return {}
+    if how == "open_on_live":
+        probe.config["trigger_settings"] = {"open_on_live": False}
+    else:
+        probe._controller.mode = how
+    return {"allow_open": True}
+
+
+def _unblock_reopen(probe: Any) -> None:
+    probe.config["trigger_settings"] = {}
+    probe._controller.mode = app_module.TRIGGER_MODE
+
+
+@pytest.mark.parametrize(
+    "how", ["allow_open", "idle", app_module.WATCH_MODE, "open_on_live"]
+)
+def test_stall_waits_for_a_call_that_reopens_windows(monkeypatch, how) -> None:
+    # Issue #61: a stall seen by a call that cannot reopen (startup or
+    # monitor-mode poll, watch/idle mode, open_on_live off) closed every slot
+    # window and spent a restart; in watch/idle mode the windows never came back.
+    probe, closed, urls, clock = _stalled_pair(monkeypatch)
+    kwargs = _block_reopen(probe, how)
+
+    for _ in range(3):
+        App.refresh_points_priority_allocation(probe, **kwargs)
+        clock[0] += 60
+
+    assert closed == []
+    assert probe.submitted == []
+    assert claim_registry._STALL_RESTARTS == {}
+    assert probe._active_points_priority_channels == ("hanasakich", "jipandan")
+
+    # The first call that can reopen performs the restart it was owed.
+    _unblock_reopen(probe)
+    App.refresh_points_priority_allocation(probe, allow_open=True)
+
+    assert set(closed) == urls
+    assert sorted(probe.submitted) == ["hanasakich", "jipandan"]
+    assert claim_registry._STALL_RESTARTS == {"hanasakich": 1, "jipandan": 1}
+
+
+def test_stall_restart_reopens_in_trigger_mode_and_counts_once(monkeypatch) -> None:
+    probe, closed, urls, clock = _stalled_pair(monkeypatch)
+
+    App.refresh_points_priority_allocation(probe, allow_open=True)
+
+    assert set(closed) == urls
+    assert sorted(probe.submitted) == ["hanasakich", "jipandan"]
+    assert claim_registry._STALL_RESTARTS == {"hanasakich": 1, "jipandan": 1}
+
+    # Every holder starts a new wait: the next call does not restart again.
+    closed.clear()
+    probe.submitted.clear()
+    clock[0] += claim_registry.STALLED_SLOT_SECONDS - 1
+    App.refresh_points_priority_allocation(probe, allow_open=True)
+    assert closed == []
+    assert claim_registry._STALL_RESTARTS == {"hanasakich": 1, "jipandan": 1}
+
+
+def test_spent_restarts_still_end_the_turn_without_reopening(monkeypatch) -> None:
+    # Giving up a turn once restarts are spent does not depend on reopening.
+    _serve()
+    rows = [_live("daemoncasoul"), _live("hanasakich"), _live("jipandan")]
+    _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/hanasakich", "https://www.twitch.tv/jipandan"},
+    )
+    probe = _sticky_probe(rows, ("hanasakich", "jipandan"))
+    for name in ("hanasakich", "jipandan"):
+        claim_registry._STALL_RESTARTS[name] = claim_registry.STALL_RESTART_LIMIT
+    clock = [1000.0]
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: clock[0])
+    App.refresh_points_priority_allocation(probe)
+    clock[0] += claim_registry.STALLED_SLOT_SECONDS
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert claim_registry.had_turn("hanasakich")
+    assert probe._active_points_priority_channels == ("daemoncasoul", "hanasakich")
+
+
+def test_reporting_a_stall_does_not_spend_a_restart() -> None:
+    step = claim_registry.STALLED_SLOT_SECONDS
+    claim_registry.track_slot_holders(["hayabi_zr", "kspksp"], now=0.0)
+    for tick in range(1, claim_registry.STALL_RESTART_LIMIT + 3):
+        assert claim_registry.track_slot_holders(
+            ["hayabi_zr", "kspksp"], now=tick * step
+        ) == {"hayabi_zr", "kspksp"}
+    assert claim_registry._STALL_RESTARTS == {}
+    assert not claim_registry.had_turn("hayabi_zr")
+
+    claim_registry.consume_stall_restart({"hayabi_zr"})
+
+    # The restart reset every holder's wait, not only the consumed one.
+    later = (claim_registry.STALL_RESTART_LIMIT + 2) * step + step - 1
+    assert claim_registry.track_slot_holders(["hayabi_zr", "kspksp"], now=later) == set()
+    assert claim_registry._STALL_RESTARTS == {"hayabi_zr": 1}
