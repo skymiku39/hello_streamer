@@ -215,7 +215,7 @@ class App(ctk.CTk):
         if getattr(sys, "frozen", False):
             startup_enabled = is_startup_enabled()
             if startup_enabled:
-                heal_startup_command_if_enabled()
+                heal_startup_command_if_enabled(keep_existing_other_exe=True)
             if self.config.get("run_on_startup") != startup_enabled:
                 self.config["run_on_startup"] = startup_enabled
                 startup_config_needs_save = True

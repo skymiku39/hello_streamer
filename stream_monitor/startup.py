@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -155,14 +157,88 @@ def enable_startup(exe_path: str | None = None) -> bool:
     return _enable_startup_linux(exe_path)
 
 
-def heal_startup_command_if_enabled(exe_path: str | None = None) -> bool:
+def _parse_command_exe(command: str) -> str | None:
+    """Extract the executable path from a Run key value / Exec line.
+
+    Handles a quoted path followed by arguments, and an unquoted path
+    (possibly containing spaces) ending in ``.exe``.
+    """
+    command = command.strip()
+    if not command:
+        return None
+    if command.startswith('"'):
+        end = command.find('"', 1)
+        return command[1:end] if end > 1 else command[1:] or None
+    idx = command.lower().find(".exe")
+    if idx != -1:
+        return command[: idx + 4]
+    return command.split(None, 1)[0]
+
+
+def _read_startup_exe() -> str | None:
+    """Return the exe path the current autostart entry points at."""
+    if _IS_WINDOWS:
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_READ
+            ) as key:
+                val, _ = winreg.QueryValueEx(key, _APP_NAME)
+        except OSError:
+            return None
+        return _parse_command_exe(str(val))
+
+    try:
+        for line in _autostart_path().read_text(encoding="utf-8").splitlines():
+            if line.startswith("Exec="):
+                parts = shlex.split(line[len("Exec="):])
+                return parts[0] if parts else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _same_path(a: str, b: str) -> bool:
+    norm_a = os.path.normpath(a)
+    norm_b = os.path.normpath(b)
+    if _IS_WINDOWS:
+        return norm_a.lower() == norm_b.lower()
+    return norm_a == norm_b
+
+
+def heal_startup_command_if_enabled(
+    exe_path: str | None = None, *, keep_existing_other_exe: bool = False
+) -> bool:
     """Rewrite the autostart entry to the current executable when enabled.
 
     Versioned install folders rename the .exe on each release; an outdated
     Run key / .desktop Exec then fails at login (looks like a flash-quit).
+
+    With ``keep_existing_other_exe`` (used by the automatic startup sync), an
+    entry pointing at a *different* exe that still exists is left alone, so
+    running a second copy (e.g. a dev build) cannot hijack the autostart.
     """
     if not is_startup_enabled():
         return False
+    if keep_existing_other_exe:
+        current = exe_path or (
+            sys.executable if getattr(sys, "frozen", False) else None
+        )
+        registered = _read_startup_exe()
+        if (
+            current
+            and registered
+            and not _same_path(registered, current)
+            and os.path.exists(registered)
+        ):
+            logger.info(
+                "Startup entry points at another existing exe; skipping rewrite "
+                "(registered=%s, current=%s)",
+                registered,
+                current,
+            )
+            return False
     return enable_startup(exe_path=exe_path)
 
 

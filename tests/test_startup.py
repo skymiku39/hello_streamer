@@ -180,3 +180,84 @@ def test_linux_disable_startup_ok_when_already_missing(monkeypatch, tmp_path) ->
     monkeypatch.setattr(startup, "_autostart_path", lambda: desktop_file)
 
     assert startup.disable_startup() is True
+
+
+# ---------------------------------------------------------------------------
+# Startup sync must not hijack an entry that points at another live exe
+# ---------------------------------------------------------------------------
+
+
+def _setup_win(monkeypatch, registered: str, current: str) -> FakeWinreg:
+    fake_winreg = FakeWinreg()
+    fake_winreg.values["StreamMonitor"] = registered
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    monkeypatch.setattr(startup, "_IS_WINDOWS", True)
+    monkeypatch.setattr(startup.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(startup.sys, "executable", current)
+    return fake_winreg
+
+
+def test_heal_keeps_entry_pointing_at_other_existing_exe(monkeypatch, tmp_path) -> None:
+    other = tmp_path / "installed" / "HelloStreamer.exe"
+    other.parent.mkdir()
+    other.write_text("x")
+    registered = f'"{other}" --silent'
+    fake = _setup_win(monkeypatch, registered, str(tmp_path / "dist" / "HelloStreamer.exe"))
+
+    assert startup.heal_startup_command_if_enabled(keep_existing_other_exe=True) is False
+    assert fake.values["StreamMonitor"] == registered
+
+
+def test_heal_rewrites_entry_pointing_at_missing_exe(monkeypatch, tmp_path) -> None:
+    missing = tmp_path / "moved" / "HelloStreamer.exe"
+    current = str(tmp_path / "new" / "HelloStreamer.exe")
+    fake = _setup_win(monkeypatch, f'"{missing}" --silent', current)
+
+    assert startup.heal_startup_command_if_enabled(keep_existing_other_exe=True) is True
+    assert fake.values["StreamMonitor"] == f"{current} --silent"
+
+
+def test_heal_same_exe_case_insensitive_still_updates(monkeypatch, tmp_path) -> None:
+    exe = tmp_path / "HelloStreamer.exe"
+    exe.write_text("x")
+    fake = _setup_win(monkeypatch, f'"{str(exe).upper()}"', str(exe))
+
+    assert startup.heal_startup_command_if_enabled(keep_existing_other_exe=True) is True
+    assert fake.values["StreamMonitor"] == f"{exe} --silent"
+
+
+def test_user_enable_always_writes_current_path(monkeypatch, tmp_path) -> None:
+    other = tmp_path / "installed" / "HelloStreamer.exe"
+    other.parent.mkdir()
+    other.write_text("x")
+    current = str(tmp_path / "dist" / "HelloStreamer.exe")
+    fake = _setup_win(monkeypatch, f'"{other}" --silent', current)
+
+    assert startup.enable_startup() is True
+    assert fake.values["StreamMonitor"] == f"{current} --silent"
+
+
+def test_parse_command_exe_handles_quotes_and_args() -> None:
+    parse = startup._parse_command_exe
+    assert parse(r'"D:\Tools\HelloStreamer\HelloStreamer.exe" --silent') == (
+        r"D:\Tools\HelloStreamer\HelloStreamer.exe"
+    )
+    assert parse(r"D:\Tools\Hello Streamer\a.exe --silent") == (
+        r"D:\Tools\Hello Streamer\a.exe"
+    )
+    assert parse(r"C:\a\b.exe") == r"C:\a\b.exe"
+    assert parse("") is None
+
+
+def test_linux_heal_keeps_other_existing_exe(monkeypatch, tmp_path) -> None:
+    other = tmp_path / "HelloStreamer"
+    other.write_text("x")
+    desktop_file = tmp_path / "stream-monitor.desktop"
+    desktop_file.write_text(f'[Desktop Entry]\nExec="{other}" --silent\n')
+    monkeypatch.setattr(startup, "_IS_WINDOWS", False)
+    monkeypatch.setattr(startup, "_autostart_path", lambda: desktop_file)
+    monkeypatch.setattr(startup.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(startup.sys, "executable", "/opt/dev/HelloStreamer")
+
+    assert startup.heal_startup_command_if_enabled(keep_existing_other_exe=True) is False
+    assert "/opt/dev" not in desktop_file.read_text()
