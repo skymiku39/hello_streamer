@@ -161,6 +161,15 @@ _ENGAGEMENT_AWAKE_LOCK = threading.Lock()
 _OBS_MANAGED_URLS: set[str] = set()
 _OBS_MANAGED_SINCE: dict[str, float] = {}
 _OBS_MANAGED_LOCK = threading.Lock()
+# Post-launch CDP discovery that timed out leaves a playing window with no
+# page assist worker, and nothing re-attaches until the 20 minute stall restart
+# closes every slot window (#63). Re-run discovery a couple of times instead.
+CDP_ATTACH_RETRY_DELAY_S = 30.0
+CDP_ATTACH_RETRY_LIMIT = 2
+# One pending timer per URL key; a timer acts only while it is still the entry.
+_CDP_ATTACH_RETRIES: dict[str, threading.Timer] = {}
+_CDP_ATTACH_RETRY_LOCK = threading.Lock()
+_CDP_ATTACH_RETRY_TIMER = threading.Timer
 
 
 def configure_viewer_engagement(
@@ -170,6 +179,7 @@ def configure_viewer_engagement(
     global _VIEWER_ENGAGEMENT
     _VIEWER_ENGAGEMENT = coerce_viewer_engagement(settings)
     if _VIEWER_ENGAGEMENT is None or not _VIEWER_ENGAGEMENT.page_assist_active():
+        cancel_cdp_attach_retries()
         stop_all_page_assist()
         publish_page_assist_status("*", "")
     else:
@@ -263,6 +273,7 @@ _prune_off_topic_tracked_windows_impl = prune_off_topic_tracked_windows
 def close_browser_window_for_url(
     url: str, *, title_keywords: list[str] | None = None
 ) -> int:
+    cancel_cdp_attach_retries(url)
     stop_page_assist(url)
     publish_page_assist_status(url, "")
     closed = _close_browser_window_for_url_impl(url, title_keywords=title_keywords)
@@ -284,6 +295,7 @@ def close_browser_window_for_url(
 
 
 def close_all_tracked_windows() -> int:
+    cancel_cdp_attach_retries()
     stop_all_page_assist()
     with _OBS_MANAGED_LOCK:
         observed_urls = list(_OBS_MANAGED_URLS)
@@ -1221,6 +1233,8 @@ def _open_with_browser_settings(
                 from stream_monitor.claim_registry import request_endpoint_restart
 
                 request_endpoint_restart()
+            else:
+                _schedule_cdp_attach_retry(url, effective_user_data_dir)
 
     try:
         from stream_monitor.watch_observation import (
@@ -1275,6 +1289,114 @@ def _open_with_browser_settings(
         )
 
     return True
+
+
+def _cdp_attach_retry_key(url: str) -> str:
+    return url.rstrip("/").lower()
+
+
+def cancel_cdp_attach_retries(url: str | None = None) -> None:
+    """Drop the pending re-attach for *url*, or every pending one."""
+    with _CDP_ATTACH_RETRY_LOCK:
+        if url is None:
+            timers = list(_CDP_ATTACH_RETRIES.values())
+            _CDP_ATTACH_RETRIES.clear()
+        else:
+            timer = _CDP_ATTACH_RETRIES.pop(_cdp_attach_retry_key(url), None)
+            timers = [] if timer is None else [timer]
+    for timer in timers:
+        timer.cancel()
+
+
+def _schedule_cdp_attach_retry(
+    url: str, user_data_dir: str, *, attempt: int = 1,
+) -> bool:
+    """Arm one delayed re-attach for *url* without blocking the caller.
+
+    A fresh launch (``attempt`` 1) replaces whatever is pending for the URL;
+    a follow-up attempt yields to a newer launch's timer.
+    """
+    if not url or not user_data_dir or attempt > CDP_ATTACH_RETRY_LIMIT:
+        return False
+    key = _cdp_attach_retry_key(url)
+
+    def fire() -> None:
+        with _CDP_ATTACH_RETRY_LOCK:
+            # Cancelled or superseded timers may still fire; only the
+            # registered one may act, and it leaves the table first.
+            if _CDP_ATTACH_RETRIES.get(key) is not timer:
+                return
+            del _CDP_ATTACH_RETRIES[key]
+        try:
+            _retry_cdp_attach(url, user_data_dir, attempt)
+        except Exception:
+            logger.exception("Twitch page assist CDP re-attach failed for %s", url)
+
+    timer = _CDP_ATTACH_RETRY_TIMER(CDP_ATTACH_RETRY_DELAY_S, fire)
+    timer.daemon = True
+    timer.name = "cdp-attach-retry"
+    with _CDP_ATTACH_RETRY_LOCK:
+        previous = _CDP_ATTACH_RETRIES.get(key)
+        if previous is not None and attempt > 1:
+            return False
+        _CDP_ATTACH_RETRIES[key] = timer
+    if previous is not None:
+        previous.cancel()
+    timer.start()
+    logger.info(
+        "Twitch page assist CDP re-attach %s/%s for %s in %.0fs",
+        attempt, CDP_ATTACH_RETRY_LIMIT, url, CDP_ATTACH_RETRY_DELAY_S,
+    )
+    return True
+
+
+def _retry_cdp_attach(url: str, user_data_dir: str, attempt: int) -> None:
+    """Re-run endpoint discovery for a window that opened without page assist.
+
+    Only attaches: closing or reopening windows stays with the stall restart
+    and the #21 endpoint restart.
+    """
+    from stream_monitor.cdp_client import CdpAttachResult, resolve_cdp_attach
+
+    def abandoned() -> bool:
+        engagement = _active_viewer_engagement()
+        if engagement is None or not engagement.page_assist_active():
+            return True
+        with _OBS_MANAGED_LOCK:
+            tracked = url in _OBS_MANAGED_URLS
+        if not tracked or not managed_window_is_open(url):
+            return True
+        return _cdp_attach_retry_key(url) in active_page_assist_urls()
+
+    if abandoned():
+        logger.info("Twitch page assist CDP re-attach no longer needed for %s", url)
+        return
+    try:
+        attach = resolve_cdp_attach(user_data_dir, is_cancelled=abandoned)
+    except Exception:
+        logger.exception("Twitch page assist CDP re-attach discovery failed for %s", url)
+        attach = CdpAttachResult(ok=False, reason="unavailable")
+    if abandoned():
+        return
+    current = _active_viewer_engagement()
+    if attach.ok and attach.port and current is not None:
+        try:
+            start_page_assist(url, attach.port, current.for_channel(url))
+            logger.info(
+                "Twitch page assist attached to %s on retry %s/%s",
+                url, attempt, CDP_ATTACH_RETRY_LIMIT,
+            )
+            return
+        except Exception:
+            publish_page_assist_status(url, "unavailable")
+            logger.exception("Failed to start Twitch page assist for %s", url)
+    else:
+        publish_page_assist_status(url, attach.reason or "unavailable")
+    if not _schedule_cdp_attach_retry(url, user_data_dir, attempt=attempt + 1):
+        logger.warning(
+            "Twitch page assist CDP re-attach gave up for %s after %s tries: reason=%s",
+            url, attempt, attach.reason or "unavailable",
+        )
 
 
 def _resume_managed_window_assist(
