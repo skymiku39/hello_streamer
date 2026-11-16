@@ -33,6 +33,13 @@ def _db_path() -> Path:
     return portable_paths().database_file
 
 
+def _is_lock_error(exc: sqlite3.DatabaseError) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
 class SeenVideoDB:
     """Thin wrapper around SQLite for tracking seen video IDs."""
 
@@ -41,13 +48,62 @@ class SeenVideoDB:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._closed = False
+        try:
+            self._open()
+        except sqlite3.DatabaseError as exc:
+            if _is_lock_error(exc):
+                raise
+            # The DB is only a dedup cache, so a corrupt file can be rebuilt.
+            self._quarantine_corrupt_file(exc)
+            self._open()
+
+    def _open(self) -> None:
         self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
-        # The monitor serialises access to its connection, but another process
-        # (or a portable copy started during an update) can still briefly hold
-        # SQLite's file lock. A bounded wait avoids an immediate lock failure.
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._ensure_schema()
+        try:
+            # The monitor serialises access to its connection, but another
+            # process (or a portable copy started during an update) can still
+            # briefly hold SQLite's file lock. A bounded wait avoids an
+            # immediate lock failure.
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._ensure_schema()
+        except BaseException:
+            # Closing the connection makes SQLite delete -wal/-shm files, so
+            # snapshot them first in case the file turns out to be corrupt.
+            self._sidecars = self._read_sidecars()
+            self._conn.close()
+            raise
+
+    def _read_sidecars(self) -> dict[str, bytes]:
+        found: dict[str, bytes] = {}
+        for ext in ("-wal", "-shm"):
+            try:
+                found[ext] = self._path.with_name(self._path.name + ext).read_bytes()
+            except OSError:
+                pass
+        return found
+
+    def _quarantine_corrupt_file(self, original: sqlite3.DatabaseError) -> None:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        suffix = f".corrupt-{stamp}"
+        sidecars = getattr(self, "_sidecars", {})
+        try:
+            for ext in ("", "-wal", "-shm"):
+                src = self._path.with_name(self._path.name + ext)
+                dst = src.with_name(src.name + suffix)
+                if src.exists():
+                    src.replace(dst)
+                elif ext in sidecars:
+                    dst.write_bytes(sidecars[ext])
+        except OSError:
+            logger.exception("Could not move corrupt database %s aside", self._path)
+            raise original
+        logger.warning(
+            "Database %s is corrupt (%s); kept as *%s and recreating it",
+            self._path,
+            original,
+            suffix,
+        )
 
     def __enter__(self) -> "SeenVideoDB":
         return self

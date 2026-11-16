@@ -1,5 +1,8 @@
 import sqlite3
 import threading
+from pathlib import Path
+
+import pytest
 
 from stream_monitor.db import SeenVideoDB
 
@@ -134,3 +137,84 @@ def test_concurrent_is_seen_and_mark_seen(tmp_path) -> None:
 
     assert not errors
     db.close()
+
+
+def test_corrupt_database_is_renamed_and_recreated(tmp_path) -> None:
+    path = tmp_path / "seen.db"
+    garbage = b"this is definitely not a sqlite database" * 50
+    path.write_bytes(garbage)
+
+    db = SeenVideoDB(path)
+    db.mark_seen("v1", "youtube", "chan", "LIVE")
+    assert db.is_seen("v1", "LIVE") is True
+    db.close()
+
+    backups = list(tmp_path.glob("seen.db.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == garbage
+
+
+def test_corrupt_database_wal_and_shm_are_renamed_too(tmp_path) -> None:
+    path = tmp_path / "seen.db"
+    path.write_bytes(b"garbage" * 100)
+    (tmp_path / "seen.db-wal").write_bytes(b"wal-bytes")
+    (tmp_path / "seen.db-shm").write_bytes(b"shm-bytes")
+
+    SeenVideoDB(path).close()
+
+    wal = list(tmp_path.glob("seen.db-wal.corrupt-*"))
+    shm = list(tmp_path.glob("seen.db-shm.corrupt-*"))
+    assert len(wal) == 1 and wal[0].read_bytes() == b"wal-bytes"
+    assert len(shm) == 1  # SQLite may rewrite the shm contents
+
+
+def test_locked_database_is_not_renamed(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "seen.db"
+    path.write_bytes(b"pretend this is in use")
+    real_connect = sqlite3.connect
+
+    class _LockedConn:
+        def __init__(self, conn) -> None:
+            self._conn = conn
+
+        def execute(self, sql, *args):
+            if sql.startswith("PRAGMA journal_mode"):
+                raise sqlite3.OperationalError("database is locked")
+            return self._conn.execute(sql, *args)
+
+        def close(self) -> None:
+            self._conn.close()
+
+    monkeypatch.setattr(
+        sqlite3, "connect", lambda *a, **k: _LockedConn(real_connect(*a, **k))
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        SeenVideoDB(path)
+
+    assert path.read_bytes() == b"pretend this is in use"
+    assert list(tmp_path.glob("*.corrupt-*")) == []
+
+
+def test_rename_failure_re_raises_original_error(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "seen.db"
+    path.write_bytes(b"garbage" * 100)
+
+    def _boom(self, target):
+        raise OSError("denied")
+
+    monkeypatch.setattr(Path, "replace", _boom)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        SeenVideoDB(path)
+
+
+def test_healthy_database_keeps_data_after_reopen(tmp_path) -> None:
+    path = tmp_path / "seen.db"
+    db = SeenVideoDB(path)
+    db.mark_seen("keep", "youtube", "chan", "LIVE")
+    db.close()
+
+    with SeenVideoDB(path) as reopened:
+        assert reopened.is_seen("keep", "LIVE") is True
+    assert list(tmp_path.glob("*.corrupt-*")) == []
