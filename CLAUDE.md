@@ -10,10 +10,11 @@
 - 只有 `tests/` 屬於維護中的測試；`release/`、`artifacts/`、`build/`、`dist/` 內可能有舊版副本，不要讀或修改。
 - `logs/`、`browser_profile/`、`seen_videos.db*`、`config.json` 是使用者的執行資料，除非任務明確要求，不要修改或刪除。
 - 本機實際運行的是 `D:\Tools\HelloStreamer\`（打包版），要看執行狀況請查那裡的 `logs/`；repo 內的 `logs/` 是舊資料。
-- 完成一項工作且驗證通過後，直接提交（commit），不要再詢問使用者；訊息要適當、不混入無關檔案。推送與開 PR 仍需使用者明確指示。
+- 完成一項工作且驗證通過後，直接提交（commit），不要再詢問使用者；訊息要適當、不混入無關檔案。推送可直接進行；開 PR 前需先經使用者確認。
 
-## 委派規則（subagent 定義在 `.claude/agents/`）
+## 委派規則（subagent 定義用全域的 `~/.claude/agents/`）
 - 搜尋、讀大量檔案、整理日誌、跑測試並回報 → `worker-haiku`。
 - 規格明確的程式碼修改、批次重構、補測試 → `worker-sonnet`。
 - 架構決策、需求釐清、與使用者對話 → 留在主對話。
 - 委派時簡報必須包含：目標、相關檔案、完成標準、不可更動的範圍。
+- subagent 不 commit、不 push，不刪改上述使用者執行資料；`worker-sonnet` 改完先跑相關測試檔，再跑 `uv run ruff check`。
