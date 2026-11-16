@@ -546,8 +546,13 @@ def test_open_busy_profile_attaches_existing_usable_endpoint(
 def test_open_busy_profile_without_cdp_skips_page_assist_promptly(
     monkeypatch, tmp_path, caplog
 ) -> None:
-    """Busy profile without a usable CDP endpoint fails fast and skips worker."""
+    """Busy profile without a usable CDP endpoint fails fast and skips worker.
+
+    Covers the case where no recovery port can be put on the command line
+    (non-Windows, or no free port); the recovery launch is tested below.
+    """
     monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.setattr(notifier, "_nondebug_recovery_port", lambda _attach: None)
     import time as time_mod
 
     import stream_monitor.cdp_client as cdp_client
@@ -619,6 +624,67 @@ def test_open_busy_profile_without_cdp_skips_page_assist_promptly(
         notifier.configure_viewer_engagement(None)
         stop_all_page_assist()
 
+
+
+def test_nondebug_profile_launch_carries_port_and_requests_restart(
+    monkeypatch, tmp_path,
+) -> None:
+    """2026-11-16 14:36: a launch into an exiting browser must keep a port.
+
+    If the existing browser is alive after all, discovery fails and the
+    allocator is asked to restart every slot window.
+    """
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    import stream_monitor.cdp_client as cdp_client
+    from stream_monitor import claim_registry
+    from stream_monitor.cdp_client import CdpAttachResult
+
+    claim_registry.reset_for_tests()
+    profile = tmp_path / "profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    launched: list[list[str]] = []
+    _patch_open_browser_common(monkeypatch)
+    monkeypatch.setattr(
+        notifier.subprocess, "Popen", lambda args, *a, **k: launched.append(args) or object()
+    )
+    monkeypatch.setattr(
+        cdp_client,
+        "acquire_cdp_debugging_port",
+        lambda *_a, **_k: CdpAttachResult(ok=False, reason="profile_nondebug"),
+    )
+    monkeypatch.setattr(notifier, "_nondebug_recovery_port", lambda _attach: 49674)
+    monkeypatch.setattr(
+        cdp_client,
+        "resolve_cdp_attach",
+        lambda *_a, **_k: CdpAttachResult(ok=False, reason="timeout"),
+    )
+    monkeypatch.setattr(notifier, "start_page_assist", lambda *a: True)
+    notifier.configure_viewer_engagement(
+        ViewerEngagementSettings(
+            enabled=True, page_assist_enabled=True, keep_system_awake=False,
+        )
+    )
+    try:
+        ok = notifier._open_with_browser_settings(
+            "https://www.twitch.tv/foo",
+            {
+                "enabled": True,
+                "browser_path": "chrome",
+                "app_mode": True,
+                "new_window": False,
+                "user_data_dir": str(profile),
+                "per_channel_profile": False,
+            },
+            manage=True,
+        )
+        assert ok is True
+        assert len(launched) == 1
+        assert "--remote-debugging-port=49674" in launched[0]
+        assert claim_registry.take_endpoint_restart(now=1000.0)
+    finally:
+        notifier.configure_viewer_engagement(None)
+        stop_all_page_assist()
+        claim_registry.reset_for_tests()
 
 def test_open_fresh_profile_devtools_timeout_skips_page_assist(
     monkeypatch, tmp_path, caplog

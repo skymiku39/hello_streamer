@@ -665,3 +665,80 @@ def test_watch_time_only_counts_while_holding_a_slot() -> None:
     claim_registry.track_slot_holders(["jipandan"], now=half + 5000 + half)
 
     assert claim_registry.had_turn("jipandan")
+
+
+def _reopening_probe(rows: list[Any], previous: tuple[str, ...]) -> Any:
+    probe = _sticky_probe(rows, previous)
+    submitted: list[str] = []
+    probe._controller = SimpleNamespace(mode=app_module.TRIGGER_MODE, generation=1)
+    probe._action_coordinator = SimpleNamespace(
+        submit=lambda _plan, info, _settings, _gen: submitted.append(info.channel) or True
+    )
+    probe.submitted = submitted
+    return probe
+
+
+def test_browser_without_endpoint_restarts_every_slot_window(monkeypatch) -> None:
+    # 2026-11-16 14:36: the replacement browser started without a debugging
+    # endpoint; reopening one window would land in the same browser.
+    rows = [_live("hayabi_zr"), _live("neipuduck")]
+    urls = {"https://www.twitch.tv/hayabi_zr", "https://www.twitch.tv/neipuduck"}
+    closed = _patch_windows(monkeypatch, urls)
+    probe = _reopening_probe(rows, ("hayabi_zr", "neipuduck"))
+    monkeypatch.setattr(claim_registry.time, "monotonic", lambda: 1000.0)
+
+    App.refresh_points_priority_allocation(probe, allow_open=True)
+    assert closed == []
+
+    claim_registry.request_endpoint_restart()
+    App.refresh_points_priority_allocation(probe, allow_open=True)
+
+    assert set(closed) == urls
+    assert sorted(probe.submitted) == ["hayabi_zr", "neipuduck"]
+    assert probe._active_points_priority_channels == ("hayabi_zr", "neipuduck")
+
+
+def test_endpoint_restart_waits_until_windows_can_be_reopened(monkeypatch) -> None:
+    rows = [_live("hayabi_zr"), _live("neipuduck")]
+    closed = _patch_windows(
+        monkeypatch,
+        {"https://www.twitch.tv/hayabi_zr", "https://www.twitch.tv/neipuduck"},
+    )
+    probe = _reopening_probe(rows, ("hayabi_zr", "neipuduck"))
+    claim_registry.request_endpoint_restart()
+
+    App.refresh_points_priority_allocation(probe)  # poll without opening
+    assert closed == []
+
+    App.refresh_points_priority_allocation(probe, allow_open=True)
+    assert len(closed) == 2
+
+
+def test_endpoint_restarts_are_spaced_and_bounded() -> None:
+    now = 1000.0
+    claim_registry.request_endpoint_restart()
+    assert claim_registry.take_endpoint_restart(now=now)
+    assert not claim_registry.take_endpoint_restart(now=now)  # nothing pending
+
+    claim_registry.request_endpoint_restart()
+    assert not claim_registry.take_endpoint_restart(now=now + 60)  # cooldown
+    now += claim_registry.ENDPOINT_RESTART_COOLDOWN_SECONDS
+    assert claim_registry.take_endpoint_restart(now=now)
+
+    # The limit is spent: a browser that never exposes an endpoint is left to
+    # the points stall restart instead of being restarted forever.
+    claim_registry.request_endpoint_restart()
+    now += claim_registry.ENDPOINT_RESTART_COOLDOWN_SECONDS
+    assert not claim_registry.take_endpoint_restart(now=now)
+
+    # A successful attach proves the restart worked and restores the allowance.
+    claim_registry.note_endpoint_attached()
+    claim_registry.request_endpoint_restart()
+    assert claim_registry.take_endpoint_restart(now=now)
+
+
+def test_attach_clears_a_pending_endpoint_restart() -> None:
+    claim_registry.request_endpoint_restart()
+    claim_registry.note_endpoint_attached()
+
+    assert not claim_registry.take_endpoint_restart(now=1000.0)
