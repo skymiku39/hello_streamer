@@ -65,7 +65,7 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 - 完整測試（修正前）：1449 通過、5 失敗；其中 4 個已修，1 個為上列不穩定測試。
 
 ## 進行中 / 下一步
-**2026-11-16 改用 GitHub 管理待辦**（使用者同意）：本分支已開 PR #20 到 `main`；未結事項已轉成 issues #21–#31（標題前綴 `[P?]`，P2 歸 milestone `v1.3.2`，待觀察者加 `needs-observation` label）。之後一個 issue 對一個分支對一個 PR，本檔只留決策與部署紀錄。下一步：#20 合併後開 v1.3.2 發行 PR（升版號、RELEASE_NOTES、`points_slot_count` 說明、確認 `docs/` 分配規則），再精簡本檔並刪除已合併分支（刪遠端分支需另行確認）。以下寶箱調查已於 11/9 查清無漏領，保留作紀錄。
+**2026-11-16 改用 GitHub 管理待辦**（使用者同意）：本分支已開 PR #20 到 `main`；未結事項已轉成 issues #21–#31（標題前綴 `[P?]`，P2 歸 milestone `v1.3.2`，待觀察者加 `needs-observation` label）。之後一個 issue 對一個分支對一個 PR，本檔只留決策與部署紀錄。#20 已於 2026-11-16 合併（merge commit `19c8ca9`，保留 19 個主題 commit）。v1.3.2 發行 PR 已開（分支 `release/v1.3.2`）：升版號、RELEASE_NOTES、`points_slot_count` 說明；`docs/watch-streak-observation.md` 的分配說明原本還是「佔位到下播」舊規則，已改成現行規則。發行 PR 合併後由使用者推 `v1.3.2` tag 觸發 release workflow。之後精簡本檔並刪除已合併分支（刪遠端分支需另行確認）。以下寶箱調查已於 11/9 查清無漏領，保留作紀錄。
 
 **寶箱沒領的調查**（尚未有結論）：
 1. 向使用者確認：該視窗當時在前景／被遮住／最小化？用 `run_hello_streamer.bat` 還是打包 exe？發生時間點？
