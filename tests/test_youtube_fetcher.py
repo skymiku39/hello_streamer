@@ -1,6 +1,8 @@
 import json
 import time
 
+import requests
+
 from stream_monitor.fetcher.youtube import (
     _WATCH_DETAILS_CACHE_MAX,
     _WATCH_DETAILS_CACHE_TTL,
@@ -531,6 +533,97 @@ class TestGetStreamInfo:
 # ─────────────────────────────────────────────
 # Fallback: old ytInitialPlayerResponse parsing
 # ─────────────────────────────────────────────
+def _stub_live_page_http(monkeypatch, fetcher, live_get) -> None:
+    """Serve an empty /streams feed; route the /live request to ``live_get``."""
+    streams_html = _html_with_initial_data(_make_initial_data([], "Streamer"))
+
+    class _Ok:
+        status_code = 200
+        text = streams_html
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def _get(url, timeout=15):
+        if url.endswith("/streams"):
+            return _Ok()
+        return live_get()
+
+    monkeypatch.setattr(fetcher, "_wait_for_request_slot", lambda: True)
+    monkeypatch.setattr(fetcher, "_note_rate_limited", lambda: None)
+    monkeypatch.setattr(
+        fetcher,
+        "_session_for_thread",
+        lambda: type("S", (), {"get": staticmethod(_get)})(),
+    )
+    monkeypatch.setattr("stream_monitor.fetcher.youtube.time.sleep", lambda _s: None)
+
+
+def _live_response(status_code: int, text: str = ""):
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+    _Resp.status_code = status_code
+    _Resp.text = text
+    return _Resp
+
+
+class TestLiveFallbackFetchFailure:
+    """#57: a failed /live fetch is unknown, not evidence of being offline."""
+
+    def _raise(self, exc):
+        def _live_get():
+            raise exc
+
+        return _live_get
+
+    def test_live_timeout_is_unavailable(self, monkeypatch) -> None:
+        fetcher = YouTubeFetcher()
+        _stub_live_page_http(
+            monkeypatch, fetcher, self._raise(requests.Timeout("timed out"))
+        )
+        assert fetcher.get_stream_info("streamer") is None
+
+    def test_live_connection_error_is_unavailable(self, monkeypatch) -> None:
+        fetcher = YouTubeFetcher()
+        _stub_live_page_http(
+            monkeypatch, fetcher, self._raise(requests.ConnectionError("reset"))
+        )
+        assert fetcher.get_stream_info("streamer") is None
+
+    def test_live_429_is_unavailable(self, monkeypatch) -> None:
+        fetcher = YouTubeFetcher()
+        _stub_live_page_http(monkeypatch, fetcher, _live_response(429))
+        assert fetcher.get_stream_info("streamer") is None
+
+    def test_live_500_is_unavailable(self, monkeypatch) -> None:
+        fetcher = YouTubeFetcher()
+        _stub_live_page_http(monkeypatch, fetcher, _live_response(500))
+        assert fetcher.get_stream_info("streamer") is None
+
+    def test_live_404_is_unavailable(self, monkeypatch) -> None:
+        # _fetch_page reports 404 as a fetch failure ("http 404"), the same
+        # as get_channel_items does for /streams.
+        fetcher = YouTubeFetcher()
+        _stub_live_page_http(monkeypatch, fetcher, _live_response(404))
+        assert fetcher.get_stream_info("streamer") is None
+
+    def test_live_page_without_player_response_is_offline(self, monkeypatch) -> None:
+        fetcher = YouTubeFetcher()
+        _stub_live_page_http(
+            monkeypatch,
+            fetcher,
+            _live_response(200, "<html><body>channel home</body></html>"),
+        )
+        info = fetcher.get_stream_info("streamer")
+
+        assert info is not None
+        assert info.is_live is False
+        assert info.display_name == "Streamer"
+        assert info.url.endswith("/live")
+
+
 class TestFallbackParseLiveStatus:
     def test_accepts_actual_live_player_response(self) -> None:
         fetcher = YouTubeFetcher()
