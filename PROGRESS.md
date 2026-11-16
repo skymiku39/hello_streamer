@@ -41,8 +41,11 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 | 11/14 01:40 | 停滯重啟擴及已輪過者 | `c7e10f2` | `..._20261114_pre-served-stall` |
 | 11/14 | `points_slot_count`、下播 120 秒緩衝、ytInitialData 警告細節 | `d20c8f4` `b1fee77` `dadc261` | `..._20261114_pre-slot-count`（含 config.json） |
 | 11/16 09:48 | 佔位滿 10 分鐘才算輪過 | `dac156c` | `..._20261116_pre-min-watch`（含 config.json） |
+| 11/16 14:36 | v1.3.2（程式與 `dac156c` 相同，只有版本號） | `4c0692f` | `..._20261116_pre-v1.3.2`（含 config.json） |
 
-目前部署內容等同 `main` 的 v1.3.2（PR #20、#32 已合併）；`v1.3.2` tag 尚未推送，推送後觸發 release workflow。
+目前部署內容等同 `main` 的 v1.3.2：1260 個檔案與 `dist` 逐一比對一致，log 版本 1.3.2。`v1.3.2` tag 尚未推送，推送後觸發 release workflow。
+
+11/16 14:36 部署時重現了 #21：舊瀏覽器在重啟期間仍開著，新程式重開的瀏覽器（14:36:43）沒帶 `--remote-debugging-port`，兩個視窗都是 `profile_nondebug`。手動結束程式專用 profile 的 Chrome 後，分配在 14:39:23 重開，瀏覽器帶埠 49674，兩台 2 秒內 attach。因此部署步驟加上第 6 步。
 
 ## 部署步驟（2026-11-10 整理）
 1. `uv run python build.py` → `dist\HelloStreamer\`（HelloStreamer.exe + `_internal`）。
@@ -50,6 +53,7 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 3. 停止執行中的 HelloStreamer，換掉 exe 與 `_internal`（不動 config、logs、browser_profile、db）。
 4. 若 `_internal` 內 VCRUNTIME DLL 被鎖無法刪除，可直接覆蓋其餘檔案，事後以 hash 比對 dist 與部署目錄確認一致。一定要帶 `--silent` 啟動，否則不會自動開始監控：用 WMI `Win32_Process.Create` 啟動 `"D:\Tools\HelloStreamer\HelloStreamer.exe" --silent`（工作目錄設為該資料夾），讓它脫離 shell 的 job。
 5. 查 `logs\stream_monitor.log` 有 `Poll complete`，且直播中的頻道 page assist 有重新 attach。重啟時受管視窗會關掉再重開，屬正常。
+6. 若出現 `reason=profile_nondebug`（#21），結束 `--user-data-dir=D:\Tools\HelloStreamer\browser_profile` 的所有 chrome.exe，等分配重開，確認主程序帶 `--remote-debugging-port` 且 page assist 有 `attached via CDP`。
 
 ## 本機運行環境
 - 實際運行：`D:\Tools\HelloStreamer\HelloStreamer.exe`；資料與 log 在同資料夾（`logs/`、`config.json`、`browser_profile/`）。repo 內 `logs/` 是 10/14 的舊 log。
