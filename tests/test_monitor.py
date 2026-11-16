@@ -3843,6 +3843,22 @@ def test_tier1_may_overwrite_cached_blocks_live_to_offline_downgrade() -> None:
     assert guard("live", offline_preview) is True  # non-ChannelStatus cache
 
 
+def test_tier1_may_overwrite_cached_blocks_live_to_upcoming() -> None:
+    """Cached LIVE must not be rewritten by an upcoming (waiting-room) preview."""
+    guard = Monitor._tier1_may_overwrite_cached
+    live_cached = ChannelStatus(status=True)
+    upcoming_preview = ChannelStatus(status="upcoming", scheduled_start="")
+    live_preview = ChannelStatus(status=True)
+    offline_preview = ChannelStatus(status=False)
+
+    assert guard(live_cached, upcoming_preview) is False
+    assert guard(live_cached, live_preview) is True
+    assert guard(live_cached, offline_preview) is False
+    # Non-live cache: upcoming preview still overwrites.
+    assert guard(ChannelStatus(status=False), upcoming_preview) is True
+    assert guard(None, upcoming_preview) is True
+
+
 def test_seeded_offline_status_still_fires_went_live(monkeypatch, tmp_path) -> None:
     """An offline seed that is now live is a genuine new edge and must fire."""
     fetcher = FakeTwitchFetcher([True])
