@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -33,6 +34,8 @@ SCHEMA_VERSION = 1
 CLI_FLAG = "--watch-observation"
 OBSERVATION_LOG_NAME = "watch_streak_observation.ndjson"
 RETENTION_DAYS = 30
+MAX_OBSERVATION_BYTES = 10 * 1024 * 1024
+OBSERVATION_BACKUP_COUNT = 2
 SNAPSHOT_INTERVAL_S = 30.0
 
 _SENSITIVE_KEYS = frozenset(
@@ -173,19 +176,38 @@ def apply_observation_retention(
     now: datetime | None = None,
     retention_days: int = RETENTION_DAYS,
 ) -> str:
-    """Apply retention when enabling observation. Returns kept|expired|absent|error."""
-    if not path.exists():
-        return "absent"
-    try:
-        if should_expire_observation_file(
-            path, now=now, retention_days=retention_days
-        ):
-            path.unlink()
-            return "expired"
-        return "kept"
-    except OSError:
-        logger.exception("Watch observation retention failed for %s", path)
-        return "error"
+    """Apply retention when enabling observation. Returns kept|expired|absent|error.
+
+    Rotated backups (``<name>.1``, ``<name>.2``...) are pruned by their own
+    inactivity; the returned status describes the main file only.
+    """
+    status = "absent"
+    if path.exists():
+        try:
+            if should_expire_observation_file(
+                path, now=now, retention_days=retention_days
+            ):
+                path.unlink()
+                status = "expired"
+            else:
+                status = "kept"
+        except OSError:
+            logger.exception("Watch observation retention failed for %s", path)
+            status = "error"
+    for backup in _rotated_paths(path, OBSERVATION_BACKUP_COUNT):
+        try:
+            if should_expire_observation_file(
+                backup, now=now, retention_days=retention_days
+            ):
+                backup.unlink()
+        except OSError:
+            logger.exception("Watch observation retention failed for %s", backup)
+            status = "error"
+    return status
+
+
+def _rotated_paths(path: Path, count: int) -> list[Path]:
+    return [path.with_name(f"{path.name}.{i}") for i in range(1, count + 1)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,18 +229,57 @@ class StreamIdentity:
 class ObservationWriter:
     """Append-only NDJSON writer; safe to reopen across app runs."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        max_bytes: int = MAX_OBSERVATION_BYTES,
+        backup_count: int = OBSERVATION_BACKUP_COUNT,
+    ) -> None:
         self.path = path
+        self._max_bytes = max_bytes
+        self._backup_count = backup_count
         self._lock = threading.Lock()
+        self._rotate_failed = False
+        try:
+            self._size = path.stat().st_size
+        except OSError:
+            self._size = 0
+
+    def _rotate(self) -> None:
+        """Shift ``X`` -> ``X.1`` -> ``X.2``...; the oldest beyond the limit is dropped."""
+        try:
+            if self._backup_count <= 0:
+                self.path.unlink()
+            else:
+                rotated = _rotated_paths(self.path, self._backup_count)
+                for i in range(len(rotated) - 1, 0, -1):
+                    if rotated[i - 1].exists():
+                        os.replace(rotated[i - 1], rotated[i])
+                os.replace(self.path, rotated[0])
+        except OSError:
+            if not self._rotate_failed:
+                logger.warning(
+                    "Watch observation rotation failed; keep writing %s",
+                    self.path,
+                    exc_info=True,
+                )
+            self._rotate_failed = True
+            return
+        self._rotate_failed = False
+        self._size = 0
 
     def append(self, event: Mapping[str, Any]) -> bool:
         try:
             line = json.dumps(dict(event), ensure_ascii=False, separators=(",", ":"))
+            data = line + "\n"
             with self._lock:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
+                if self._max_bytes > 0 and self._size >= self._max_bytes:
+                    self._rotate()
                 with self.path.open("a", encoding="utf-8") as fh:
-                    fh.write(line)
-                    fh.write("\n")
+                    fh.write(data)
+                self._size += len(data.encode("utf-8"))
             return True
         except OSError:
             logger.exception("Watch observation append failed")

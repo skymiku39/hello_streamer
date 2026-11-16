@@ -585,3 +585,77 @@ def test_managed_open_without_page_assist_records_unknown_player_sample(
     assert sample["has_video"] is None
     assert sample["paused"] is None
     assert sample["identity"]["confidence"] == "unknown"
+
+
+def _rotation_writer(path: Path, **kw: int) -> wo.ObservationWriter:
+    return wo.ObservationWriter(path, max_bytes=100, backup_count=2, **kw)
+
+
+def test_writer_rotates_when_size_limit_reached(tmp_path: Path) -> None:
+    path = tmp_path / "logs" / "obs.ndjson"
+    writer = _rotation_writer(path)
+    assert writer.append({"type": "old", "pad": "x" * 120})
+    assert writer.append({"type": "new"})
+
+    backup = path.with_name("obs.ndjson.1")
+    assert "old" in backup.read_text(encoding="utf-8")
+    current = path.read_text(encoding="utf-8")
+    assert "new" in current and "old" not in current
+
+
+def test_writer_drops_oldest_beyond_backup_count(tmp_path: Path) -> None:
+    path = tmp_path / "obs.ndjson"
+    writer = _rotation_writer(path)
+    for name in ("a", "b", "c", "d"):
+        assert writer.append({"type": name, "pad": "x" * 120})
+
+    assert '"d"' in path.read_text(encoding="utf-8")
+    assert '"c"' in path.with_name("obs.ndjson.1").read_text(encoding="utf-8")
+    assert '"b"' in path.with_name("obs.ndjson.2").read_text(encoding="utf-8")
+    assert not path.with_name("obs.ndjson.3").exists()
+
+
+def test_writer_rotates_on_first_append_when_existing_file_is_large(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "obs.ndjson"
+    path.write_text("y" * 500 + "\n", encoding="utf-8")
+    writer = _rotation_writer(path)
+    assert writer.append({"type": "fresh"})
+
+    assert path.with_name("obs.ndjson.1").read_text(encoding="utf-8").startswith("yyy")
+    assert path.read_text(encoding="utf-8") == '{"type":"fresh"}\n'
+
+
+def test_writer_rotation_failure_still_writes_and_warns_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = tmp_path / "obs.ndjson"
+    writer = _rotation_writer(path)
+    assert writer.append({"type": "big", "pad": "x" * 120})
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(wo.os, "replace", boom)
+    with caplog.at_level(logging.WARNING, logger=wo.logger.name):
+        assert writer.append({"type": "kept1"})
+        assert writer.append({"type": "kept2"})
+
+    raw = path.read_text(encoding="utf-8")
+    assert "big" in raw and "kept1" in raw and "kept2" in raw
+    assert sum("rotation failed" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_retention_also_removes_rotated_backups(tmp_path: Path) -> None:
+    path = tmp_path / "obs.ndjson"
+    backups = [path.with_name("obs.ndjson.1"), path.with_name("obs.ndjson.2")]
+    old = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    for f in (path, *backups):
+        f.write_text("{}\n", encoding="utf-8")
+        os.utime(f, (old.timestamp(), old.timestamp()))
+
+    now = datetime(2026, 10, 5, tzinfo=timezone.utc)
+    assert wo.apply_observation_retention(path, now=now, retention_days=30) == "expired"
+    assert not path.exists()
+    assert not any(b.exists() for b in backups)
