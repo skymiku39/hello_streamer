@@ -3895,7 +3895,7 @@ def test_last_activity_epoch_seeds_wake_verify_gap(tmp_path) -> None:
 class _LockProbingTwitchFetcher(FakeTwitchFetcher):
     """Records whether ``session.lock`` is free during each VOD lookup."""
 
-    def __init__(self, lock: threading.Lock | None = None) -> None:
+    def __init__(self, lock: "threading.Lock | None" = None) -> None:
         super().__init__([False])
         self.lock = lock
         self.lock_free_during_vod: list[bool] = []
