@@ -39,7 +39,12 @@ class PortablePaths:
 
     @property
     def observation_log(self) -> Path:
-        """Opt-in Watch Streak diagnostic NDJSON (separate from application_log)."""
+        """Watch Streak diagnostic NDJSON (separate from application_log).
+
+        Auto-enabled when watch assist and in-page assist are both on (see
+        ``should_enable_watch_observation``); ``--watch-observation`` enables it
+        otherwise. Size-rotated: 10 MB per file, 2 backups.
+        """
         return self.logs_dir / "watch_streak_observation.ndjson"
 
     @property
