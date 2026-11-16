@@ -16,6 +16,7 @@ from build import (
     build_pyinstaller_command,
     normalize_release_tag,
     require_tag_matches_package_version,
+    strip_bundled_pycache,
     validate_linux_onedir_bundle,
     validate_windows_onedir_bundle,
 )
@@ -247,3 +248,19 @@ def test_app_exposes_frozen_self_check_path() -> None:
     text = (ROOT / "stream_monitor" / "app.py").read_text(encoding="utf-8")
     assert "def _run_frozen_self_check" in text
     assert '"--self-check"' in text
+
+
+def test_strip_bundled_pycache_removes_only_cache_dirs(tmp_path: Path) -> None:
+    package = tmp_path / "_internal" / "stream_monitor"
+    nested = package / "monitor"
+    for folder in (package, nested):
+        (folder / "__pycache__").mkdir(parents=True)
+        (folder / "__pycache__" / "mod.cpython-311.pyc").write_bytes(b"x")
+        (folder / "mod.py").write_text("x = 1", encoding="utf-8")
+
+    assert strip_bundled_pycache(tmp_path) == 2
+
+    assert not list(tmp_path.rglob("__pycache__"))
+    assert (package / "mod.py").is_file()
+    assert (nested / "mod.py").is_file()
+    assert strip_bundled_pycache(tmp_path) == 0

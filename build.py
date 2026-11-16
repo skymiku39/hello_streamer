@@ -8,6 +8,7 @@ which looks like a malware dropper to heuristic scanners.
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -191,6 +192,22 @@ def build_pyinstaller_command(
     return cmd
 
 
+def strip_bundled_pycache(bundle_dir: Path) -> int:
+    """Delete ``__pycache__`` directories from a built bundle; return the count.
+
+    ``--add-data stream_monitor`` copies the source tree as it is on disk, so
+    a working tree that has run tests ships bytecode caches for every
+    interpreter that touched it (195 extra files on 2026-11-17). A clean
+    checkout has none, which made local and CI bundles differ.
+    """
+    removed = 0
+    for cache_dir in sorted(bundle_dir.rglob("__pycache__")):
+        if cache_dir.is_dir():
+            shutil.rmtree(cache_dir)
+            removed += 1
+    return removed
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent
     cmd = build_pyinstaller_command(
@@ -200,7 +217,11 @@ def main() -> None:
     )
     print("Running:", " ".join(cmd))
     subprocess.run(cmd, check=True)
-    print(f"Built onedir bundle: {root / 'dist' / 'HelloStreamer'}")
+    bundle_dir = root / "dist" / "HelloStreamer"
+    removed = strip_bundled_pycache(bundle_dir)
+    if removed:
+        print(f"Removed {removed} __pycache__ directories from the bundle")
+    print(f"Built onedir bundle: {bundle_dir}")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
