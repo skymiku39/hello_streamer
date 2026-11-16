@@ -790,3 +790,33 @@ def test_extract_json_var_reads_json_parse_single_quoted_hex_escapes() -> None:
 def test_extract_json_var_reads_json_string_literal() -> None:
     html = '<script>var ytInitialData = "{\\"ok\\": 4}";</script>'
     assert YouTubeFetcher()._extract_json_var(html, "ytInitialData") == {"ok": 4}
+
+
+_ELEMENT_BOOTSTRAP = (
+    "<script>var ytDataEl = document.getElementById('yt-initial-data'); "
+    "if (ytDataEl) {try {window['ytInitialData'] = "
+    "JSON.parse(ytDataEl.textContent);} catch (e) {}}</script>"
+)
+
+
+def test_extract_json_var_reads_json_script_element() -> None:
+    html = (
+        '<script type="application/json" id="yt-initial-data">'
+        '{"ok": 5, "t": "a &amp; <b>"}</script>' + _ELEMENT_BOOTSTRAP
+    )
+    assert YouTubeFetcher()._extract_json_var(html, "ytInitialData") == {
+        "ok": 5,
+        "t": "a &amp; <b>",
+    }
+
+
+def test_extract_json_var_reads_escaped_non_script_element() -> None:
+    html = (
+        '<div id="yt-initial-data" hidden>{&quot;ok&quot;: 6}</div>'
+        '<div id="yt-initial-data-other">{"ok": 0}</div>' + _ELEMENT_BOOTSTRAP
+    )
+    assert YouTubeFetcher()._extract_json_var(html, "ytInitialData") == {"ok": 6}
+
+
+def test_extract_json_var_element_form_without_element_is_none() -> None:
+    assert YouTubeFetcher()._extract_json_var(_ELEMENT_BOOTSTRAP, "ytInitialData") is None
