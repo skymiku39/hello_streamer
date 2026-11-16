@@ -278,15 +278,25 @@ class YouTubeFetcher(StreamFetcher):
         return None
 
     def _extract_json_var(self, html: str, var_name: str) -> object | None:
+        # The name can appear more than once (assignment plus later reads such
+        # as ``a.ytInitialData``), so try every assignment until one decodes.
         pattern = re.compile(rf"(?:var\s+)?{re.escape(var_name)}\s*=\s*", re.DOTALL)
-        match = pattern.search(html)
+        for match in pattern.finditer(html):
+            try:
+                value, _end = _JSON_DECODER.raw_decode(html, match.end())
+            except json.JSONDecodeError:
+                continue
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _json_var_snippet(html: str, var_name: str, length: int = 160) -> str:
+        """Text right after the first ``var_name =`` for failure diagnostics."""
+        match = re.search(rf"{re.escape(var_name)}\s*=\s*", html)
         if not match:
-            return None
-        try:
-            value, _end = _JSON_DECODER.raw_decode(html[match.end() :])
-        except json.JSONDecodeError:
-            return None
-        return value
+            return ""
+        return html[match.end() : match.end() + length]
 
     # ------------------------------------------------------------------
     # TIDUS: ytInitialData channel items
@@ -614,16 +624,18 @@ class YouTubeFetcher(StreamFetcher):
             self.last_unavailable_reason = "ytInitialData parse failure"
             # All YouTube channels fail at the same moments (2026-11-13), so
             # record what page came back instead (consent, captcha, error).
+            # <title> sits well past the first 20 KB on real pages (2026-11-16).
             title_match = re.search(
-                r"<title[^>]*>(.*?)</title>", html[:20000], re.IGNORECASE | re.DOTALL
+                r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL
             )
             logger.warning(
                 "YouTube ytInitialData missing or invalid for %s "
-                "(html_len=%d title=%r has_var=%s)",
+                "(html_len=%d title=%r has_var=%s head=%r)",
                 channel_name,
                 len(html),
                 (title_match.group(1).strip()[:80] if title_match else ""),
                 "ytInitialData" in html,
+                self._json_var_snippet(html, "ytInitialData"),
             )
             return None
 
