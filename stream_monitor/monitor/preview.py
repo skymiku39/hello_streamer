@@ -63,17 +63,21 @@ class PreviewMixin:
     def _tier1_may_overwrite_cached(cached: Any, preview: ChannelStatus) -> bool:
         """Structural invariant guarding the tier-1 → cache write.
 
-        A tier-1 preview may overwrite ``_last_status`` only if it does **not**
-        downgrade a cached LIVE channel to offline. Tier-2 ``refresh_details``
+        While the cached status is LIVE, only a live preview may overwrite
+        ``_last_status``; offline and upcoming previews are both refused. Tier-2 ``refresh_details``
         owns the live→offline edge (it emits ``went_offline`` and drives
         ``close_on_offline``) and detects it via ``prev_status is True``; letting
         a tier-1 offline preview erase the cached LIVE status first would make
         that edge — and the browser auto-close — silently never fire.
 
+        An upcoming preview is refused too: a feed that momentarily drops the LIVE
+        item but still lists a waiting room would otherwise rewrite the cache to
+        upcoming while tier-2 holds (offline strike), losing the offline edge.
+
         Regression: ``test_full_poll_cycle_emits_went_offline_with_event_bus``.
         """
         if isinstance(cached, ChannelStatus) and cached.is_live:
-            return not preview.is_offline
+            return preview.is_live
         return True
 
     def _publish_channel_preview(
