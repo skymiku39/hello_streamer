@@ -35,6 +35,19 @@ class OfflineStrikesMixin:
             return "noop"
         if self._wake_verify_mode:
             return "hold"
+        if getattr(self, "_startup_refresh_active", False):
+            # Startup refresh re-reads within the opening cycle; only a later
+            # poll may count as the next consecutive offline reading (#56).
+            logger.info(
+                "%s %s: startup refresh holding offline reading "
+                "(strikes=%d/%d, not counted) reason=%s",
+                label,
+                entry.key,
+                self._offline_strikes.get(live_key, 0),
+                _OFFLINE_STRIKE_THRESHOLD,
+                reason,
+            )
+            return "hold"
         strikes = self._offline_strikes.get(live_key, 0) + 1
         if strikes < _OFFLINE_STRIKE_THRESHOLD:
             self._offline_strikes[live_key] = strikes
