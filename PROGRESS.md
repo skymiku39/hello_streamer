@@ -1,6 +1,6 @@
 # PROGRESS
 
-最後更新：2026-11-16
+最後更新：2026-11-17
 
 待辦一律放 GitHub issues（標題前綴 `[P1]`–`[P3]`，待觀察者加 `needs-observation` label）。一個 issue 對一個分支對一個 PR，PR 內文寫 `Closes #n`。本檔只留決策、現行規則與部署紀錄。
 
@@ -45,8 +45,11 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 | 11/16 09:48 | 佔位滿 10 分鐘才算輪過 | `dac156c` | `..._20261116_pre-min-watch`（含 config.json） |
 | 11/16 14:36 | v1.3.2（程式與 `dac156c` 相同，只有版本號） | `4c0692f` | `..._20261116_pre-v1.3.2`（含 config.json） |
 | 11/16 17:48 | #21 沒有除錯端點時自動恢復 | `6175218` | `..._20261116_pre-nondebug-recovery`（含 config.json） |
+| 11/16 21:48 | #28 ytInitialData 嘗試每個指派並記錄後續內容（PR #38） | `76f4234` | `..._20261116_pre-yt-bootstrap` |
 
-目前部署內容等同 `main` 的 `6175218`（v1.3.2 + #21）：1260 個檔案與 `dist` 逐一比對一致。v1.3.2 已於 11/16 發行（tag 在 `771ab8e`，不含 #21）。
+目前部署內容是 11/16 21:48 的 build（v1.3.2 + #21 + PR #38）。這一列是 11/17 依 exe 時間、備份資料夾與 21:49:45 的啟動紀錄補記的，當時沒有重新逐檔比對 `dist`。v1.3.2 已於 11/16 發行（tag 在 `771ab8e`，不含 #21 與 #38）。PR #39（#28 的第二版修正）尚未部署。
+
+11/17 00:37 程式重啟過一次，exe 沒有更換，log 只有「前一個 session 沒有結束紀錄」，原因未查明。
 
 #21 的經過：11/16 14:36 部署時，舊瀏覽器在重啟期間仍開著，新瀏覽器（14:36:43）沒帶 `--remote-debugging-port`，兩個視窗都是 `profile_nondebug`，要手動結束專用 profile 的 Chrome 才恢復。修正部署後 17:48 重啟又遇到同樣情況：啟動自動帶埠 64163／64164，兩台 1.5 秒內 attach，不需手動處理；瀏覽器主程序帶 `--remote-debugging-port=64163`。尚未實際觀察到「瀏覽器還活著、需要關窗重開」那條路徑（log 會出現 `Twitch browser has no debugging endpoint; restarting playback windows`）。
 
