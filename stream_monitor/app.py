@@ -99,6 +99,7 @@ from stream_monitor.channel_row import ChannelRow
 from stream_monitor.claim_registry import (
     clear_served,
     had_turn,
+    take_endpoint_restart,
     track_slot_holders,
 )
 from stream_monitor.db import SeenVideoDB
@@ -1928,15 +1929,26 @@ class App(ctk.CTk):
                     urls_to_reopen.add(name)
                 self._points_main_profile_channels.add(name)
 
+        restart_reason = ""
         if stalled & set(selected):
             # No points for 20 minutes means the watch is not being credited
-            # (2026-11-11: the browser had lost its debugging endpoint). Close
-            # every slot window so the browser itself restarts; reopening one
-            # window would land in the same broken browser.
-            logger.warning(
-                "Twitch points stalled for %s; restarting playback windows",
-                ", ".join(sorted(stalled & set(selected))),
+            # (2026-11-11: the browser had lost its debugging endpoint).
+            restart_reason = "Twitch points stalled for " + ", ".join(
+                sorted(stalled & set(selected))
             )
+        elif (
+            selected
+            and allow_open
+            and trigger_settings.open_on_live
+            and self._controller.mode in (TRIGGER_MODE, TRIGGER_ONCE_MODE)
+            and take_endpoint_restart()
+        ):
+            # Only when the same call reopens the windows it closes.
+            restart_reason = "Twitch browser has no debugging endpoint"
+        if restart_reason:
+            # Close every slot window so the browser itself restarts;
+            # reopening one window would land in the same broken browser.
+            logger.warning("%s; restarting playback windows", restart_reason)
             for name in selected:
                 status = live_statuses[name]
                 if managed_window_is_open(status.url) or managed_window_launch_pending(

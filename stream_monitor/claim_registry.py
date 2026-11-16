@@ -153,6 +153,60 @@ def track_slot_holders(
     return stalled
 
 
+# A managed browser without a debugging endpoint cannot be repaired by
+# reopening one window: Chrome forwards the launch to the same broken browser.
+# The allocator closes every slot window instead (2026-11-16 14:36: the old
+# browser was exiting during a restart, the replacement started without the
+# flag, and page assist stayed dead until the windows were closed by hand).
+ENDPOINT_RESTART_COOLDOWN_SECONDS = 5 * 60.0
+ENDPOINT_RESTART_LIMIT = 2
+_ENDPOINT_RESTART_PENDING = False
+_ENDPOINT_RESTARTS = 0
+_ENDPOINT_LAST_RESTART: float | None = None
+
+
+def request_endpoint_restart() -> None:
+    """Note that a managed player came up without a debugging endpoint."""
+    global _ENDPOINT_RESTART_PENDING
+    with _LOCK:
+        _ENDPOINT_RESTART_PENDING = True
+
+
+def note_endpoint_attached() -> None:
+    """Page assist reached a browser: later losses may restart again."""
+    global _ENDPOINT_RESTART_PENDING, _ENDPOINT_RESTARTS
+    with _LOCK:
+        _ENDPOINT_RESTART_PENDING = False
+        _ENDPOINT_RESTARTS = 0
+
+
+def take_endpoint_restart(*, now: float | None = None) -> bool:
+    """Return True when the allocator should restart every slot window now.
+
+    Bounded so a browser that never exposes an endpoint cannot be restarted
+    forever: at most ``ENDPOINT_RESTART_LIMIT`` restarts without a successful
+    attach, at least ``ENDPOINT_RESTART_COOLDOWN_SECONDS`` apart. The points
+    stall restart still covers anything this gives up on.
+    """
+    global _ENDPOINT_RESTART_PENDING, _ENDPOINT_RESTARTS, _ENDPOINT_LAST_RESTART
+    current = time.monotonic() if now is None else now
+    with _LOCK:
+        if not _ENDPOINT_RESTART_PENDING:
+            return False
+        if _ENDPOINT_RESTARTS >= ENDPOINT_RESTART_LIMIT:
+            _ENDPOINT_RESTART_PENDING = False
+            return False
+        if (
+            _ENDPOINT_LAST_RESTART is not None
+            and current - _ENDPOINT_LAST_RESTART < ENDPOINT_RESTART_COOLDOWN_SECONDS
+        ):
+            return False
+        _ENDPOINT_RESTART_PENDING = False
+        _ENDPOINT_RESTARTS += 1
+        _ENDPOINT_LAST_RESTART = current
+        return True
+
+
 def clear_served(name: str) -> None:
     """Forget a channel's claim and turn when its broadcast ends."""
     key = name.strip().lower()
@@ -167,7 +221,11 @@ def clear_served(name: str) -> None:
 
 def reset_for_tests() -> None:
     global _LAST_TRACK, _LAST_HOLDERS
+    global _ENDPOINT_RESTART_PENDING, _ENDPOINT_RESTARTS, _ENDPOINT_LAST_RESTART
     with _LOCK:
+        _ENDPOINT_RESTART_PENDING = False
+        _ENDPOINT_RESTARTS = 0
+        _ENDPOINT_LAST_RESTART = None
         _WATCHED_SECONDS.clear()
         _LAST_TRACK = None
         _LAST_HOLDERS = set()
