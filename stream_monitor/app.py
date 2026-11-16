@@ -100,6 +100,7 @@ from stream_monitor.claim_registry import (
     clear_served,
     had_turn,
     take_endpoint_restart,
+    track_gap_limit,
     track_slot_holders,
 )
 from stream_monitor.db import SeenVideoDB
@@ -1861,7 +1862,8 @@ class App(ctk.CTk):
 
         previous = self._active_points_priority_channels
         stalled = track_slot_holders(
-            name for name in (previous or ()) if name in live_statuses
+            (name for name in (previous or ()) if name in live_statuses),
+            max_gap=track_gap_limit(float(self.config.get("check_interval") or 0)),
         )
         # Rank: priority channels first, then the main list in order.
         rank = [name for name in priorities if name in live_statuses]
@@ -2432,8 +2434,9 @@ class App(ctk.CTk):
             self.config = config_manager.save(self.config)
         except OSError:
             # A transient Windows file lock must not terminate a Tk callback
-            # or leave the application half-closed. The atomic temp file is
-            # retained for recovery on the next launch.
+            # or leave the application half-closed. On failure the original
+            # config file is unchanged, the temp file has already been
+            # removed, and this change was not written to disk.
             logger.exception("Config save failed; keeping application alive")
 
     def _on_close(self) -> None:

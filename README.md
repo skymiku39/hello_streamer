@@ -227,7 +227,7 @@ Chrome 與 Edge 會共用長駐的 master process。若瀏覽器已經開著，�
 | `config.json` | 使用者設定、頻道清單、瀏覽器設定與語言偏好。 |
 | `seen_videos.db` | SQLite 資料庫，記錄已看過的 YouTube 影片與直播。 |
 | `logs/stream_monitor.log` | 執行 log；單檔上限 2 MB、保留 5 份備份，總計約 12 MB 後自動輪替，適合長期常駐。 |
-| `logs/watch_streak_observation.ndjson` | Watch Streak 跨場次診斷；啟用頁內輔助時自動記錄，也可用 `--watch-observation` 單獨啟用。 |
+| `logs/watch_streak_observation.ndjson` | Watch Streak 跨場次診斷；觀看輔助與頁內輔助都啟用時自動記錄，也可用 `--watch-observation` 單獨啟用；單檔上限 10 MB、保留 2 份舊檔（`.ndjson.1`、`.ndjson.2`），總計最多約 30 MB 後自動輪替。 |
 | `browser_profile/` | 預設獨立瀏覽器 Profile 位置。 |
 
 ### Watch Streak 診斷觀察

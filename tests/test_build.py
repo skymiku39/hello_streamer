@@ -282,3 +282,10 @@ def test_release_notes_must_start_with_the_tag(tmp_path: Path) -> None:
 def test_release_notes_in_repo_match_the_package_version() -> None:
     """Issue #47: a version bump without notes must fail before the tag."""
     require_release_notes_for_tag(f"v{__version__}", ROOT / "RELEASE_NOTES.md")
+
+
+def test_ci_workflow_installs_from_the_lockfile() -> None:
+    """Issue #48: CI must fail on a stale uv.lock instead of re-resolving."""
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "uv sync --locked --extra dev" in text
+    assert "uv sync --extra dev" not in text

@@ -1078,7 +1078,15 @@ class YouTubeFetcher(StreamFetcher):
             )
 
         if not items:
-            fb = self._fallback_live_check(channel_name)
+            live_url = f"{base}/live"
+            live_html = self._fetch_page(live_url)
+            if live_html is None:
+                # A failed /live fetch (timeout, 429, 5xx, 404) is unknown,
+                # not proof of offline: only a fetched page may say so (#57).
+                return None
+            fb = self._stream_info_from_player_html(
+                live_html, channel_name, fallback_url=live_url
+            )
             if fb is not None:
                 if display_name and not fb.display_name:
                     fb.display_name = display_name

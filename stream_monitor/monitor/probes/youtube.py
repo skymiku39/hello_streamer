@@ -66,6 +66,7 @@ class YouTubePlatformProbe:
         if items:
             facade.publish_preview(entry, from_probe=True)
         if not items:
+            miss: str | None = None
             with session.lock:
                 prev = session.last_status.get(entry.key)
                 prev_status = (
@@ -91,7 +92,9 @@ class YouTubePlatformProbe:
                     snap.youtube_fallback_hold = True
                     return []
             snap.youtube_fallback = True
-            return self._probe_fallback_live(facade, entry, fetcher, snap)
+            return self._probe_fallback_live(
+                facade, entry, fetcher, snap, offline_miss=miss
+            )
 
         new_events: list[tuple[ChannelEntry, StreamInfo]] = []
         live_items: list[VideoItem] = []
@@ -432,8 +435,15 @@ class YouTubePlatformProbe:
         facade: ProbeFacade,
         entry: ChannelEntry,
         fetcher: Any,
-        snap: _ProbeSnapshot
+        snap: _ProbeSnapshot,
+        *,
+        offline_miss: str | None = None,
     ) -> list[tuple[ChannelEntry, StreamInfo]]:
+        """Probe ``/live`` after an empty feed.
+
+        ``offline_miss`` is the strike result the caller already recorded for
+        this round on the same key; it is reused so one round counts once.
+        """
         session = facade.session
         try:
             info = fetcher.get_stream_info(entry.name)
@@ -466,7 +476,7 @@ class YouTubePlatformProbe:
             prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
 
             if not info.is_live and prev_status is True:
-                miss = facade.record_offline_miss(
+                miss = offline_miss or facade.record_offline_miss(
                     entry,
                     live_key,
                     prev_status,
