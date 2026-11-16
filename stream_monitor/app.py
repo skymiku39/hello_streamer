@@ -100,6 +100,7 @@ from stream_monitor.claim_registry import (
     clear_served,
     had_turn,
     take_endpoint_restart,
+    track_gap_limit,
     track_slot_holders,
 )
 from stream_monitor.db import SeenVideoDB
@@ -1861,7 +1862,8 @@ class App(ctk.CTk):
 
         previous = self._active_points_priority_channels
         stalled = track_slot_holders(
-            name for name in (previous or ()) if name in live_statuses
+            (name for name in (previous or ()) if name in live_statuses),
+            max_gap=track_gap_limit(float(self.config.get("check_interval") or 0)),
         )
         # Rank: priority channels first, then the main list in order.
         rank = [name for name in priorities if name in live_statuses]
