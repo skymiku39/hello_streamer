@@ -19,6 +19,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from html import unescape
 from typing import NamedTuple
 from urllib.parse import unquote, urlparse
 
@@ -339,6 +340,49 @@ class YouTubeFetcher(StreamFetcher):
                     continue
             if value is not None:
                 return value
+        return self._extract_json_element(html, var_name)
+
+    @staticmethod
+    def _extract_json_element(html: str, var_name: str) -> object | None:
+        """Read ``X = JSON.parse(el.textContent)`` from the element it names.
+
+        Some responses (#28, about 1% of fetches) keep the bootstrap JSON in
+        an element and assign it at load time::
+
+            var el = document.getElementById('some-id');
+            if (el) {try {window['X'] = JSON.parse(el.textContent);} ...
+        """
+        assign = re.search(
+            rf"""{re.escape(var_name)}["']?\]?\s*=\s*JSON\.parse\(\s*"""
+            r"""([A-Za-z_$][\w$]*)\.textContent""",
+            html,
+        )
+        if not assign:
+            return None
+        lookup = re.search(
+            rf"""{re.escape(assign.group(1))}\s*=\s*document\."""
+            r"""(?:getElementById|querySelector)\(\s*["']#?([\w-]+)["']\s*\)""",
+            html,
+        )
+        if not lookup:
+            return None
+        element = re.search(
+            rf"""<([A-Za-z][\w-]*)\b[^>]*\bid\s*=\s*["']?{re.escape(lookup.group(1))}"""
+            r"""["']?(?=[\s>])[^>]*>(.*?)</\1\s*>""",
+            html,
+            re.DOTALL,
+        )
+        if not element:
+            return None
+        text = element.group(2).strip()
+        # Raw-text <script> content is literal; any other element is escaped.
+        candidates = [text] if element.group(1).lower() == "script" else []
+        candidates.append(unescape(text))
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
         return None
 
     @staticmethod
@@ -347,7 +391,8 @@ class YouTubeFetcher(StreamFetcher):
         index = html.find(var_name)
         if index < 0:
             return ""
-        return html[max(0, index - 40) : index + len(var_name) + length]
+        # Wide enough before the name to show an element lookup (#28).
+        return html[max(0, index - 160) : index + len(var_name) + length]
 
     # ------------------------------------------------------------------
     # TIDUS: ytInitialData channel items
