@@ -11,3 +11,12 @@ from stream_monitor import db
 def isolate_default_database(monkeypatch, tmp_path):
     """Use a separate database for each test, including implicit Monitor DBs."""
     monkeypatch.setattr(db, "_db_path", lambda: tmp_path / "default_seen_videos.db")
+
+
+@pytest.fixture(autouse=True)
+def drop_pending_cdp_attach_retries():
+    """Launch tests with failed discovery must not leave 30 s timers armed."""
+    yield
+    from stream_monitor import notifier
+
+    notifier.cancel_cdp_attach_retries()

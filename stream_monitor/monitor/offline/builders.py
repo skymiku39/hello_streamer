@@ -560,19 +560,25 @@ class OfflineBuildersMixin:
 
     def _maybe_log_stable_twitch_status(
         self, entry: ChannelEntry, info: StreamInfo, prev_status: Any
-    ) -> None:
-        """Caller holds ``_lock``. Periodic log when Twitch reading is unchanged."""
+    ) -> ChannelStatus | None:
+        """Caller holds ``_lock``. Periodic log when Twitch reading is unchanged.
+
+        Only counts and logs, so it is safe under the lock. Returns the offline
+        row to retry a VOD upgrade for, which the caller must hand to
+        :meth:`_upgrade_stable_twitch_offline_vod` *after releasing* ``_lock``
+        (the lookup is a network request).
+        """
         api_live = info.is_live
         unchanged = (prev_status is True and api_live) or (
             prev_status is not True and not api_live
         )
         if not unchanged:
             self._stable_status_polls.pop(entry.key, None)
-            return
+            return None
         count = self._stable_status_polls.get(entry.key, 0) + 1
         self._stable_status_polls[entry.key] = count
         if count % _STABLE_STATUS_LOG_EVERY != 0:
-            return
+            return None
         last = self._last_status.get(entry.key)
         last_repr = last.status if isinstance(last, ChannelStatus) else last
         logger.info(
@@ -583,15 +589,34 @@ class OfflineBuildersMixin:
             last_repr,
         )
         if not api_live and isinstance(last, ChannelStatus) and last.status is False:
-            fetcher = _monitor_deps.get_fetcher(entry.platform)
-            upgraded = self._try_upgrade_twitch_offline_vod(
-                entry, last, fetcher=fetcher, payload=None
+            return last
+        return None
+
+    def _upgrade_stable_twitch_offline_vod(
+        self, entry: ChannelEntry, candidate: ChannelStatus
+    ) -> None:
+        """Caller must NOT hold ``_lock``. Retry the VOD link for a stable row.
+
+        ``candidate`` is the row returned by
+        :meth:`_maybe_log_stable_twitch_status`. The lookup can block on the
+        network for tens of seconds, so the lock is taken only to write back,
+        and only if the row is still the one the lookup was based on.
+        """
+        fetcher = _monitor_deps.get_fetcher(entry.platform)
+        upgraded = self._try_upgrade_twitch_offline_vod(
+            entry, candidate, fetcher=fetcher, payload=None
+        )
+        if upgraded is None:
+            return
+        with self._lock:
+            if self._last_status.get(entry.key) != candidate:
+                # Went live, was removed, or another path rewrote the row
+                # while the lookup ran: the result is stale, drop it.
+                return
+            self._last_status[entry.key] = upgraded
+            logger.info(
+                "Twitch %s: upgraded offline VOD url=%s ended_at_source=%s",
+                entry.key,
+                upgraded.vod_url,
+                upgraded.ended_at_source,
             )
-            if upgraded is not None:
-                self._last_status[entry.key] = upgraded
-                logger.info(
-                    "Twitch %s: upgraded offline VOD url=%s ended_at_source=%s",
-                    entry.key,
-                    upgraded.vod_url,
-                    upgraded.ended_at_source,
-                )

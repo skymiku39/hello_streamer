@@ -3890,3 +3890,125 @@ def test_last_activity_epoch_seeds_wake_verify_gap(tmp_path) -> None:
     assert monitor._should_run_wake_verification(1000.0 + 60 * 5) is True
     assert monitor._should_run_wake_verification(1000.0 + 60) is False
     db.close()
+
+
+class _LockProbingTwitchFetcher(FakeTwitchFetcher):
+    """Records whether ``session.lock`` is free during each VOD lookup."""
+
+    def __init__(self, lock: "threading.Lock | None" = None) -> None:
+        super().__init__([False])
+        self.lock = lock
+        self.lock_free_during_vod: list[bool] = []
+        self.on_vod_lookup = None
+
+    def get_latest_finished_vod(
+        self, channel_name: str, *, items=None
+    ) -> FinishedVod | None:
+        free = True
+        if self.lock is not None:
+            # ``session.lock`` is a plain (non-reentrant) Lock, so a
+            # non-blocking acquire on this thread tells whether it is held.
+            free = self.lock.acquire(blocking=False)
+            if free:
+                self.lock.release()
+            self.lock_free_during_vod.append(free)
+        # The hook takes the lock itself; skip it when held so a regression
+        # fails the assertion instead of deadlocking the test run.
+        if free and self.on_vod_lookup is not None:
+            self.on_vod_lookup()
+        return FinishedVod(
+            url="https://www.twitch.tv/videos/new",
+            ended_at="2026-07-21T17:44:09+00:00",
+            title="New stream",
+        )
+
+
+def test_twitch_stable_poll_vod_upgrade_runs_outside_session_lock(
+    monkeypatch, tmp_path, caplog,
+) -> None:
+    """Issue #55: the every-20th-poll VOD lookup must not hold session.lock."""
+    import logging
+
+    fetcher = _LockProbingTwitchFetcher()
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    fetcher.lock = monitor._session.lock
+    entry = ChannelEntry(platform="twitch", name="hello")
+    every = monitor_types._STABLE_STATUS_LOG_EVERY
+    with monitor._lock:
+        # Resolved row: only the stable-poll path performs a VOD lookup.
+        monitor._last_status[entry.key] = ChannelStatus(
+            status=False,
+            title="Old stream",
+            ended_at="2026-07-20T18:10:41+00:00",
+            vod_url="https://www.twitch.tv/videos/old",
+            ended_at_source="vod",
+            url="https://www.twitch.tv/hello",
+        )
+        monitor._stable_status_polls[entry.key] = every - 1
+    caplog.set_level(logging.INFO)
+
+    _check_and_commit(monitor, entry)
+
+    assert fetcher.lock_free_during_vod == [True]
+    with monitor._lock:
+        upgraded = monitor._last_status[entry.key]
+        assert monitor._stable_status_polls[entry.key] == every
+    assert upgraded.vod_url == "https://www.twitch.tv/videos/new"
+    assert upgraded.title == "New stream"
+    assert upgraded.ended_at == "2026-07-21T17:44:09+00:00"
+    assert upgraded.ended_at_source == "vod"
+    messages = [r.getMessage() for r in caplog.records]
+    assert (
+        f"Twitch {entry.key}: stable poll #{every} api_live=False "
+        "last_status=False"
+    ) in messages
+    assert (
+        f"Twitch {entry.key}: upgraded offline VOD "
+        "url=https://www.twitch.tv/videos/new ended_at_source=vod"
+    ) in messages
+    db.close()
+
+
+def test_twitch_stable_poll_vod_upgrade_discarded_when_status_changed(
+    monkeypatch, tmp_path, caplog,
+) -> None:
+    """A row that changed during the unlocked VOD lookup keeps its new state."""
+    import logging
+
+    fetcher = _LockProbingTwitchFetcher()
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
+    fetcher.lock = monitor._session.lock
+    entry = ChannelEntry(platform="twitch", name="hello")
+    every = monitor_types._STABLE_STATUS_LOG_EVERY
+    went_live = ChannelStatus(status=True, title="Live now")
+
+    def go_live_mid_lookup() -> None:
+        with monitor._lock:
+            monitor._last_status[entry.key] = went_live
+
+    fetcher.on_vod_lookup = go_live_mid_lookup
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(
+            status=False,
+            title="Old stream",
+            ended_at="2026-07-20T18:10:41+00:00",
+            vod_url="https://www.twitch.tv/videos/old",
+            ended_at_source="vod",
+            url="https://www.twitch.tv/hello",
+        )
+        monitor._stable_status_polls[entry.key] = every - 1
+    caplog.set_level(logging.INFO)
+
+    _check_and_commit(monitor, entry)
+
+    assert fetcher.lock_free_during_vod == [True]
+    with monitor._lock:
+        assert monitor._last_status[entry.key] is went_live
+    assert not any(
+        "upgraded offline VOD" in r.getMessage() for r in caplog.records
+    )
+    db.close()

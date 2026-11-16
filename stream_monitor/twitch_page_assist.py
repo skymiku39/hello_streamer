@@ -1332,9 +1332,9 @@ class _PageAssistWorker:
                         except Exception:
                             client.close()
                             self._refresh_debugging_port()
-                            publish_page_assist_status(self.url, "reconnecting")
                             if self._stop.is_set():
                                 return
+                            publish_page_assist_status(self.url, "reconnecting")
                             reconnect_attempt += 1
                             retry_in = min(
                                 _RECONNECT_BACKOFF_MAX_S,
@@ -1405,6 +1405,14 @@ class _PageAssistWorker:
                             time.monotonic() + _PAGE_CHECK_INTERVAL_S
                         )
                         now = time.monotonic()
+                    elif (
+                        points_due_at is not None
+                        and now >= points_due_at
+                        and self._confirmed_offline.is_set()
+                    ):
+                        # Offline: skip the check but keep the normal cadence so
+                        # the wait below is not pinned to its 0.1s floor.
+                        self._points_next_check_at = now + _PAGE_CHECK_INTERVAL_S
 
                     if (
                         self.settings.auto_refresh
