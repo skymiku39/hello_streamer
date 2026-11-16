@@ -275,3 +275,110 @@ def test_wake_cycle_skips_deferred_keys_in_startup_refresh(
 
     assert seen == ["twitch:ok"]
     db.close()
+
+
+class _FeedYtFetcher:
+    """YouTube fetcher whose TIDUS feed is swapped by the test."""
+
+    platform = "youtube"
+
+    def __init__(self, items: list[VideoItem]) -> None:
+        self.items = items
+
+    def get_channel_items(self, channel_name, *, fill_timing=True, timeout=None):
+        return list(self.items)
+
+    def get_stream_info(self, channel_name):
+        return None
+
+    def http_backoff_active(self):
+        return False
+
+    def enrich_live_for_details(self, items):
+        return None
+
+    def enrich_upcoming_for_details(self, items):
+        return None
+
+    def get_latest_finished_vod(self, channel_name, *, items=None):
+        return None
+
+
+def _yt_live_item(video_id: str) -> VideoItem:
+    return VideoItem(
+        video_id=video_id,
+        title=f"Stream {video_id}",
+        style="LIVE",
+        url=f"https://www.youtube.com/watch?v={video_id}",
+    )
+
+
+def _monitor_with_cached_youtube_live(monkeypatch, tmp_path, fetcher):
+    """Monitor whose session cache says stream ``vidA`` is live before sleep."""
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "yt", "enabled": True}],
+        db=db,
+    )
+    entry = ChannelEntry(platform="youtube", name="yt")
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(
+            status=True,
+            url="https://www.youtube.com/watch?v=vidA",
+            title="Stream vidA",
+        )
+        monitor._live_payload[_live_cache_key(entry.key, "vidA")] = OfflineInfo(
+            url="https://www.youtube.com/watch?v=vidA",
+            title="Stream vidA",
+            platform="youtube",
+            name="yt",
+            video_id="vidA",
+        )
+        monitor._youtube_baselined.add(entry.key)
+    return monitor, entry, db
+
+
+def _normal_poll(monitor, entry):
+    events, commit = monitor._check_channel(entry)
+    commit()
+    return events
+
+
+def test_wake_new_youtube_live_not_marked_seen_and_fires_next_poll(
+    monkeypatch, tmp_path
+) -> None:
+    """#53: a different stream that started during sleep must still go live."""
+    fetcher = _FeedYtFetcher([_yt_live_item("vidB")])
+    monitor, entry, db = _monitor_with_cached_youtube_live(
+        monkeypatch, tmp_path, fetcher
+    )
+
+    monitor._run_wake_verification([entry], time.monotonic())
+
+    assert not db.is_seen("vidB", "LIVE")
+
+    events = _normal_poll(monitor, entry)
+    assert [info.url for _e, info in events] == [
+        "https://www.youtube.com/watch?v=vidB"
+    ]
+    assert db.is_seen("vidB", "LIVE")
+    # Seen now: no repeat on the following round.
+    assert _normal_poll(monitor, entry) == []
+    db.close()
+
+
+def test_wake_same_youtube_live_stays_suppressed_and_marked_seen(
+    monkeypatch, tmp_path
+) -> None:
+    """Control: the cached stream itself must not re-fire after wake."""
+    fetcher = _FeedYtFetcher([_yt_live_item("vidA")])
+    monitor, entry, db = _monitor_with_cached_youtube_live(
+        monkeypatch, tmp_path, fetcher
+    )
+
+    monitor._run_wake_verification([entry], time.monotonic())
+
+    assert db.is_seen("vidA", "LIVE")
+    assert _normal_poll(monitor, entry) == []
+    db.close()
