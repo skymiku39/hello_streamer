@@ -134,7 +134,9 @@ def track_slot_holders(
     """Time the current slot holders; return those whose playback is stalled.
 
     A returned holder earned nothing for ``STALLED_SLOT_SECONDS`` and still
-    has restarts left: the caller should restart the playback windows. Once
+    has restarts left: the caller should restart the playback windows and
+    then call ``consume_stall_restart``. Reporting spends nothing, so a call
+    that cannot reopen windows leaves the stall for the next one (#61). Once
     the restarts are spent the holder gives up its turn instead.
 
     When ``max_gap`` is given and more time than that passed since the last
@@ -176,13 +178,30 @@ def track_slot_holders(
                 # turn; a served one already had it and keeps its rank.
                 _TURN_USED.add(key)
                 continue
-            _STALL_RESTARTS[key] = _STALL_RESTARTS.get(key, 0) + 1
             stalled.add(key)
-        if stalled:
-            # The restart covers every window, so everyone starts a new wait.
-            for key in keys:
-                _SLOT_SINCE[key] = current
     return stalled
+
+
+def consume_stall_restart(names: Iterable[str], *, now: float | None = None) -> None:
+    """Spend one stall restart for each name; the caller restarts the windows.
+
+    The restart covers every slot window, so every holder of the last
+    ``track_slot_holders`` call starts a new stall wait. ``now`` defaults to
+    the time of that call.
+    """
+    keys = {name.strip().lower() for name in names}
+    with _LOCK:
+        if now is not None:
+            current = now
+        elif _LAST_TRACK is not None:
+            current = _LAST_TRACK
+        else:
+            current = time.monotonic()
+        for key in keys:
+            _STALL_RESTARTS[key] = _STALL_RESTARTS.get(key, 0) + 1
+        for key in _LAST_HOLDERS | keys:
+            if key in _SLOT_SINCE:
+                _SLOT_SINCE[key] = current
 
 
 # A managed browser without a debugging endpoint cannot be repaired by
