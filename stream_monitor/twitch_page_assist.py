@@ -990,6 +990,23 @@ class _PageAssistWorker:
         # rejected reward request has become eligible again.
         publish_page_assist_status(self.url, "claim_rejected" if self._claim_blocked and not reason else reason)
 
+    def _live_page_url(self, client: CdpClient) -> str | None:
+        """Live page URL via the player snapshot; None when unreadable."""
+        try:
+            snapshot = client.evaluate(PLAYER_SNAPSHOT_JS)
+        except Exception:
+            logger.debug("Twitch page URL probe failed for %s", self.url, exc_info=True)
+            return None
+        if not isinstance(snapshot, dict):
+            return None
+        return str(snapshot.get("url", ""))
+
+    def _page_matches_url(self, client: CdpClient) -> bool:
+        """Same rule as the points read: unreadable URL counts as a mismatch,
+        so nothing is credited to the original channel after a raid."""
+        live = self._live_page_url(client)
+        return live is not None and page_urls_match(self.url, live)
+
     def _read_claim_ack(self, client: CdpClient) -> ClaimResult | None:
         result = self._claim_ack.poll(client)
         if result is not None and result.status == "rejected":
@@ -1003,7 +1020,14 @@ class _PageAssistWorker:
                 # or Twitch's own delayed retry) resolves a prior rejection.
                 self._claim_blocked = False
                 self._publish_status("")
-            record_confirmed_claim(self.url)
+            live = self._live_page_url(client)
+            if live is not None and page_urls_match(self.url, live):
+                record_confirmed_claim(self.url)
+            else:
+                logger.info(
+                    "Twitch claim ack not recorded: worker=%s page=%s (raid?)",
+                    self.url, live,
+                )
             logger.info("Twitch confirmed bonus claim for %s server_balance=%s", self.url, result.balance)
         return result
 
@@ -2448,6 +2472,9 @@ class _PageAssistWorker:
     def _try_claim(self, client: CdpClient) -> bool:
         """Attempt once; only a native server acknowledgement is success."""
         if self._claim_blocked or self._stop.is_set():
+            return False
+        if not self._page_matches_url(client):
+            logger.debug("Twitch page assist skip claim; page is not %s (raid?)", self.url)
             return False
         chat_status = self._ensure_chat_visible(client)
         if chat_status == "not_logged_in":

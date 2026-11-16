@@ -270,6 +270,7 @@ BONUS = {"found": True, "x": 50, "y": 30, "left": 30, "top": 20,
 def test_claim_requires_disappearance_with_points_ui(monkeypatch, after, success):
     w = worker(monkeypatch, claim_click_offset_px=100)
     client = Mock()
+    client.evaluate.return_value = {"url": w.url}
     monkeypatch.setattr(w, "_ensure_chat_visible", lambda c: "visible")
     probes = iter([BONUS, BONUS, after])
     monkeypatch.setattr(w, "_probe_claim", lambda c: next(probes, after))
@@ -283,6 +284,7 @@ def test_claim_requires_disappearance_with_points_ui(monkeypatch, after, success
 def test_claim_waits_for_delayed_acknowledgement_without_clicking_again(monkeypatch):
     w = worker(monkeypatch)
     client = Mock()
+    client.evaluate.return_value = {"url": w.url}
     monkeypatch.setattr(w, "_ensure_chat_visible", lambda c: "visible")
     probes = iter([BONUS, BONUS, BONUS, BONUS,
                    {"found": False, "pointsPresent": True}])
@@ -311,6 +313,7 @@ def test_saved_claim_switch_reaches_existing_worker_without_page_reload(monkeypa
 def test_claim_skipped_without_visible_logged_in_chat(monkeypatch, chat):
     w = worker(monkeypatch)
     client = Mock()
+    client.evaluate.return_value = {"url": w.url}
     monkeypatch.setattr(w, "_ensure_chat_visible", lambda c: chat)
     assert not w._try_claim(client)
     client.click_at.assert_not_called()
@@ -319,6 +322,7 @@ def test_claim_skipped_without_visible_logged_in_chat(monkeypatch, chat):
 def test_claim_rechecks_after_delay(monkeypatch):
     w = worker(monkeypatch)
     client = Mock()
+    client.evaluate.return_value = {"url": w.url}
     monkeypatch.setattr(w, "_ensure_chat_visible", lambda c: "visible")
     probes = iter([BONUS, {"found": False, "pointsPresent": True}])
     monkeypatch.setattr(w, "_probe_claim", lambda c: next(probes))
@@ -329,6 +333,7 @@ def test_claim_rechecks_after_delay(monkeypatch):
 def test_stop_cancels_claim_before_click(monkeypatch):
     w = worker(monkeypatch)
     client = Mock()
+    client.evaluate.return_value = {"url": w.url}
     monkeypatch.setattr(w, "_ensure_chat_visible", lambda c: "visible")
     monkeypatch.setattr(w, "_probe_claim", lambda c: BONUS)
     monkeypatch.setattr(w, "_sleep", lambda seconds: False)
@@ -354,6 +359,7 @@ def test_collapsed_chat_is_expanded_and_verified(monkeypatch, after, expected):
 def test_visible_chat_with_login_prompt_cannot_claim(monkeypatch):
     w = worker(monkeypatch)
     client = Mock()
+    client.evaluate.return_value = {"url": w.url}
     monkeypatch.setattr(w, "_chat_snapshot", lambda c:
                         {"status": "visible", "notLoggedIn": True})
     assert not w._try_claim(client)

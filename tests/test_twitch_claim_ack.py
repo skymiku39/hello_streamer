@@ -94,6 +94,7 @@ def test_late_native_acceptance_clears_rejection_without_repeating_click(monkeyp
     worker = _PageAssistWorker("https://www.twitch.tv/test", 1234, ViewerEngagementSettings())
     worker._claim_blocked = True
     client = Mock()
+    client.evaluate.return_value = {"url": worker.url}
     monkeypatch.setattr(worker._claim_ack, "poll", lambda _c: ClaimResult("accepted", balance=250))
     assert worker._read_claim_ack(client).status == "accepted"
     assert not worker._claim_blocked
@@ -105,6 +106,7 @@ def test_rejected_claim_pauses_only_claims_until_explicit_off_on(monkeypatch):
     settings = ViewerEngagementSettings(enabled=True, page_assist_enabled=True, claim_channel_points=True)
     worker = _PageAssistWorker("https://www.twitch.tv/test", 1234, settings)
     client = Mock()
+    client.evaluate.return_value = {"url": worker.url}
     monkeypatch.setattr(worker, "_ensure_chat_visible", lambda _c: "visible")
     monkeypatch.setattr(worker, "_sleep", lambda _s: True)
     monkeypatch.setattr(worker, "_probe_claim", lambda _c: {
@@ -125,6 +127,7 @@ def test_rejected_claim_pauses_only_claims_until_explicit_off_on(monkeypatch):
 def test_disappearing_button_without_server_ack_is_not_success(monkeypatch):
     worker = _PageAssistWorker("https://www.twitch.tv/test", 1234, ViewerEngagementSettings())
     client = Mock()
+    client.evaluate.return_value = {"url": worker.url}
     monkeypatch.setattr(worker, "_ensure_chat_visible", lambda _c: "visible")
     monkeypatch.setattr(worker, "_sleep", lambda _s: True)
     monkeypatch.setattr(worker, "_probe_claim", lambda _c: {"found": True, "x": 20, "y": 20})
@@ -142,3 +145,61 @@ def test_playback_or_passive_points_cannot_clear_rejected_claim_notice():
     worker._claim_blocked = True
     worker._publish_status("")
     assert drain_page_assist_status() == [(worker.url, "claim_rejected")]
+
+
+RAID_URL = "https://www.twitch.tv/raid_target"
+
+
+def _claim_worker(monkeypatch):
+    settings = ViewerEngagementSettings(enabled=True, page_assist_enabled=True, claim_channel_points=True)
+    worker = _PageAssistWorker("https://www.twitch.tv/test", 1234, settings)
+    monkeypatch.setattr(worker, "_ensure_chat_visible", lambda _c: "visible")
+    monkeypatch.setattr(worker, "_sleep", lambda _s: True)
+    monkeypatch.setattr(worker, "_probe_claim", lambda _c: {"found": True, "x": 20, "y": 20})
+    return worker
+
+
+@pytest.mark.parametrize("live", [RAID_URL, None])
+def test_claim_not_clicked_or_recorded_when_page_is_not_own_channel(monkeypatch, live):
+    import stream_monitor.twitch_page_assist as assist
+
+    worker = _claim_worker(monkeypatch)
+    recorded = []
+    monkeypatch.setattr(assist, "record_confirmed_claim", recorded.append)
+    client = Mock()
+    client.evaluate.return_value = {"url": live} if live else None
+    assert not worker._try_claim(client)
+    client.click_at.assert_not_called()
+    assert recorded == []
+
+
+def test_claim_on_own_channel_clicks_and_records(monkeypatch):
+    import stream_monitor.twitch_page_assist as assist
+
+    worker = _claim_worker(monkeypatch)
+    recorded = []
+    monkeypatch.setattr(assist, "record_confirmed_claim", recorded.append)
+    monkeypatch.setattr(worker, "_claim_still_present", lambda *_a: {"present": False})
+    monkeypatch.setattr(worker._claim_ack, "poll", lambda _c: ClaimResult("accepted", balance=9))
+    client = Mock()
+    client.evaluate.return_value = {"url": worker.url}
+    assert worker._try_claim(client)
+    client.click_at.assert_called_once()
+    assert recorded == [worker.url]
+
+
+def test_ack_after_raid_is_not_recorded(monkeypatch, caplog):
+    import logging
+
+    import stream_monitor.twitch_page_assist as assist
+
+    worker = _claim_worker(monkeypatch)
+    recorded = []
+    monkeypatch.setattr(assist, "record_confirmed_claim", recorded.append)
+    monkeypatch.setattr(worker._claim_ack, "poll", lambda _c: ClaimResult("accepted", balance=9))
+    client = Mock()
+    client.evaluate.return_value = {"url": RAID_URL}
+    with caplog.at_level(logging.INFO):
+        assert worker._read_claim_ack(client).status == "accepted"
+    assert recorded == []
+    assert RAID_URL in caplog.text and worker.url in caplog.text
