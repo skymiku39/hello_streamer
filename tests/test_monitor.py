@@ -2254,6 +2254,64 @@ def test_youtube_fallback_single_offline_flap_is_absorbed(
     db.close()
 
 
+def test_youtube_fallback_live_goes_offline_after_two_empty_rounds(
+    monkeypatch, tmp_path
+) -> None:
+    """A fallback-detected live must end after two consecutive offline rounds.
+
+    Regression for #51: the empty-feed strike and the fallback strike hit the
+    same key in one round, so the count bounced 2 -> 1 and never committed.
+    """
+    fetcher = FakeYouTubeFetcher(
+        items_batches=[[]],
+        info_batches=[
+            StreamInfo(
+                channel="yt",
+                platform="youtube",
+                is_live=True,
+                title="Stream",
+                url="https://www.youtube.com/@yt/live",
+                display_name="YT",
+            ),
+            *[
+                StreamInfo(
+                    channel="yt",
+                    platform="youtube",
+                    is_live=False,
+                    title="",
+                    url="",
+                )
+                for _ in range(4)
+            ],
+        ],
+    )
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    monitor = Monitor(channels=[{"platform": "youtube", "name": "yt"}], db=db)
+    entry = ChannelEntry(platform="youtube", name="yt")
+
+    # Poll 1: empty feed, fallback reports live -> went_live.
+    assert len(_check_and_commit(monitor, entry)) == 1
+    with monitor._lock:
+        assert monitor._last_status[entry.key].status is True
+
+    # Offline round 1: a single miss is still absorbed.
+    assert _check_and_commit(monitor, entry) == []
+    with monitor._lock:
+        assert monitor._last_status[entry.key].status is True
+        assert monitor._pending_offline_events == []
+        assert monitor._offline_strikes.get("youtube:yt|_") == 1
+
+    # Offline round 2: the second consecutive miss commits the offline edge.
+    assert _check_and_commit(monitor, entry) == []
+    with monitor._lock:
+        assert monitor._last_status[entry.key].status is False
+        assert len(monitor._pending_offline_events) == 1
+        assert monitor._pending_offline_events[0][0].key == entry.key
+        assert "youtube:yt|_" not in monitor._offline_strikes
+    db.close()
+
+
 def test_youtube_tidus_single_missing_video_id_is_absorbed(
     monkeypatch, tmp_path
 ) -> None:
