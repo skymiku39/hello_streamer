@@ -132,6 +132,36 @@ def test_recovered_window_resumes_assist_without_opening_duplicate(monkeypatch, 
     assert calls[0][:2] == (url, 43210)
 
 
+
+def test_recovered_window_in_browser_without_endpoint_requests_restart(
+    monkeypatch, tmp_path,
+):
+    # A surviving browser without a debugging endpoint cannot be reattached;
+    # the allocator must close and reopen every slot window instead.
+    from stream_monitor import cdp_client, claim_registry, notifier
+    from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
+
+    claim_registry.reset_for_tests()
+    url = "https://www.twitch.tv/original"
+    monkeypatch.setattr(notifier, "managed_window_is_open", lambda candidate: candidate == url)
+    monkeypatch.setattr(notifier, "_active_viewer_engagement", lambda: ViewerEngagementSettings(
+        enabled=True, page_assist_enabled=True, keep_system_awake=False,
+    ))
+    monkeypatch.setattr(notifier, "active_page_assist_urls", lambda: set())
+    monkeypatch.setattr(cdp_client, "acquire_cdp_debugging_port", lambda profile: SimpleNamespace(
+        ok=False, port=None, reason="profile_nondebug",
+    ))
+    monkeypatch.setattr(notifier, "start_page_assist", lambda *args: None)
+    monkeypatch.setattr(notifier, "_open_with_browser_settings", lambda *a, **kw: None)
+    try:
+        notifier.open_url(url, {
+            "enabled": True, "app_mode": True, "user_data_dir": str(tmp_path),
+            "per_channel_profile": False,
+        })
+        assert claim_registry.take_endpoint_restart(now=1000.0)
+    finally:
+        claim_registry.reset_for_tests()
+
 def test_resume_surviving_players_does_not_open_or_use_closed_windows(monkeypatch):
     from stream_monitor import notifier
 

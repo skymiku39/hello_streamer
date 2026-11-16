@@ -15,6 +15,7 @@ import subprocess
 import threading
 import time
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -653,6 +654,28 @@ def _launch_debugging_port(attach: Any) -> int | None:
     return None
 
 
+def _nondebug_recovery_port(
+    attach: Any, allocate: Callable[[], int] | None = None,
+) -> int | None:
+    """Fresh port for a launch into a profile whose browser has no endpoint.
+
+    The running browser may be exiting (its windows were just closed). Without
+    the flag the replacement would start with no debugging endpoint
+    (2026-11-16 14:36). A live browser ignores the forwarded flag, and
+    post-launch discovery then fails as before.
+    """
+    if getattr(attach, "reason", "") != "profile_nondebug" or os.name != "nt":
+        return None
+    if allocate is None:
+        from stream_monitor.cdp_client import allocate_debugging_port as allocate
+    try:
+        port = allocate()
+    except OSError:
+        logger.debug("Could not allocate a recovery debugging port", exc_info=True)
+        return None
+    return port if isinstance(port, int) and port > 0 else None
+
+
 def _build_browser_args(url: str, settings: dict[str, Any]) -> list[str]:
     """Compose browser CLI arguments from a normalized browser_settings dict.
 
@@ -920,6 +943,7 @@ def _open_with_browser_settings(
     isolation_available = bool(effective_user_data_dir)
     cdp_port: int | None = None
     cdp_needs_discovery = False
+    recovering_nondebug = False
     cdp_attach_reason = ""
     cdp_attach_message = ""
     engagement_for_assist = _active_viewer_engagement()
@@ -970,6 +994,17 @@ def _open_with_browser_settings(
                 attach.reason,
                 f" ({attach.message})" if attach.message else "",
             )
+            recovery_port = _nondebug_recovery_port(attach)
+            if recovery_port is not None:
+                effective_settings["_cdp_debugging_port"] = recovery_port
+                cdp_needs_discovery = True
+                recovering_nondebug = True
+                logger.info(
+                    "Twitch page assist launching %s with debugging port %s "
+                    "in case the existing browser is exiting",
+                    url,
+                    recovery_port,
+                )
 
     args = _build_browser_args(url, effective_settings)
     family = detect_browser_family(args[0])
@@ -1180,6 +1215,12 @@ def _open_with_browser_settings(
             cdp_port = attach.port
         else:
             publish_page_assist_status(url, attach.reason or "unavailable")
+            if recovering_nondebug:
+                # The existing browser is alive without an endpoint; only
+                # closing every slot window makes it restart with one.
+                from stream_monitor.claim_registry import request_endpoint_restart
+
+                request_endpoint_restart()
 
     try:
         from stream_monitor.watch_observation import (
@@ -1274,6 +1315,12 @@ def _resume_managed_window_assist(
             logger.info("Resumed page assist for recovered managed window %s", url)
         else:
             publish_page_assist_status(url, attach.reason or "unavailable")
+            if attach.reason == "profile_nondebug":
+                # The surviving browser has no endpoint; reattaching cannot
+                # work until every slot window is closed and reopened.
+                from stream_monitor.claim_registry import request_endpoint_restart
+
+                request_endpoint_restart()
     except Exception:
         logger.exception("Could not resume page assist for %s", url)
 

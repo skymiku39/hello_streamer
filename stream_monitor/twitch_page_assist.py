@@ -28,6 +28,7 @@ from stream_monitor.cdp_client import (
     page_urls_match,
 )
 from stream_monitor.claim_registry import (
+    note_endpoint_attached,
     record_confirmed_claim,
     record_points_increase,
 )
@@ -1302,6 +1303,7 @@ class _PageAssistWorker:
             self._connected_once = True
             self._publish_status("")
             logger.info("Twitch page assist attached via CDP for %s", self.url)
+            note_endpoint_attached()
             self._obs_next_snapshot_at = 0.0
             self._maybe_observe_snapshot(client, cdp="connected")
             next_refresh_at = self._schedule_refresh()
