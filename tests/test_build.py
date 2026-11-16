@@ -15,6 +15,7 @@ from build import (
     _write_windows_version_file,
     build_pyinstaller_command,
     normalize_release_tag,
+    require_release_notes_for_tag,
     require_tag_matches_package_version,
     strip_bundled_pycache,
     validate_linux_onedir_bundle,
@@ -264,6 +265,23 @@ def test_strip_bundled_pycache_removes_only_cache_dirs(tmp_path: Path) -> None:
     assert (package / "mod.py").is_file()
     assert (nested / "mod.py").is_file()
     assert strip_bundled_pycache(tmp_path) == 0
+
+
+def test_release_notes_must_start_with_the_tag(tmp_path: Path) -> None:
+    notes = tmp_path / "RELEASE_NOTES.md"
+    notes.write_text("\n".join(["# Hello Streamer v1.3.3", "", "- fix"]), encoding="utf-8")
+
+    require_release_notes_for_tag("v1.3.3", notes)
+    require_release_notes_for_tag("1.3.3", notes)
+    with pytest.raises(SystemExit, match="v1.3.4"):
+        require_release_notes_for_tag("v1.3.4", notes)
+    with pytest.raises(SystemExit, match="Cannot read"):
+        require_release_notes_for_tag("v1.3.3", tmp_path / "missing.md")
+
+
+def test_release_notes_in_repo_match_the_package_version() -> None:
+    """Issue #47: a version bump without notes must fail before the tag."""
+    require_release_notes_for_tag(f"v{__version__}", ROOT / "RELEASE_NOTES.md")
 
 
 def test_ci_workflow_installs_from_the_lockfile() -> None:

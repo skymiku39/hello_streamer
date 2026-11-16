@@ -920,3 +920,62 @@ def test_player_2000_offline_and_gate_do_not_offer_recovery(dom_browser, extra):
     assert snap["errorCode"] == "2000"
     assert snap["offline"] or snap["gatePresent"]
     assert snap["retryToken"] is None
+
+
+def test_confirmed_offline_does_not_spin_worker_loop_and_resumes_points(monkeypatch):
+    clock = [0.]
+    monkeypatch.setattr(assist.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(assist, "fuzzy_uniform", lambda low, high: 90)
+    w = worker(monkeypatch, claim_channel_points=False)
+    client = Mock()
+    client.connected = True
+    monkeypatch.setattr(assist, "CdpClient", lambda: client)
+    monkeypatch.setattr(w, "_run_gate_and_theater", lambda c: None)
+    monkeypatch.setattr(w, "_check_page", lambda c: False)
+    w._confirmed_offline.set()
+    waits = []
+    observations = []
+    relive_at = []
+
+    def wait(seconds):
+        if w._stop.is_set():
+            return False
+        waits.append(seconds)
+        if clock[0] >= 100 and w._confirmed_offline.is_set():
+            w._confirmed_offline.clear()  # re-live
+            relive_at.append(clock[0])
+        clock[0] += seconds
+        if observations:
+            w.stop()
+        return False
+
+    monkeypatch.setattr(w, "_wait_for_wake", wait)
+    monkeypatch.setattr(
+        w, "_read_points_balance",
+        lambda _client: observations.append(clock[0]) or 100,
+    )
+    w._run()
+    assert len(waits) < 20  # a 0.1s spin would need hundreds of laps
+    assert min(waits) > 0.1
+    assert observations and observations[0] >= relive_at[0]  # none while offline
+    assert observations[0] <= relive_at[0] + assist._PAGE_CHECK_INTERVAL_S + 1
+
+
+def test_failed_reconnect_after_stop_does_not_publish_reconnecting(monkeypatch):
+    w = worker(monkeypatch)
+    first, replacement = Mock(), Mock()
+    first.connected = False
+    replacement.connect.side_effect = RuntimeError("timeout")
+    clients = iter([first, replacement])
+    monkeypatch.setattr(assist, "CdpClient", lambda: next(clients))
+    monkeypatch.setattr(w, "_run_gate_and_theater", lambda c: None)
+    monkeypatch.setattr(
+        w, "_refresh_debugging_port", lambda: w.stop(),
+    )  # stopped while the connect attempt was hanging
+    published = []
+    monkeypatch.setattr(
+        assist, "publish_page_assist_status",
+        lambda url, notice: published.append(notice),
+    )
+    w._run()
+    assert "reconnecting" not in published
