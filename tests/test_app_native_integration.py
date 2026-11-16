@@ -50,6 +50,7 @@ def test_start_and_restart_restore_live_actions_despite_cached_status():
     _run("trigger_restart")
 
 
+@pytest.mark.native_desktop
 @pytest.mark.parametrize("dialog", ["app", "language", "channel", "browser"])
 def test_dialog_buttons_use_application_style(dialog):
     # Give each independently constructed dialog the existing 30-second bound.

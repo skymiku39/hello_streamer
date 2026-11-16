@@ -745,3 +745,48 @@ def test_get_watch_details_triggers_inline_prune(monkeypatch) -> None:
         assert "newvid" in YouTubeFetcher._watch_details_cache
     finally:
         YouTubeFetcher._watch_details_cache.clear()
+
+
+# #28: ytInitialData parse failures on otherwise normal pages
+def test_extract_json_var_skips_non_json_assignment_before_real_one() -> None:
+    fetcher = YouTubeFetcher()
+    html = (
+        "<script>window.ytInitialData = window.ytInitialData || null;</script>"
+        + _html_with_initial_data({"ok": 1})
+    )
+    assert fetcher._extract_json_var(html, "ytInitialData") == {"ok": 1}
+
+
+def test_parse_failure_warning_logs_text_after_assignment(monkeypatch, caplog) -> None:
+    fetcher = YouTubeFetcher()
+    page = "<html><title>Some - YouTube</title><script>var ytInitialData = BROKEN{;</script>"
+    page = "x" * 30000 + page
+    monkeypatch.setattr(fetcher, "_fetch_page", lambda url, timeout=15: page)
+
+    with caplog.at_level("WARNING"):
+        assert fetcher.get_channel_items("creator") is None
+
+    message = next(r.getMessage() for r in caplog.records if "ytInitialData" in r.getMessage())
+    assert "title='Some - YouTube'" in message
+    assert "ytInitialData = BROKEN{;</script>" in message
+
+
+def test_extract_json_var_reads_window_bracket_assignment() -> None:
+    html = '<script>window["ytInitialData"] = {"ok": 2};</script>'
+    assert YouTubeFetcher()._extract_json_var(html, "ytInitialData") == {"ok": 2}
+
+
+def test_extract_json_var_reads_json_parse_single_quoted_hex_escapes() -> None:
+    html = (
+        "<script>var ytInitialData = JSON.parse("
+        r"'{\x22ok\x22:3,\x22t\x22:\x22it\'s \u4e2d\x22}');</script>"
+    )
+    assert YouTubeFetcher()._extract_json_var(html, "ytInitialData") == {
+        "ok": 3,
+        "t": "it's \u4e2d",
+    }
+
+
+def test_extract_json_var_reads_json_string_literal() -> None:
+    html = '<script>var ytInitialData = "{\\"ok\\": 4}";</script>'
+    assert YouTubeFetcher()._extract_json_var(html, "ytInitialData") == {"ok": 4}

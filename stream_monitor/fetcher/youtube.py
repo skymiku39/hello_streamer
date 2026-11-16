@@ -57,6 +57,50 @@ _HEADERS = {
 }
 
 _JSON_DECODER = json.JSONDecoder()
+_JS_SIMPLE_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
+
+
+def _decode_js_single_quoted(text: str, start: int) -> str | None:
+    """Decode a JS ``'...'`` literal whose opening quote is at ``start``."""
+    out: list[str] = []
+    i = start + 1
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "'":
+            return "".join(out)
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+        if i + 1 >= n:
+            return None
+        esc = text[i + 1]
+        width = 2 if esc == "x" else 4 if esc == "u" else 0
+        if width:
+            digits = text[i + 2 : i + 2 + width]
+            try:
+                out.append(chr(int(digits, 16)))
+            except ValueError:
+                return None
+            i += 2 + width
+            continue
+        out.append(_JS_SIMPLE_ESCAPES.get(esc, esc))
+        i += 2
+    return None
+
+
+def _decode_js_value(text: str, pos: int) -> object | None:
+    """Decode a JSON value or a single-quoted JS string starting at ``pos``."""
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    if text.startswith("'", pos):
+        return _decode_js_single_quoted(text, pos)
+    try:
+        value, _end = _JSON_DECODER.raw_decode(text, pos)
+    except json.JSONDecodeError:
+        return None
+    return value
 
 _MAX_RETRIES = 2
 _RETRY_DELAY = 3
@@ -278,15 +322,32 @@ class YouTubeFetcher(StreamFetcher):
         return None
 
     def _extract_json_var(self, html: str, var_name: str) -> object | None:
-        pattern = re.compile(rf"(?:var\s+)?{re.escape(var_name)}\s*=\s*", re.DOTALL)
-        match = pattern.search(html)
-        if not match:
-            return None
-        try:
-            value, _end = _JSON_DECODER.raw_decode(html[match.end() :])
-        except json.JSONDecodeError:
-            return None
-        return value
+        # YouTube serves several bootstrap forms (#28): ``var X = {...}``,
+        # ``window["X"] = {...}`` and ``X = JSON.parse('...')`` / a JSON string.
+        # The name can also appear more than once (later reads such as
+        # ``a.ytInitialData``), so try every assignment until one decodes.
+        pattern = re.compile(
+            rf"""{re.escape(var_name)}["']?\]?\s*=\s*(?:JSON\.parse\(\s*)?""",
+            re.DOTALL,
+        )
+        for match in pattern.finditer(html):
+            value = _decode_js_value(html, match.end())
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    continue
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _json_var_snippet(html: str, var_name: str, length: int = 160) -> str:
+        """Text around the first ``var_name`` for failure diagnostics."""
+        index = html.find(var_name)
+        if index < 0:
+            return ""
+        return html[max(0, index - 40) : index + len(var_name) + length]
 
     # ------------------------------------------------------------------
     # TIDUS: ytInitialData channel items
@@ -614,16 +675,18 @@ class YouTubeFetcher(StreamFetcher):
             self.last_unavailable_reason = "ytInitialData parse failure"
             # All YouTube channels fail at the same moments (2026-11-13), so
             # record what page came back instead (consent, captcha, error).
+            # <title> sits well past the first 20 KB on real pages (2026-11-16).
             title_match = re.search(
-                r"<title[^>]*>(.*?)</title>", html[:20000], re.IGNORECASE | re.DOTALL
+                r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL
             )
             logger.warning(
                 "YouTube ytInitialData missing or invalid for %s "
-                "(html_len=%d title=%r has_var=%s)",
+                "(html_len=%d title=%r has_var=%s head=%r)",
                 channel_name,
                 len(html),
                 (title_match.group(1).strip()[:80] if title_match else ""),
                 "ytInitialData" in html,
+                self._json_var_snippet(html, "ytInitialData"),
             )
             return None
 
