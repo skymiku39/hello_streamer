@@ -8,7 +8,7 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 
 支援 Windows、Linux 與 Raspberry Pi 64-bit。主要介面使用 CustomTkinter，通知支援 Windows Toast 與 Linux `notify-send`。
 
-本專案只提供可攜版：所有程式資料都放在執行檔同層，不寫入作業系統的 AppData、XDG 或其他使用者資料目錄。請確保該資料夾可寫入；搬移整個資料夾即可搬移設定、資料庫、log 與瀏覽器 Profile。若使用「開機自動啟動」，那是使用者主動啟用的作業系統整合，Windows 會寫入 Run Registry、Linux 會寫入 XDG Autostart；搬移可攜版後請重新設定該選項。
+本專案只提供可攜版：所有程式資料都放在執行檔同層，不寫入作業系統的 AppData、XDG 或其他使用者資料目錄。請確保該資料夾可寫入；搬移整個資料夾即可搬移設定、資料庫、log 與瀏覽器 Profile。若使用「開機自動啟動」，那是使用者主動啟用的作業系統整合，Windows 會寫入 Run Registry、Linux 會寫入 XDG Autostart；搬移資料夾後，開機自動啟動會在下次手動啟動程式時自動指向新位置，不需重新設定。
 
 ## 功能特色
 
@@ -19,13 +19,10 @@ Hello Streamer 是一個桌面實況監控工具，用來追蹤 Twitch 與 YouTu
 - 可停用單一頻道、調整頻道順序、移除頻道。
 - 支援繁體中文、簡體中文、英文、日文、韓文介面，語言可在執行中切換。
 - 內建開播 / 離線防抖機制，降低平台短暫查詢異常造成的重複通知或誤關閉視窗。
-- 支援全域四種監聽操作：監聽＋觸發、僅監聽、監聽＋觸發一次、僅監聽一次；單一頻道眼睛按鈕另有三態副作用設定。
-- 瀏覽器設定採單頁流程：開啟方式、帳號、視窗大小與自動整理依選項自動顯示或隱藏，減少術語與無效勾選。
+- 支援全域四種監控模式：監聽＋觸發、只監測（觀察，不通知、不開瀏覽器）、監聽＋觸發一次、僅監聽一次；單一頻道眼睛按鈕另有三態副作用設定。
+- 瀏覽器設定分為基本、視窗、帳號、整理、觀看、其他六個頁籤，各區塊依選項自動顯示或隱藏，減少術語與無效勾選。
 - 程式專用帳號提供登入輔助工具，可先登入 Twitch / YouTube，讓後續自動開啟的播放器沿用 cookies。
 - 自動整理（下播關窗、停止時關閉等）僅在程式專用帳號搭配獨立視窗時可用，避免誤關使用者原本的瀏覽器。
-- 支援四種全域監控操作：
-  - 觸發模式：偵測到開播時執行設定的動作。
-  - 觀察模式：只更新畫面狀態，不自動通知或開啟瀏覽器。
 - 支援系統匣最小化、單一實例、防止重複啟動。
 - 支援開機自動啟動。
 - 使用 SQLite 記錄已看過的 YouTube video ID，避免重複通知。
@@ -148,7 +145,7 @@ Hello Streamer 內建多國語言介面，可透過主視窗左上方的語言�
 
 ## 瀏覽器設定
 
-主視窗的「瀏覽器設定」分為基本、視窗、帳號、自動整理、觀看認定與更多選項六個頁籤，每頁可獨立捲動，說明文字會隨視窗寬度換行。「**使用自訂設定開啟直播頁**」勾選後，由 Hello Streamer 啟動 Chrome / Edge 並套用選項；取消勾選則改用 Windows 預設瀏覽器。
+主視窗的「瀏覽器設定」分為基本、視窗、帳號、整理、觀看與其他六個頁籤，每頁可獨立捲動，說明文字會隨視窗寬度換行。「**使用自訂設定開啟直播頁**」勾選後，由 Hello Streamer 啟動 Chrome / Edge 並套用選項；取消勾選則改用 Windows 預設瀏覽器。
 
 ### 如何開啟直播頁
 
@@ -290,7 +287,7 @@ v0.9.10 起：輪詢採**兩梯次**——先確認直播並觸發動作，再�
 
 打包後的版本會將設定放在執行檔旁邊。原始碼執行時會使用專案根目錄。
 
-載入舊版 `config.json` 時，Hello Streamer 會自動補齊缺漏欄位，並將舊版瀏覽器設定對應到新介面（開啟方式、帳號、視窗大小、自動整理）。若「每頻道隔離」已啟用但 `user_data_dir` 為空，程式會改用 `browser_profile/` 作為預設登入資料目錄。若啟用自訂瀏覽器且勾選獨占視窗、自動整理等需要隔離的功能，但登入資料路徑仍為空，也會自動補上 `browser_profile/`，避免 Chrome / Edge 共用主程序而導致視窗追蹤或自動關閉不穩定。
+載入舊版 `config.json` 時，Hello Streamer 會自動補齊缺漏欄位，並將舊版瀏覽器設定對應到新介面（開啟方式、帳號、視窗大小、自動整理）。若「每頻道隔離」已啟用但 `user_data_dir` 為空，程式會改用 `browser_profile/` 作為預設登入資料目錄。另外，只有在載入 `config_format_version` 低於 4 的舊版設定檔時（遷移完成後版本號即更新，僅執行一次），若已啟用自訂瀏覽器且勾選隱藏工作列、最小化、下播關窗、停止時關閉或關閉無關分頁等需要隔離的功能，但登入資料路徑仍為空，才會自動補上 `browser_profile/`，避免 Chrome / Edge 共用主程序而導致視窗追蹤或自動關閉不穩定。獨占視窗（app mode）不在此列：它可搭配本機帳號使用，勾選後不會被自動改成程式專用帳號。
 
 ## 從原始碼執行
 
@@ -443,13 +440,20 @@ Monitor → EventBus/EventBridge → ActionPlan → ActionCoordinator
 ```text
 stream_monitor/
   app.py                 CustomTkinter 主視窗、監控生命週期
+  monitor_controller.py  背景監控生命週期與 monitor 到 UI 的事件路徑
   action_plan.py         動作計畫與狀態規則的純資料模型
   action_coordinator.py  背景動作、舊事件隔離與生命週期協調
   action_executor.py     以 ActionPorts 執行動作並回傳 ActionResult
+  channel_policy.py      全域模式 × 頻道模式 × 動作的純決策規則
   platform_ports.py      動作層使用的通知／瀏覽器能力介面
   platform_adapters.py   將既有桌面實作接到 platform ports 的 adapter
   portable_storage.py    可攜版的統一路徑模型
   channel_row.py         頻道列表單列 UI
+  canvas_channel_list.py Canvas 繪製的頻道列表（捲動時降低重繪成本）
+  channel_reorder.py     頻道拖曳排序的純邏輯與格位幾何
+  channel_reorder_ui.py  頻道列表拖曳排序模式 UI
+  scroll_guard.py        捲動中延後繁重的列重繪
+  domain/                monitor / events / UI 共用的頻道值物件
   events/                監控 Pub/Sub 事件型別與 EventBus
   event_sink.py          EventBridge 窄介面 Protocol（ISP）
   event_bridge.py        EventBus 訂閱者 → ActionPlan 派發
@@ -457,6 +461,25 @@ stream_monitor/
   app_ui.py              UI 共用工具（字型、按鈕、tooltip、時間格式化）
   browser_settings_model.py  瀏覽器設定 UI 維度與能力判斷
   browser_win32.py       Win32 視窗追蹤、幾何、關閉、工作列隱藏
+  window_layout.py       讓受管播放視窗分散在顯示器上的座標配置
+  window_recovery.py     只認領帶有本可攜版擁有標記的視窗
+  chrome_prefs.py        啟動前把 Memory Saver 例外寫入專用 Profile
+  cdp_client.py          Twitch 頁面輔助使用的最小 Chromium DevTools Protocol 客戶端
+  twitch_page_assist.py  由 CDP 驅動的 Twitch 頁面內輔助協調器
+  twitch_claim_ack.py    讀取頁面原生領取的確認訊號（不送出獎勵請求）
+  twitch_player_recovery.py  Twitch 播放器可見失敗時的有界復原
+  twitch_watch_policy.py Twitch 多視窗的登入帳號配置
+  twitch_acceptance.py   真實帳號 Twitch 驗收的證據規則
+  claim_registry.py      記錄單場直播中哪些 Twitch 頻道已確認領取
+  viewer_engagement_model.py  Twitch 觀看輔助功能的型別化設定
+  playback_health.py     以媒體播放進度判斷頁面是否真的在播放
+  page_assist_status.py  將頁面輔助結果安全送回 Tk 執行緒
+  watch_observation.py   跨工作階段的 Watch Streak 觀察紀錄（僅診斷）
+  runtime_diagnostics.py 持久化的結束證據與打包版原生崩潰記錄
+  launch_records.py      安全重設已見影片與狀態快取
+  status_cache.py        保存並還原上次頻道狀態，避免啟動時畫面空白
+  player_recovery_check.py  針對本機測試頁的播放器復原煙霧測試
+  test_cli.py            不載入 GUI 的 pytest 選擇執行 CLI
   config_manager.py      config.json 載入、驗證、atomic save
   db.py                  SQLite seen video database
   i18n.py                多國語言字串表、語言切換與訂閱機制
