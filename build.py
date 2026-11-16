@@ -112,6 +112,26 @@ def require_tag_matches_package_version(
         )
 
 
+def require_release_notes_for_tag(tag: str, notes_path: Path) -> None:
+    """Fail unless the first line of the release notes names this tag.
+
+    The release workflow publishes everything above the first ``---`` in
+    ``RELEASE_NOTES.md`` as the release body, so a tag pushed before the notes
+    were updated would ship the previous version's notes (#47).
+    """
+    expected = f"# Hello Streamer v{normalize_release_tag(tag)}"
+    try:
+        with notes_path.open(encoding="utf-8-sig") as handle:
+            first_line = handle.readline().strip()
+    except OSError as exc:
+        raise SystemExit(f"Cannot read release notes {notes_path}: {exc}") from exc
+    if first_line != expected:
+        raise SystemExit(
+            f"{notes_path.name} starts with {first_line!r}, expected {expected!r}; "
+            f"add the notes for {tag} before tagging"
+        )
+
+
 def validate_windows_onedir_bundle(bundle_dir: Path) -> None:
     """Require Windows onedir layout: HelloStreamer.exe + _internal/."""
     exe = bundle_dir / "HelloStreamer.exe"
@@ -251,7 +271,14 @@ if __name__ == "__main__":
     args = _parse_args()
     if args.check_release_tag is not None:
         require_tag_matches_package_version(args.check_release_tag)
-        print(f"OK: tag {args.check_release_tag!r} matches version {__version__!r}")
+        require_release_notes_for_tag(
+            args.check_release_tag,
+            Path(__file__).resolve().parent / "RELEASE_NOTES.md",
+        )
+        print(
+            f"OK: tag {args.check_release_tag!r} matches version {__version__!r} "
+            "and the release notes"
+        )
     elif args.validate_windows_onedir is not None:
         validate_windows_onedir_bundle(Path(args.validate_windows_onedir))
         print(f"OK: Windows onedir bundle at {args.validate_windows_onedir}")
