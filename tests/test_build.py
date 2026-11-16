@@ -264,3 +264,10 @@ def test_strip_bundled_pycache_removes_only_cache_dirs(tmp_path: Path) -> None:
     assert (package / "mod.py").is_file()
     assert (nested / "mod.py").is_file()
     assert strip_bundled_pycache(tmp_path) == 0
+
+
+def test_ci_workflow_installs_from_the_lockfile() -> None:
+    """Issue #48: CI must fail on a stale uv.lock instead of re-resolving."""
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "uv sync --locked --extra dev" in text
+    assert "uv sync --extra dev" not in text
