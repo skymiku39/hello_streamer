@@ -812,7 +812,16 @@ class CdpClient:
             payload = {"id": msg_id, "method": method}
             if params is not None:
                 payload["params"] = params
-            self._ws.send(json.dumps(payload))
+            try:
+                self._ws.send(json.dumps(payload))
+            except OSError:
+                raise
+            except Exception as exc:
+                # websocket-client raises WebSocketConnectionClosedException
+                # (not an OSError) once the page or browser has gone. Callers
+                # handle OSError; an unexpected type ended the page-assist
+                # worker without its reconnect path.
+                raise ConnectionError(f"CDP send failed: {exc}") from exc
         deadline = time.monotonic() + max(0.5, timeout)
         while time.monotonic() < deadline:
             with self._lock:
