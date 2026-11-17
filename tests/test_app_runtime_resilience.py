@@ -268,6 +268,63 @@ def test_start_resumes_only_owned_live_trigger_players(monkeypatch, mode):
     assert calls == ([["https://www.twitch.tv/live"]] if mode.startswith("trigger") else [])
 
 
+class _FakeVar:
+    def __init__(self, value: str) -> None:
+        self.value = value
+        self.set_calls: list[str] = []
+
+    def get(self) -> str:
+        return self.value
+
+    def set(self, value: str) -> None:
+        self.set_calls.append(value)
+        self.value = value
+
+
+@pytest.mark.parametrize("typed", ["", "5", "abc"])
+def test_health_check_does_not_rewrite_interval_field(typed: str) -> None:
+    interval_var = _FakeVar(typed)
+    restarted: list[int] = []
+
+    def restart_if_dead(channels, interval) -> bool:
+        restarted.append(interval)
+        return False
+
+    probe = SimpleNamespace(
+        interval_var=interval_var,
+        config={"channels": [], "check_interval": 45},
+        _controller=SimpleNamespace(
+            mode=app_module.WATCH_MODE, restart_if_dead=restart_if_dead
+        ),
+        _persist_trigger_settings=lambda **_kw: None,
+    )
+    probe._collect_monitor_config = (  # type: ignore[attr-defined]
+        lambda **kw: App._collect_monitor_config(probe, **kw)
+    )
+
+    App.maybe_restart_dead_monitor(probe)
+
+    assert interval_var.set_calls == []
+    assert interval_var.value == typed
+    assert probe.config["check_interval"] == 45
+    assert restarted == [45]
+
+
+def test_collect_monitor_config_still_normalizes_on_user_action() -> None:
+    interval_var = _FakeVar("5")
+    probe = SimpleNamespace(
+        interval_var=interval_var,
+        config={"channels": []},
+        _persist_trigger_settings=lambda **_kw: None,
+    )
+
+    _channels, interval = App._collect_monitor_config(probe)
+
+    assert interval == 10
+    assert interval_var.value == "10"
+    assert probe.config["check_interval"] == 10
+
+
 def _close_on_stop_probe(active_rounds: int):
     state = {"active": active_rounds, "closed": 0}
     scheduled: list = []
