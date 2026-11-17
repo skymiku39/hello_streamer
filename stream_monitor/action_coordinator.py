@@ -149,6 +149,13 @@ class ActionCoordinator:
         with self._lock:
             self._cancelled_generations.add(generation)
 
+    def is_pending(
+        self, generation: int, platform: str, channel: str, key: str
+    ) -> bool:
+        """True while this exact action is queued or running."""
+        with self._lock:
+            return (generation, platform, channel, key) in self._pending_keys
+
     def has_active_work(self) -> bool:
         """True while any action worker or pending queue entry is still live."""
         with self._lock:
