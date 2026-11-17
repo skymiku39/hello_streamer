@@ -1084,19 +1084,44 @@ def _post_close_window(hwnd: int) -> bool:
         return False
 
 
-def _find_hwnds_by_title_keyword(keywords: list[str]) -> set[int]:
+_SITE_TITLE_MARKERS = {
+    "twitch.tv": "twitch",
+    "youtube.com": "youtube",
+    "youtu.be": "youtube",
+}
+
+
+def _site_title_marker(url: str) -> str:
+    """Word a browser tab title for *url* carries ("... - Twitch"), or ""."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    for domain, marker in _SITE_TITLE_MARKERS.items():
+        if host == domain or host.endswith("." + domain):
+            return marker
+    return ""
+
+
+def _find_hwnds_by_title_keyword(
+    keywords: list[str], *, site_marker: str = ""
+) -> set[int]:
     """Return HWNDs whose visible window title contains any of *keywords*.
 
     Case-insensitive substring match (after stripping whitespace). Empty
-    keywords are ignored; an empty list returns an empty set.
+    keywords are ignored; an empty list returns an empty set. With
+    *site_marker*, the title must also contain it: a channel name alone also
+    matches chat apps, editors and other programs' windows.
     """
     cleaned = [k.strip().lower() for k in keywords if k and k.strip()]
     if not cleaned:
         return set()
+    marker = site_marker.strip().lower()
 
     matches: set[int] = set()
     for hwnd, title in _enum_visible_hwnds_with_title():
         low = title.lower()
+        if marker and marker not in low:
+            continue
         if any(k in low for k in cleaned):
             matches.add(hwnd)
     return matches
@@ -1232,7 +1257,9 @@ def close_browser_window_for_url(
 
     title_fallback_blocked = _pop_title_fallback_block(url)
     if closed == 0 and title_keywords and not title_fallback_blocked and not pending:
-        for hwnd in _find_hwnds_by_title_keyword(title_keywords):
+        for hwnd in _find_hwnds_by_title_keyword(
+            title_keywords, site_marker=_site_title_marker(url)
+        ):
             if _post_close_window(hwnd):
                 closed += 1
 

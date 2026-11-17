@@ -1187,7 +1187,10 @@ def _open_with_browser_settings(
             }
             track_url = ""
             track_keywords = ()
-            if wants_close_or_hide_mgmt and manage:
+            # A window the user opened (manage=False) is never ours to
+            # close; without the block a later close for this URL fell back
+            # to closing every window whose title has the channel name.
+            if wants_close_or_hide_mgmt or not manage:
                 _block_title_fallback_for_url(url)
         _apply_new_browser_window_settings_async(
             class_name,

@@ -595,7 +595,7 @@ def test_close_3a_isolation_closes_tracked_hwnd_directly(monkeypatch) -> None:
     monkeypatch.setattr(
         notifier,
         "_find_hwnds_by_title_keyword",
-        lambda kws: fallback_calls.append(kws) or set(),
+        lambda kws, **_kw: fallback_calls.append(kws) or set(),
     )
 
     notifier._register_tracked_hwnd("https://x", 42)
@@ -624,7 +624,7 @@ def test_close_3b_isolation_falls_back_to_title_when_tracker_misses(
         lambda hwnd: closed.append(hwnd) or True,
     )
     monkeypatch.setattr(
-        notifier, "_find_hwnds_by_title_keyword", lambda _kws: {777}
+        notifier, "_find_hwnds_by_title_keyword", lambda _kws, **_kw: {777}
     )
 
     # No tracked HWND, no fallback-block → fallback fires.
@@ -659,7 +659,7 @@ def test_close_3c_no_isolation_blocks_title_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
         notifier,
         "_find_hwnds_by_title_keyword",
-        lambda kws: fallback_calls.append(kws) or {999},
+        lambda kws, **_kw: fallback_calls.append(kws) or {999},
     )
     monkeypatch.setattr(notifier, "_post_close_window", lambda _hwnd: True)
 
@@ -761,7 +761,7 @@ def test_stop_4c_does_not_touch_untracked_urls(monkeypatch) -> None:
     monkeypatch.setattr(
         notifier,
         "_find_hwnds_by_title_keyword",
-        lambda kws: fallback_calls.append(kws) or {999},
+        lambda kws, **_kw: fallback_calls.append(kws) or {999},
     )
 
     # Nothing to close — and crucially, no title-keyword scan is attempted.
@@ -1535,7 +1535,7 @@ def test_multi_10b_close_one_url_leaves_others_intact(monkeypatch) -> None:
     monkeypatch.setattr(
         notifier, "_post_close_window", lambda hwnd: closed.append(hwnd) or True
     )
-    monkeypatch.setattr(notifier, "_find_hwnds_by_title_keyword", lambda _kw: set())
+    monkeypatch.setattr(notifier, "_find_hwnds_by_title_keyword", lambda _kws, **_kw: set())
 
     notifier._register_tracked_hwnd("https://a", 11)
     notifier._register_tracked_hwnd("https://b", 22)
@@ -1818,7 +1818,7 @@ def test_life_12a_dedicated_profile_open_then_close(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(
         notifier, "_post_close_window", lambda h: closed.append(h) or True
     )
-    monkeypatch.setattr(notifier, "_find_hwnds_by_title_keyword", lambda _kw: set())
+    monkeypatch.setattr(notifier, "_find_hwnds_by_title_keyword", lambda _kws, **_kw: set())
 
     notifier.close_browser_window_for_url(url, title_keywords=["channel"])
     assert closed == [4242]
@@ -1859,7 +1859,7 @@ def test_life_12b_per_channel_open_then_close(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         notifier, "_post_close_window", lambda h: closed.append(h) or True
     )
-    monkeypatch.setattr(notifier, "_find_hwnds_by_title_keyword", lambda _kw: set())
+    monkeypatch.setattr(notifier, "_find_hwnds_by_title_keyword", lambda _kws, **_kw: set())
 
     notifier.close_browser_window_for_url(url, title_keywords=["channel"])
     assert closed == [5151]
@@ -1899,7 +1899,7 @@ def test_life_12c_shared_profile_open_then_close_is_safe_noop(
     monkeypatch.setattr(
         notifier,
         "_find_hwnds_by_title_keyword",
-        lambda kws: fallback_calls.append(kws) or {888},
+        lambda kws, **_kw: fallback_calls.append(kws) or {888},
     )
 
     count = notifier.close_browser_window_for_url(
@@ -1933,7 +1933,7 @@ def test_life_12d_disabled_open_via_webbrowser_close_uses_title_fallback(
         notifier, "_post_close_window", lambda h: closed.append(h) or True
     )
     monkeypatch.setattr(
-        notifier, "_find_hwnds_by_title_keyword", lambda _kw: {7777}
+        notifier, "_find_hwnds_by_title_keyword", lambda _kws, **_kw: {7777}
     )
 
     count = notifier.close_browser_window_for_url(
@@ -2064,7 +2064,7 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
     monkeypatch.setattr(
         notifier,
         "_find_hwnds_by_title_keyword",
-        lambda keywords: fallback_calls.append(tuple(keywords)) or {fallback_hwnd},
+        lambda keywords, **_kw: fallback_calls.append(tuple(keywords)) or {fallback_hwnd},
     )
 
     custom_enabled = profile_mode != "disabled"
