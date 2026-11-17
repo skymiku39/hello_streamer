@@ -739,7 +739,20 @@ def _apply_new_browser_window_settings_async(
                                 "SetForegroundWindow failed for HWND=%s", hwnd
                             )
                     managed.add(hwnd)
-                    if track_for_url and not _is_url_closing(track_for_url):
+                    if track_for_url and _is_url_closing(track_for_url):
+                        # The close arrived while geometry was applied (it can
+                        # block on Chrome): close_for_url cleared the registry
+                        # before this window was in it, so close it here or
+                        # it stays open, untracked and unclosable.
+                        _remove_tracked_hwnd(track_for_url, hwnd)
+                        if _post_close_window(hwnd):
+                            logger.info(
+                                "Closed managed window set up during a close "
+                                "request HWND=%s url=%s",
+                                hwnd,
+                                track_for_url,
+                            )
+                    elif track_for_url:
                         _register_tracked_hwnd(
                             track_for_url, hwnd, keywords=track_keywords
                         )
