@@ -176,9 +176,24 @@ def _after_open_labels() -> dict[LifecycleEffect, str]:
     }
 
 
+_AFTER_OPEN_LABEL_KEYS: dict[LifecycleEffect, str] = {
+    LifecycleEffect.NONE: "trigger.after_open.continue",
+    LifecycleEffect.STOP_MONITOR: "trigger.after_open.stop",
+    LifecycleEffect.EXIT_APP: "trigger.after_open.exit",
+}
+
+
 def _after_open_key_for_display(display: str) -> LifecycleEffect:
+    """Map a displayed label back to its effect.
+
+    The label may still be in the previous language (i18n broadcasts after the
+    active language already changed), so fall back to matching every language.
+    """
     for effect, label in _after_open_labels().items():
         if label == display:
+            return effect
+    for effect, key in _AFTER_OPEN_LABEL_KEYS.items():
+        if display in i18n.labels_in_all_languages(key):
             return effect
     return LifecycleEffect.NONE
 
