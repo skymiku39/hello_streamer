@@ -44,6 +44,10 @@ class ProbeFacade:
         return self._monitor._wake_verify_mode
 
     @property
+    def startup_refresh_active(self) -> bool:
+        return getattr(self._monitor, "_startup_refresh_active", False)
+
+    @property
     def noop_commit(self) -> CommitFn:
         return self._monitor._noop_commit
 
