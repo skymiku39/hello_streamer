@@ -150,15 +150,15 @@ class OfflineBuildersMixin:
 
     def _channel_had_live_session(self, entry_key: str) -> bool:
         """True if this channel was live at any point in the current session."""
-        if entry_key in self._fallback_triggered_live:
-            return True
-        for key in self._live_payload:
-            if _entry_key_from_live_cache_key(key) == entry_key:
+        # Snapshot the keys under the session lock: tier-2 workers mutate
+        # these dicts (enqueue.py) under it, and iterating them live can raise
+        # "dictionary changed size during iteration". Callers never hold the
+        # (non-reentrant) lock here, and no I/O happens inside the block.
+        with self._lock:
+            if entry_key in self._fallback_triggered_live:
                 return True
-        for key in self._live_started_at:
-            if _entry_key_from_live_cache_key(key) == entry_key:
-                return True
-        return False
+            keys = [*self._live_payload, *self._live_started_at]
+        return any(_entry_key_from_live_cache_key(k) == entry_key for k in keys)
 
     def _offline_title(
         self,
