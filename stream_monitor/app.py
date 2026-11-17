@@ -1486,12 +1486,18 @@ class App(ctk.CTk):
         if dialog.result:
             ch = dialog.result
             channels = self.config.setdefault("channels", [])
-            if ch not in channels:
-                channels.append(ch)
-                self._add_channel_row(ch)
-                self._save_config()
-                self._controller.update_channels(channels)
-                self.refresh_points_priority_allocation(allow_open=True)
+            new_key = channel_key(ch["platform"], ch["name"])
+            if any(
+                channel_key(c.get("platform", ""), c.get("name", "")) == new_key
+                for c in channels
+            ):
+                logger.info("Channel %s already exists; skip adding", new_key)
+                return
+            channels.append(ch)
+            self._add_channel_row(ch)
+            self._save_config()
+            self._controller.update_channels(channels)
+            self.refresh_points_priority_allocation(allow_open=True)
 
     def _on_language_picker(self) -> None:
         dialog = LanguageDialog(self, on_apply=self._apply_language)
