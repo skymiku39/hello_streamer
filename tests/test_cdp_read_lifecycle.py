@@ -42,3 +42,29 @@ def test_stop_is_respected_during_idle_timeout():
     client._ws.recv.side_effect = timeout_then_stop
     client._read_loop()
     client._ws.recv.assert_called_once()
+
+
+def test_call_after_disconnect_raises_an_oserror():
+    # websocket-client raises WebSocketConnectionClosedException (not an
+    # OSError) on send once the page closed; the claim-ack poll only handles
+    # OSError-family errors, so the page-assist worker ended instead.
+    import pytest
+
+    client = CdpClient()
+    client._ws = Mock()
+    client._ws.send.side_effect = WebSocketConnectionClosedException("closed")
+
+    with pytest.raises(ConnectionError):
+        client.call("Network.getResponseBody", {"requestId": "1"}, timeout=0.5)
+
+
+def test_claim_ack_poll_survives_a_closed_socket():
+    from stream_monitor.twitch_claim_ack import ClaimAcknowledgements
+
+    client = CdpClient()
+    client._ws = Mock()
+    client._ws.send.side_effect = WebSocketConnectionClosedException("closed")
+    acks = ClaimAcknowledgements()
+    acks._pending["req-1"] = True
+
+    assert acks.poll(client) is None
