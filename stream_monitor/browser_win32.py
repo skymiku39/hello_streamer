@@ -532,50 +532,6 @@ def _is_browser_popup_or_tool_window(user32: Any, hwnd: int) -> bool:
     return False
 
 
-_FOREGROUND_HOLD_POLL_S = 2.0
-
-
-def _hold_foreground(
-    user32: Any,
-    hwnds: set[int],
-    hold_seconds: int,
-    tracked_url: str = "",
-) -> None:
-    """Periodically re-assert foreground on *hwnds* for *hold_seconds*.
-
-    Twitch credits a view only when the Page Visibility API reports "visible"
-    during the player's first heartbeat (~10-15s after page load). By keeping
-    the window in the foreground for the hold period we ensure the initial
-    heartbeat sees an active, watched state.
-
-    Stops early if the tracked URL's HWND registry is cleared (indicating a
-    close request from close_on_offline or close_on_stop).
-    """
-    end = time.monotonic() + hold_seconds
-    while time.monotonic() < end:
-        if tracked_url and not tracked_hwnds_for_url(tracked_url):
-            logger.debug(
-                "Foreground hold cancelled: tracked HWNDs for %s cleared",
-                tracked_url,
-            )
-            return
-        for hwnd in list(hwnds):
-            try:
-                if not user32.IsWindow(hwnd):
-                    hwnds.discard(hwnd)
-                    continue
-                user32.ShowWindow(hwnd, _SW_SHOW)
-                user32.SetForegroundWindow(hwnd)
-            except OSError:
-                hwnds.discard(hwnd)
-        if not hwnds:
-            return
-        time.sleep(_FOREGROUND_HOLD_POLL_S)
-    logger.debug(
-        "Foreground hold complete (%ds) for %d window(s)", hold_seconds, len(hwnds)
-    )
-
-
 def _separate_window_rect(user32: Any, hwnd: int, requested: tuple[int, int, int, int]
                           ) -> tuple[int, int, int, int]:
     import ctypes
@@ -619,7 +575,6 @@ def _apply_new_browser_window_settings_async(
     deadline_s: float | None = None,
     track_for_url: str = "",
     track_keywords: tuple[str, ...] = (),
-    foreground_hold_seconds: int = 0,
 ) -> threading.Thread | None:
     """Spawn a daemon thread that configures any *new* HWND of *class_name*.
 
@@ -784,7 +739,20 @@ def _apply_new_browser_window_settings_async(
                                 "SetForegroundWindow failed for HWND=%s", hwnd
                             )
                     managed.add(hwnd)
-                    if track_for_url and not _is_url_closing(track_for_url):
+                    if track_for_url and _is_url_closing(track_for_url):
+                        # The close arrived while geometry was applied (it can
+                        # block on Chrome): close_for_url cleared the registry
+                        # before this window was in it, so close it here or
+                        # it stays open, untracked and unclosable.
+                        _remove_tracked_hwnd(track_for_url, hwnd)
+                        if _post_close_window(hwnd):
+                            logger.info(
+                                "Closed managed window set up during a close "
+                                "request HWND=%s url=%s",
+                                hwnd,
+                                track_for_url,
+                            )
+                    elif track_for_url:
                         _register_tracked_hwnd(
                             track_for_url, hwnd, keywords=track_keywords
                         )
@@ -821,11 +789,6 @@ def _apply_new_browser_window_settings_async(
                 track_for_url,
             )
             return
-
-        if bring_to_front and foreground_hold_seconds > 0:
-            _hold_foreground(
-                user32, managed, foreground_hold_seconds, tracked_url=track_for_url
-            )
 
     def _run() -> None:
         try:
@@ -1084,19 +1047,44 @@ def _post_close_window(hwnd: int) -> bool:
         return False
 
 
-def _find_hwnds_by_title_keyword(keywords: list[str]) -> set[int]:
+_SITE_TITLE_MARKERS = {
+    "twitch.tv": "twitch",
+    "youtube.com": "youtube",
+    "youtu.be": "youtube",
+}
+
+
+def _site_title_marker(url: str) -> str:
+    """Word a browser tab title for *url* carries ("... - Twitch"), or ""."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    for domain, marker in _SITE_TITLE_MARKERS.items():
+        if host == domain or host.endswith("." + domain):
+            return marker
+    return ""
+
+
+def _find_hwnds_by_title_keyword(
+    keywords: list[str], *, site_marker: str = ""
+) -> set[int]:
     """Return HWNDs whose visible window title contains any of *keywords*.
 
     Case-insensitive substring match (after stripping whitespace). Empty
-    keywords are ignored; an empty list returns an empty set.
+    keywords are ignored; an empty list returns an empty set. With
+    *site_marker*, the title must also contain it: a channel name alone also
+    matches chat apps, editors and other programs' windows.
     """
     cleaned = [k.strip().lower() for k in keywords if k and k.strip()]
     if not cleaned:
         return set()
+    marker = site_marker.strip().lower()
 
     matches: set[int] = set()
     for hwnd, title in _enum_visible_hwnds_with_title():
         low = title.lower()
+        if marker and marker not in low:
+            continue
         if any(k in low for k in cleaned):
             matches.add(hwnd)
     return matches
@@ -1232,7 +1220,9 @@ def close_browser_window_for_url(
 
     title_fallback_blocked = _pop_title_fallback_block(url)
     if closed == 0 and title_keywords and not title_fallback_blocked and not pending:
-        for hwnd in _find_hwnds_by_title_keyword(title_keywords):
+        for hwnd in _find_hwnds_by_title_keyword(
+            title_keywords, site_marker=_site_title_marker(url)
+        ):
             if _post_close_window(hwnd):
                 closed += 1
 

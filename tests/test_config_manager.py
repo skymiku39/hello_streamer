@@ -162,7 +162,7 @@ def test_load_falls_back_for_nonfinite_numeric_values(
     if field == "browser_settings":
         value = '{"width": ' + literal + '}'
     elif field == "viewer_engagement":
-        value = '{"foreground_hold_seconds": ' + literal + '}'
+        value = '{"claim_click_offset_px": ' + literal + '}'
     path.write_text('{"' + field + '": ' + value + '}', encoding="utf-8")
     _use_config_path(monkeypatch, path)
 
@@ -171,7 +171,27 @@ def test_load_falls_back_for_nonfinite_numeric_values(
     assert config["check_interval"] == config_manager.DEFAULT_CONFIG["check_interval"]
     assert config["config_format_version"] == config_manager.CONFIG_FORMAT_VERSION
     assert config["browser_settings"]["width"] == config_manager.DEFAULT_WINDOW_WIDTH
-    assert config["viewer_engagement"]["foreground_hold_seconds"] == 15
+    assert config["viewer_engagement"]["claim_click_offset_px"] == 10
+
+
+def test_load_silently_drops_retired_foreground_hold_seconds(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {"viewer_engagement": {"enabled": True, "foreground_hold_seconds": 30}}
+        ),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    config = config_manager.load()
+
+    assert config["viewer_engagement"]["enabled"] is True
+    assert "foreground_hold_seconds" not in config["viewer_engagement"]
+    assert "foreground_hold_seconds" not in config_manager.DEFAULT_VIEWER_ENGAGEMENT
+    assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
 
 
 def test_load_validates_config_values(tmp_path, monkeypatch) -> None:
@@ -1313,3 +1333,49 @@ def test_save_writes_migrated_points_allocation_switch(tmp_path, monkeypatch) ->
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert returned["viewer_engagement"]["points_allocation_enabled"] is True
     assert on_disk["viewer_engagement"]["points_allocation_enabled"] is True
+
+
+def test_adopt_in_place_keeps_channel_objects_that_rows_hold(tmp_path, monkeypatch):
+    # Rows and their callbacks hold the channel dicts. Replacing the config
+    # with save()'s fresh dicts made later pause/rename/delete/move edits miss.
+    monkeypatch.setattr(config_manager, "_config_path", lambda: tmp_path / "config.json")
+    row_channel = {"platform": "twitch", "name": "foo"}
+    other = {"platform": "youtube", "name": "@bar", "enabled": True}
+    config = {"channels": [row_channel, other], "check_interval": 30}
+    channels_list = config["channels"]
+
+    config_manager.adopt_in_place(config, config_manager.save(config))
+
+    assert config["channels"] is channels_list
+    assert config["channels"][0] is row_channel
+    assert config["channels"][1] is other
+
+    row_channel["enabled"] = False  # what ChannelRow does on pause
+    config_manager.adopt_in_place(config, config_manager.save(config))
+    reloaded = config_manager.load()
+    assert reloaded["channels"][0]["enabled"] is False
+    assert row_channel in config["channels"]
+
+
+def test_adopt_in_place_applies_normalization_and_drops_invalid(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_manager, "_config_path", lambda: tmp_path / "config.json")
+    kept = {"platform": " Twitch ", "name": " foo ", "display_name": "  "}
+    config = {"channels": [kept, {"platform": "nope", "name": "x"}], "stale": 1}
+
+    config_manager.adopt_in_place(config, config_manager.save(config))
+
+    assert config["channels"] == [{"platform": "twitch", "name": "foo"}]
+    assert config["channels"][0] is kept
+    assert "stale" not in config
+
+
+def test_adopt_in_place_tolerates_shared_objects():
+    channel = {"platform": "twitch", "name": "foo"}
+    config = {"channels": [channel]}
+
+    config_manager.adopt_in_place(config, config)
+    shared = {"channels": [channel]}
+    config_manager.adopt_in_place(config, shared)
+
+    assert config["channels"] == [{"platform": "twitch", "name": "foo"}]
+    assert config["channels"][0] is channel

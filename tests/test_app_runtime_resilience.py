@@ -77,6 +77,29 @@ def test_save_config_keeps_app_alive_on_oserror(monkeypatch) -> None:
     App._save_config(probe)  # type: ignore[arg-type]
 
 
+def test_save_config_keeps_the_channel_dicts_rows_hold(monkeypatch, tmp_path) -> None:
+    # Rows mutate their own channel dict on pause/rename; after a save those
+    # dicts must still be the ones in the config, or the edit never lands.
+    monkeypatch.setattr(
+        app_module.config_manager, "_config_path", lambda: tmp_path / "config.json"
+    )
+    row_channel = {"platform": "twitch", "name": "foo"}
+    config = {"channels": [row_channel]}
+    probe = SimpleNamespace(
+        config=config,
+        _cancel_scheduled_config_save=lambda: None,
+        geometry=lambda: "800x600",
+    )
+
+    App._save_config(probe)  # type: ignore[arg-type]
+    row_channel["enabled"] = False
+    App._save_config(probe)  # type: ignore[arg-type]
+
+    assert probe.config is config
+    assert probe.config["channels"][0] is row_channel
+    assert app_module.config_manager.load()["channels"][0]["enabled"] is False
+
+
 def test_reset_persist_config_still_propagates_oserror(monkeypatch) -> None:
     """Durable reset path must not swallow save failures (unlike _save_config)."""
 
@@ -243,3 +266,61 @@ def test_start_resumes_only_owned_live_trigger_players(monkeypatch, mode):
     )
     App._start_monitor_mode(probe, mode, "status", "color", "tooltip")
     assert calls == ([["https://www.twitch.tv/live"]] if mode.startswith("trigger") else [])
+
+
+def _close_on_stop_probe(active_rounds: int):
+    state = {"active": active_rounds, "closed": 0}
+    scheduled: list = []
+
+    def has_active_work():
+        state["active"] -= 1
+        return state["active"] >= 0
+
+    probe = SimpleNamespace(
+        _controller=SimpleNamespace(generation=5, mode="idle"),
+        _platform=SimpleNamespace(window=SimpleNamespace(
+            close_all=lambda: state.__setitem__("closed", state["closed"] + 1) or 0
+        )),
+        _action_coordinator=SimpleNamespace(has_active_work=has_active_work),
+        after=lambda _ms, callback: scheduled.append(callback),
+        _CLOSE_ON_STOP_RECHECKS=App._CLOSE_ON_STOP_RECHECKS,
+        _CLOSE_ON_STOP_RECHECK_MS=App._CLOSE_ON_STOP_RECHECK_MS,
+    )
+    probe._close_all_on_stop = lambda gen, rechecks=None: App._close_all_on_stop(
+        probe, gen, rechecks
+    )
+    return probe, state, scheduled
+
+
+def test_close_on_stop_sweeps_again_while_opens_are_in_flight() -> None:
+    # An open past its cancellation check registers its window after the
+    # first sweep; it used to survive Stop (and keep the PC awake).
+    probe, state, scheduled = _close_on_stop_probe(active_rounds=2)
+
+    App._close_all_on_stop(probe, 5)
+    while scheduled:
+        scheduled.pop(0)()
+
+    assert state["closed"] == 3
+
+
+def test_close_on_stop_recheck_stops_once_monitoring_restarts() -> None:
+    probe, state, scheduled = _close_on_stop_probe(active_rounds=5)
+
+    App._close_all_on_stop(probe, 5)
+    probe._controller.generation = 6
+    probe._controller.mode = "trigger"
+    while scheduled:
+        scheduled.pop(0)()
+
+    assert state["closed"] == 1
+
+
+def test_close_on_stop_recheck_is_bounded() -> None:
+    probe, state, scheduled = _close_on_stop_probe(active_rounds=10_000)
+
+    App._close_all_on_stop(probe, 5)
+    while scheduled:
+        scheduled.pop(0)()
+
+    assert state["closed"] == App._CLOSE_ON_STOP_RECHECKS + 1

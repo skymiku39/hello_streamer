@@ -176,9 +176,24 @@ def _after_open_labels() -> dict[LifecycleEffect, str]:
     }
 
 
+_AFTER_OPEN_LABEL_KEYS: dict[LifecycleEffect, str] = {
+    LifecycleEffect.NONE: "trigger.after_open.continue",
+    LifecycleEffect.STOP_MONITOR: "trigger.after_open.stop",
+    LifecycleEffect.EXIT_APP: "trigger.after_open.exit",
+}
+
+
 def _after_open_key_for_display(display: str) -> LifecycleEffect:
+    """Map a displayed label back to its effect.
+
+    The label may still be in the previous language (i18n broadcasts after the
+    active language already changed), so fall back to matching every language.
+    """
     for effect, label in _after_open_labels().items():
         if label == display:
+            return effect
+    for effect, key in _AFTER_OPEN_LABEL_KEYS.items():
+        if display in i18n.labels_in_all_languages(key):
             return effect
     return LifecycleEffect.NONE
 
@@ -1486,12 +1501,18 @@ class App(ctk.CTk):
         if dialog.result:
             ch = dialog.result
             channels = self.config.setdefault("channels", [])
-            if ch not in channels:
-                channels.append(ch)
-                self._add_channel_row(ch)
-                self._save_config()
-                self._controller.update_channels(channels)
-                self.refresh_points_priority_allocation(allow_open=True)
+            new_key = channel_key(ch["platform"], ch["name"])
+            if any(
+                channel_key(c.get("platform", ""), c.get("name", "")) == new_key
+                for c in channels
+            ):
+                logger.info("Channel %s already exists; skip adding", new_key)
+                return
+            channels.append(ch)
+            self._add_channel_row(ch)
+            self._save_config()
+            self._controller.update_channels(channels)
+            self.refresh_points_priority_allocation(allow_open=True)
 
     def _on_language_picker(self) -> None:
         dialog = LanguageDialog(self, on_apply=self._apply_language)
@@ -1988,6 +2009,12 @@ class App(ctk.CTk):
                 or managed_window_launch_pending(status.url)
             ):
                 continue
+            # Row repaints rerun this every UI tick; while the open action is
+            # still queued, resubmitting only logs a duplicate skip.
+            if self._action_coordinator.is_pending(
+                self._controller.generation, "twitch", name, plan.key
+            ):
+                continue
             channel = next(
                 (
                     item for item in channels
@@ -2050,15 +2077,40 @@ class App(ctk.CTk):
                 self.config.get("browser_settings") or {}
             )
             if browser_settings.close_on_stop:
-                try:
-                    closed = self._platform.window.close_all()
-                    if closed:
-                        logger.info(
-                            "close_on_stop: WM_CLOSEd %d tracked window(s)",
-                            closed,
-                        )
-                except Exception:
-                    logger.exception("close_on_stop sweep failed")
+                self._close_all_on_stop(self._controller.generation)
+
+    _CLOSE_ON_STOP_RECHECKS = 10
+    _CLOSE_ON_STOP_RECHECK_MS = 500
+
+    def _close_all_on_stop(self, generation: int, rechecks: int | None = None) -> None:
+        """Close every tracked window, again after in-flight opens finish.
+
+        An open already past the cancellation check (resolving the CDP port,
+        spawning Chrome) registers its window only after this first sweep, so
+        it survived Stop and re-enabled keep-awake. Sweep again while action
+        workers are still running, unless monitoring was started again.
+        """
+        if rechecks is None:
+            rechecks = self._CLOSE_ON_STOP_RECHECKS
+        elif (
+            self._controller.generation != generation
+            or self._controller.mode != "idle"
+        ):
+            return
+        try:
+            closed = self._platform.window.close_all()
+            if closed:
+                logger.info(
+                    "close_on_stop: WM_CLOSEd %d tracked window(s)",
+                    closed,
+                )
+        except Exception:
+            logger.exception("close_on_stop sweep failed")
+        if rechecks > 0 and self._action_coordinator.has_active_work():
+            self.after(
+                self._CLOSE_ON_STOP_RECHECK_MS,
+                lambda: self._close_all_on_stop(generation, rechecks - 1),
+            )
 
     def _apply_monitor_mode_buttons(self) -> None:
         states = compact_control_button_states(
@@ -2114,7 +2166,7 @@ class App(ctk.CTk):
                 config["window_geometry"] = self.geometry()
             except Exception:
                 pass
-            self.config = config_manager.save(config)
+            config_manager.adopt_in_place(self.config, config_manager.save(config))
 
         result = reset_launch_records(
             db=self._db,
@@ -2434,7 +2486,10 @@ class App(ctk.CTk):
         except Exception:
             pass
         try:
-            self.config = config_manager.save(self.config)
+            # Keep the same objects: channel rows hold these channel dicts.
+            config_manager.adopt_in_place(
+                self.config, config_manager.save(self.config)
+            )
         except OSError:
             # A transient Windows file lock must not terminate a Tk callback
             # or leave the application half-closed. On failure the original

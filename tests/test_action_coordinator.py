@@ -61,16 +61,61 @@ def test_stale_action_is_discarded_before_worker_starts() -> None:
     assert calls == []
 
 
-def test_only_one_terminal_action_can_win_per_generation() -> None:
+def _other_info(channel: str = "other") -> StreamInfo:
+    return StreamInfo(
+        channel=channel,
+        platform="twitch",
+        is_live=True,
+        title="Live",
+        url=f"https://www.twitch.tv/{channel}",
+    )
+
+
+@pytest.mark.parametrize("action", ["open_and_stop", "open_and_exit"])
+def test_only_one_terminal_effect_per_generation_but_others_still_run(
+    action,
+) -> None:
+    """Same-poll lives: the second channel still notifies/opens (#66)."""
+    release = threading.Event()
+    lock = threading.Lock()
+    runs: list[tuple[str, str]] = []
+    done = threading.Semaphore(0)
+
+    def runner(plan, info, **_kwargs):
+        with lock:
+            runs.append((info.channel, plan.after_open.value))
+        if info.channel == "hello":
+            release.wait(timeout=2)
+        done.release()
+        return ActionResult.completed(plan.key)
+
+    coordinator = _coordinator(runner)
+    plan = action_plan_for(action)
+
+    assert coordinator.submit(plan, _info(), None, generation=1) is True
+    assert coordinator.submit(plan, _other_info(), None, generation=1) is True
+    release.set()
+    assert done.acquire(timeout=1)
+    assert done.acquire(timeout=1)
+
+    effects = dict(runs)
+    assert effects["hello"] == plan.after_open.value
+    assert effects["other"] == "none"
+
+    # A third channel later in the same generation is also downgraded.
+    assert coordinator.submit(plan, _other_info("third"), None, generation=1)
+    assert done.acquire(timeout=1)
+    assert dict(runs)["third"] == "none"
+
+
+def test_duplicate_pending_action_for_same_channel_is_still_skipped() -> None:
     started = threading.Event()
     release = threading.Event()
-    finished = threading.Event()
 
-    def runner(_action, _info, **_kwargs):
+    def runner(plan, _info, **_kwargs):
         started.set()
         release.wait(timeout=2)
-        finished.set()
-        return ActionResult.completed("open_and_stop")
+        return ActionResult.completed(plan.key)
 
     coordinator = _coordinator(runner)
     plan = action_plan_for("open_and_stop")
@@ -78,10 +123,7 @@ def test_only_one_terminal_action_can_win_per_generation() -> None:
     assert coordinator.submit(plan, _info(), None, generation=1) is True
     assert started.wait(timeout=1)
     assert coordinator.submit(plan, _info(), None, generation=1) is False
-
     release.set()
-    assert finished.wait(timeout=1)
-    assert coordinator.submit(plan, _info(), None, generation=1) is False
 
 
 def test_failed_terminal_action_releases_generation_claim() -> None:
@@ -323,7 +365,11 @@ def test_notification_failure_does_not_release_queued_terminal_action(action):
     assert coordinator.submit(plan, _info(), None, generation=1)
     _wait_for_workers(coordinator)
     assert len(scheduled) == 1
-    assert coordinator.submit(plan, _info(), None, generation=1) is False
+    # The claim is kept: a later event still runs but schedules no second
+    # stop/exit (#66).
+    assert coordinator.submit(plan, _other_info(), None, generation=1) is True
+    _wait_for_workers(coordinator)
+    assert len(scheduled) == 1
 
     scheduled[0]()
     assert lifecycle == ["stop" if action == "open_and_stop" else "exit"]

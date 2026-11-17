@@ -203,3 +203,44 @@ def test_ack_after_raid_is_not_recorded(monkeypatch, caplog):
         assert worker._read_claim_ack(client).status == "accepted"
     assert recorded == []
     assert RAID_URL in caplog.text and worker.url in caplog.text
+
+
+def test_transient_response_read_failure_is_retried():
+    # A busy page can time out getResponseBody once; the ID used to be
+    # dropped, losing a claim the server had accepted.
+    tracker = ClaimAcknowledgements()
+    client = Mock()
+    client.call.side_effect = [TimeoutError("busy"), {"body": json.dumps(ACCEPTED)}]
+    event(tracker)
+
+    assert tracker.poll(client) is None
+    assert tracker.poll(client) == ClaimResult("accepted", balance=250)
+    assert tracker.poll(client) is None
+
+
+def test_response_read_gives_up_after_bounded_attempts():
+    from stream_monitor.twitch_claim_ack import MAX_RESPONSE_READ_ATTEMPTS
+
+    tracker = ClaimAcknowledgements()
+    client = Mock()
+    client.call.side_effect = ConnectionError("closed")
+    event(tracker)
+
+    for _ in range(MAX_RESPONSE_READ_ATTEMPTS + 2):
+        assert tracker.poll(client) is None
+    assert client.call.call_count == MAX_RESPONSE_READ_ATTEMPTS
+
+
+def test_ack_is_recorded_when_the_page_url_is_readable_on_retry(monkeypatch):
+    import stream_monitor.twitch_page_assist as assist
+
+    worker = _claim_worker(monkeypatch)
+    recorded = []
+    monkeypatch.setattr(assist, "record_confirmed_claim", recorded.append)
+    monkeypatch.setattr(worker._claim_ack, "poll", lambda _c: ClaimResult("accepted", balance=9))
+    monkeypatch.setattr(worker._stop, "wait", lambda _s: False)
+    client = Mock()
+    client.evaluate.side_effect = [TimeoutError("busy"), {"url": worker.url}]
+
+    assert worker._read_claim_ack(client).status == "accepted"
+    assert recorded == [worker.url]
