@@ -1967,6 +1967,18 @@ def subscribe(callback: Callable[[], None]) -> Callable[[], None]:
     return _unsubscribe
 
 
+def labels_in_all_languages(key: str) -> list[str]:
+    """Return *key*'s text in every language (active language first).
+
+    Lets a widget map a displayed label back to its key even when the active
+    language has already changed underneath it.
+    """
+    order = [_current_lang] + [c for c in _TRANSLATIONS if c != _current_lang]
+    return [
+        _TRANSLATIONS[c][key] for c in order if key in _TRANSLATIONS.get(c, {})
+    ]
+
+
 def tr(key: str, **kwargs: Any) -> str:
     """Translate *key* under the active language.
 
