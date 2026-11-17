@@ -162,7 +162,7 @@ def test_load_falls_back_for_nonfinite_numeric_values(
     if field == "browser_settings":
         value = '{"width": ' + literal + '}'
     elif field == "viewer_engagement":
-        value = '{"foreground_hold_seconds": ' + literal + '}'
+        value = '{"claim_click_offset_px": ' + literal + '}'
     path.write_text('{"' + field + '": ' + value + '}', encoding="utf-8")
     _use_config_path(monkeypatch, path)
 
@@ -171,7 +171,27 @@ def test_load_falls_back_for_nonfinite_numeric_values(
     assert config["check_interval"] == config_manager.DEFAULT_CONFIG["check_interval"]
     assert config["config_format_version"] == config_manager.CONFIG_FORMAT_VERSION
     assert config["browser_settings"]["width"] == config_manager.DEFAULT_WINDOW_WIDTH
-    assert config["viewer_engagement"]["foreground_hold_seconds"] == 15
+    assert config["viewer_engagement"]["claim_click_offset_px"] == 10
+
+
+def test_load_silently_drops_retired_foreground_hold_seconds(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {"viewer_engagement": {"enabled": True, "foreground_hold_seconds": 30}}
+        ),
+        encoding="utf-8",
+    )
+    _use_config_path(monkeypatch, path)
+
+    config = config_manager.load()
+
+    assert config["viewer_engagement"]["enabled"] is True
+    assert "foreground_hold_seconds" not in config["viewer_engagement"]
+    assert "foreground_hold_seconds" not in config_manager.DEFAULT_VIEWER_ENGAGEMENT
+    assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
 
 
 def test_load_validates_config_values(tmp_path, monkeypatch) -> None:

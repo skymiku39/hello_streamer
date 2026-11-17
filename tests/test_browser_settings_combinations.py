@@ -2105,7 +2105,6 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
             deadline_s=0,
             track_for_url="",
             track_keywords=(),
-            foreground_hold_seconds=0,
         ):
             worker_calls.append(
                 {
@@ -2116,7 +2115,6 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
                     "deadline_s": deadline_s,
                     "track_for_url": track_for_url,
                     "track_keywords": tuple(track_keywords),
-                    "foreground_hold_seconds": foreground_hold_seconds,
                 }
             )
             if track_for_url:
@@ -2252,10 +2250,10 @@ def test_exhaustive_13_every_browser_settings_combination_runs_cleanly(
         assert closed == []
 
 
-def test_dialog_preserves_foreground_hold_seconds_without_ui() -> None:
+def test_dialog_preserves_claim_click_offset_without_ui() -> None:
     """Saving the dialog must not drop viewer-engagement fields that have no UI.
 
-    ``foreground_hold_seconds`` is a live, consumed setting but has no widget,
+    ``claim_click_offset_px`` is a live, consumed setting but has no widget,
     so the dialog has to carry the incoming value through rather than reset it
     to the default on every save.
     """
@@ -2265,11 +2263,11 @@ def test_dialog_preserves_foreground_hold_seconds_without_ui() -> None:
     dialog = BrowserSettingsDialog(
         root,
         {"enabled": True},
-        {"enabled": True, "foreground_hold_seconds": 30},
+        {"enabled": True, "claim_click_offset_px": 30},
     )
     try:
         collected = dialog._collect_viewer_engagement()
-        assert collected["foreground_hold_seconds"] == 30
+        assert collected["claim_click_offset_px"] == 30
         assert collected["enabled"] is True
     finally:
         dialog.destroy()
