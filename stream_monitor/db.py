@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -196,15 +197,25 @@ class SeenVideoDB:
             )
             self._conn.commit()
 
-    def cleanup(self, days: int = 30) -> int:
-        """Delete records older than *days*. Return number of rows removed."""
+    def cleanup(self, days: int = 30, keep_video_ids: Iterable[str] = ()) -> int:
+        """Delete records older than *days*. Return number of rows removed.
+
+        ``first_seen`` is never refreshed, so a stream that stays live longer
+        than *days* would otherwise be purged and re-announced as a new
+        broadcast.  Rows whose video_id is in *keep_video_ids* (streams still
+        live right now) are preserved regardless of age.
+        """
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        keep = sorted({vid for vid in keep_video_ids if vid})
         with self._lock:
             if self._closed:
                 return 0
-            cursor = self._conn.execute(
-                "DELETE FROM seen_videos WHERE first_seen < ?", (cutoff,)
-            )
+            sql = "DELETE FROM seen_videos WHERE first_seen < ?"
+            params: list[str] = [cutoff]
+            if keep:
+                sql += f" AND video_id NOT IN ({','.join('?' * len(keep))})"
+                params.extend(keep)
+            cursor = self._conn.execute(sql, params)
             self._conn.commit()
             removed = cursor.rowcount
         if removed:
