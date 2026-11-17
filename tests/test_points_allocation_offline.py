@@ -929,3 +929,68 @@ def test_reporting_a_stall_does_not_spend_a_restart() -> None:
     later = (claim_registry.STALL_RESTART_LIMIT + 2) * step + step - 1
     assert claim_registry.track_slot_holders(["hayabi_zr", "kspksp"], now=later) == set()
     assert claim_registry._STALL_RESTARTS == {"hayabi_zr": 1}
+
+
+def _toggle_probe(rows: list[Any], *, allocation: bool | None) -> Any:
+    probe = _sticky_probe(rows, ("a_one", "b_two"))
+    engagement = probe.config["viewer_engagement"]
+    engagement["points_priority_channels"] = []
+    if allocation is not None:
+        engagement["points_allocation_enabled"] = allocation
+    return probe
+
+
+def test_allocation_switch_with_empty_list_follows_main_list(monkeypatch) -> None:
+    # #91: the slot limit no longer depends on a non-empty priority list.
+    rows = [_live("a_one"), _live("b_two"), _live("c_three")]
+    _serve("a_one", "b_two", "c_three")
+    closed = _patch_windows(
+        monkeypatch, {f"https://www.twitch.tv/{n}" for n in ("a_one", "b_two", "c_three")}
+    )
+    probe = _toggle_probe(rows, allocation=True)
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels == ("a_one", "b_two")
+    assert closed == ["https://www.twitch.tv/c_three"]
+
+
+def test_allocation_switch_off_does_not_limit_windows(monkeypatch) -> None:
+    rows = [_live("a_one"), _live("b_two"), _live("c_three")]
+    closed = _patch_windows(
+        monkeypatch, {f"https://www.twitch.tv/{n}" for n in ("a_one", "b_two", "c_three")}
+    )
+    probe = _toggle_probe(rows, allocation=False)
+    probe.config["viewer_engagement"]["points_priority_channels"] = ["a_one"]
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels is None
+    assert closed == []
+
+
+@pytest.mark.parametrize(("priorities", "expected"), [(["a_one"], True), ([], False)])
+def test_missing_allocation_key_is_derived_from_priority_list(
+    monkeypatch, priorities, expected
+) -> None:
+    rows = [_live("a_one"), _live("b_two"), _live("c_three")]
+    closed = _patch_windows(monkeypatch, {"https://www.twitch.tv/c_three"})
+    probe = _toggle_probe(rows, allocation=None)
+    probe.config["viewer_engagement"]["points_priority_channels"] = priorities
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert (probe._active_points_priority_channels is not None) is expected
+    assert (closed == ["https://www.twitch.tv/c_three"]) is expected
+
+
+def test_incomplete_cold_start_with_empty_list_stays_unallocated(monkeypatch) -> None:
+    rows = [_live("a_one"), SimpleNamespace(key="twitch:b_two", verification_pending=True)]
+    closed = _patch_windows(monkeypatch, {"https://www.twitch.tv/a_one"})
+    probe = _toggle_probe(rows, allocation=True)
+    probe._active_points_priority_channels = None
+
+    App.refresh_points_priority_allocation(probe)
+
+    assert probe._active_points_priority_channels is None
+    assert closed == []
