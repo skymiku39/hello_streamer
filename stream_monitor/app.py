@@ -2120,7 +2120,7 @@ class App(ctk.CTk):
                 config["window_geometry"] = self.geometry()
             except Exception:
                 pass
-            self.config = config_manager.save(config)
+            config_manager.adopt_in_place(self.config, config_manager.save(config))
 
         result = reset_launch_records(
             db=self._db,
@@ -2440,7 +2440,10 @@ class App(ctk.CTk):
         except Exception:
             pass
         try:
-            self.config = config_manager.save(self.config)
+            # Keep the same objects: channel rows hold these channel dicts.
+            config_manager.adopt_in_place(
+                self.config, config_manager.save(self.config)
+            )
         except OSError:
             # A transient Windows file lock must not terminate a Tk callback
             # or leave the application half-closed. On failure the original

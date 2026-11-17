@@ -24,6 +24,7 @@ from stream_monitor.browser_settings_model import (
 )
 from stream_monitor.channel_policy import CHANNEL_MODES, normalize_channel_mode
 from stream_monitor.portable_storage import portable_paths
+from stream_monitor.util import channel_key
 
 logger = logging.getLogger(__name__)
 
@@ -745,6 +746,57 @@ def _next_corrupt_backup_path(path: Path) -> Path:
         candidate = path.with_name(f"{path.name}.corrupt.{index}")
         index += 1
     return candidate
+
+
+def adopt_in_place(target: dict[str, Any], normalized: dict[str, Any]) -> None:
+    """Make *target* equal to *normalized* without replacing its objects.
+
+    Channel rows and their callbacks hold the channel dicts from
+    ``target["channels"]``. Rebinding the app config to the fresh dicts that
+    ``save()`` returns left every row editing a dict the config no longer
+    contained: pausing, renaming, deleting or moving a channel after the first
+    save silently did nothing. Keep the config dict, the channel list and each
+    matching channel dict, and copy the normalized values into them.
+    """
+    if target is normalized:
+        return
+    old_channels = target.get("channels")
+    existing: dict[str, dict[str, Any]] = {}
+    if isinstance(old_channels, list):
+        for item in old_channels:
+            if isinstance(item, dict):
+                try:
+                    key = channel_key(
+                        str(item.get("platform", "")).lower().strip(),
+                        str(item.get("name", "")).strip(),
+                    )
+                except Exception:
+                    continue
+                existing.setdefault(key, item)
+    merged: list[dict[str, Any]] = []
+    for item in normalized.get("channels", []):
+        key = channel_key(item["platform"], item["name"])
+        kept = existing.pop(key, None)
+        if kept is None:
+            merged.append(item)
+            continue
+        if kept is not item:
+            values = dict(item)
+            kept.clear()
+            kept.update(values)
+        merged.append(kept)
+
+    for key in list(target):
+        if key not in normalized:
+            del target[key]
+    for key, value in normalized.items():
+        if key != "channels":
+            target[key] = value
+    if isinstance(old_channels, list):
+        old_channels[:] = merged
+        target["channels"] = old_channels
+    else:
+        target["channels"] = merged
 
 
 def save(config: dict[str, Any]) -> dict[str, Any]:
