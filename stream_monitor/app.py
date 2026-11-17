@@ -1988,6 +1988,12 @@ class App(ctk.CTk):
                 or managed_window_launch_pending(status.url)
             ):
                 continue
+            # Row repaints rerun this every UI tick; while the open action is
+            # still queued, resubmitting only logs a duplicate skip.
+            if self._action_coordinator.is_pending(
+                self._controller.generation, "twitch", name, plan.key
+            ):
+                continue
             channel = next(
                 (
                     item for item in channels
