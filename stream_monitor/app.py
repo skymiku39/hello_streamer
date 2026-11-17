@@ -1543,16 +1543,30 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
     # Monitor control
     # ------------------------------------------------------------------
-    def _collect_monitor_config(self) -> tuple[list[dict[str, str]], int]:
-        """Read interval/trigger widgets into config; return (channels, interval)."""
+    def _collect_monitor_config(
+        self, *, normalize_widgets: bool = True
+    ) -> tuple[list[dict[str, str]], int]:
+        """Read interval/trigger widgets into config; return (channels, interval).
+
+        ``normalize_widgets=False`` is for background callers (health check):
+        it never writes a normalized value back to the interval field, so a
+        half-typed entry is not overwritten, and it uses the last applied
+        ``check_interval`` instead of persisting a transient entry.
+        """
         channels = self.config.get("channels", [])
-        try:
-            interval = int(self.interval_var.get())
-        except (TypeError, ValueError):
-            interval = 60
-        interval = max(10, interval)
-        self.interval_var.set(str(interval))
-        self.config["check_interval"] = interval
+        if normalize_widgets:
+            try:
+                interval = int(self.interval_var.get())
+            except (TypeError, ValueError):
+                interval = 60
+            interval = max(10, interval)
+            self.interval_var.set(str(interval))
+            self.config["check_interval"] = interval
+        else:
+            try:
+                interval = max(10, int(self.config.get("check_interval", 60)))
+            except (TypeError, ValueError):
+                interval = 60
 
         self._persist_trigger_settings(save=False)
         return channels, interval
@@ -2258,7 +2272,7 @@ class App(ctk.CTk):
             WATCH_ONCE_MODE,
         ):
             return
-        channels, interval = self._collect_monitor_config()
+        channels, interval = self._collect_monitor_config(normalize_widgets=False)
         if not self._controller.restart_if_dead(channels, interval):
             return
         if self._controller.mode in (TRIGGER_MODE, TRIGGER_ONCE_MODE):
