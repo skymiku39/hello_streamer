@@ -849,10 +849,6 @@ def _apply_viewer_engagement_to_launch(
     effective_settings["bring_to_front"] = bool(engagement.bring_to_front)
     effective_settings["separate_windows"] = bool(manage and engagement.separate_windows)
     effective_settings["always_on_top"] = bool(manage and engagement.always_on_top)
-    if engagement.bring_to_front and engagement.foreground_hold_seconds > 0:
-        effective_settings["foreground_hold_seconds"] = (
-            engagement.foreground_hold_seconds
-        )
     if engagement.whitelist_performance and effective_user_data_dir:
         try:
             merge_tab_discarding_exceptions(effective_user_data_dir)
@@ -1196,9 +1192,6 @@ def _open_with_browser_settings(
             apply_geometry=apply_geometry,
             track_for_url=track_url,
             track_keywords=track_keywords,
-            foreground_hold_seconds=int(
-                worker_settings.get("foreground_hold_seconds", 0)
-            ),
         )
     elif _is_windows() and not isolation_available:
         _block_title_fallback_for_url(url)

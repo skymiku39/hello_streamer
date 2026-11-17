@@ -96,7 +96,6 @@ DEFAULT_VIEWER_ENGAGEMENT: dict[str, Any] = {
     "keep_system_awake": True,
     "whitelist_performance": True,
     "bring_to_front": True,
-    "foreground_hold_seconds": 15,
     # Optional CDP page assist for source and packaged builds.
     "page_assist_enabled": False,
     "accept_content_gate": True,
@@ -391,7 +390,6 @@ def _normalize_browser_settings(value: Any) -> dict[str, Any]:
 
 _VIEWER_ENGAGEMENT_INT_KEYS = frozenset(
     {
-        "foreground_hold_seconds",
         "claim_delay_seconds_min",
         "claim_delay_seconds_max",
         "claim_click_offset_px",
@@ -406,7 +404,6 @@ _VIEWER_ENGAGEMENT_INT_KEYS = frozenset(
 
 _VIEWER_ENGAGEMENT_MIN_BOUNDS: dict[str, int] = {
     "points_slot_count": 1,
-    "foreground_hold_seconds": 0,
     "claim_delay_seconds_min": 0,
     "claim_delay_seconds_max": 1,
     "claim_click_offset_px": 0,
