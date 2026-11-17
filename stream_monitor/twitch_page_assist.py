@@ -50,6 +50,7 @@ _GATE_POLL_S = 1.0
 _READY_CONFIRM_POLLS = 2
 _THEATER_VERIFY_WAIT_S = 0.6
 _CLAIM_VERIFY_WAIT_S = 0.8
+_CLAIM_URL_PROBE_RETRIES = 2
 _CLAIM_VERIFY_POLLS = 6
 _PAGE_CHECK_INTERVAL_S = 30.0
 _POINTS_STALL_WINDOW_S = 30 * 60.0
@@ -1021,6 +1022,12 @@ class _PageAssistWorker:
                 self._claim_blocked = False
                 self._publish_status("")
             live = self._live_page_url(client)
+            for _ in range(_CLAIM_URL_PROBE_RETRIES):
+                # None means unreadable (busy page), not a raid; recording
+                # needs the URL, so look again before giving the claim up.
+                if live is not None or self._stop.wait(1.0):
+                    break
+                live = self._live_page_url(client)
             if live is not None and page_urls_match(self.url, live):
                 record_confirmed_claim(self.url)
             else:

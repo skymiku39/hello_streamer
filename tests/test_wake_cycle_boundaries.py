@@ -496,3 +496,61 @@ def test_startup_refresh_does_not_double_strike_youtube_offline(
     with monitor._lock:
         assert monitor._last_status[entry.key].status is not True
     db.close()
+
+
+def _age_seen_rows(db, video_id: str) -> None:
+    db._conn.execute(
+        "UPDATE seen_videos SET first_seen = '2020-01-01T00:00:00+00:00' "
+        "WHERE video_id = ?",
+        (video_id,),
+    )
+    db._conn.commit()
+
+
+def test_purge_keeps_still_live_youtube_stream_but_drops_ended_one(
+    monkeypatch, tmp_path
+) -> None:
+    """A 24/7 stream older than the purge cutoff must not be re-announced."""
+    fetcher = _FeedYtFetcher([_yt_live_item("vidA")])
+    monitor, entry, db = _monitor_with_cached_youtube_live(
+        monkeypatch, tmp_path, fetcher
+    )
+    # Initial poll marks the live stream seen; then both records age >30 days.
+    _normal_poll(monitor, entry)
+    db.mark_seen("ended", "youtube", "yt", "LIVE", "Ended")
+    _age_seen_rows(db, "vidA")
+    _age_seen_rows(db, "ended")
+
+    monitor._run_maintenance(force=True)
+
+    assert db.is_seen("vidA", "LIVE")
+    assert not db.is_seen("ended", "LIVE")
+    events = _normal_poll(monitor, entry)
+    assert not any(isinstance(e, ChannelWentLive) for e in events)
+    assert events == []
+
+
+def test_wake_youtube_offline_to_live_dispatches_live_edge(monkeypatch, tmp_path) -> None:
+    # The tier-1 preview wrote LIVE into last_status before the wake check
+    # read it, so an offline->live change looked "already live" and its
+    # went_live was dropped while the video was still marked seen.
+    fetcher = _FeedYtFetcher([_yt_live_item("vidX")])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    event_bus = MonitorEventBus()
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "yt"}],
+        db=db,
+        event_bus=event_bus,
+    )
+    entry = ChannelEntry(platform="youtube", name="yt")
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(
+            status=False, url="https://www.youtube.com/@yt"
+        )
+
+    monitor._run_wake_verification([entry], time.monotonic())
+
+    went_live = [e for e in event_bus.drain() if isinstance(e, ChannelWentLive)]
+    assert len(went_live) == 1
+    db.close()

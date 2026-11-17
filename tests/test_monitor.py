@@ -2190,12 +2190,25 @@ def test_twitch_went_live_suppressed_emits_log(
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
 
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.DEBUG)
     _check_and_commit(monitor, entry)
     _check_and_commit(monitor, entry)
 
-    assert any("went_live_suppressed" in r.message for r in caplog.records)
+    suppressed = [r for r in caplog.records if "went_live_suppressed" in r.message]
+    assert suppressed
     db.close()
+
+
+def test_went_live_suppressed_is_info_once_per_broadcast() -> None:
+    # Logged every poll while live (a third of the deployed log on 11/17); the
+    # README still uses the first one to diagnose a missed go-live action.
+    from stream_monitor.monitor.probes.suppressed_log import suppressed_log_level
+
+    key = "twitch:suppressed-once"
+    assert suppressed_log_level(key, "2026-11-17T01:00:00Z") == logging.INFO
+    assert suppressed_log_level(key, "2026-11-17T01:00:00Z") == logging.DEBUG
+    assert suppressed_log_level(key, "2026-11-17T05:00:00Z") == logging.INFO
+    assert suppressed_log_level("twitch:other", "2026-11-17T05:00:00Z") == logging.INFO
 
 
 def test_youtube_fallback_single_offline_flap_is_absorbed(

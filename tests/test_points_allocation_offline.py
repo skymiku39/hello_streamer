@@ -742,12 +742,28 @@ def test_gap_limit_scales_with_a_slow_poll_interval() -> None:
 def _reopening_probe(rows: list[Any], previous: tuple[str, ...]) -> Any:
     probe = _sticky_probe(rows, previous)
     submitted: list[str] = []
+    pending: set[str] = set()
     probe._controller = SimpleNamespace(mode=app_module.TRIGGER_MODE, generation=1)
     probe._action_coordinator = SimpleNamespace(
-        submit=lambda _plan, info, _settings, _gen: submitted.append(info.channel) or True
+        submit=lambda _plan, info, _settings, _gen: submitted.append(info.channel) or True,
+        is_pending=lambda _gen, _platform, channel, _key: channel in pending,
     )
     probe.submitted = submitted
+    probe.pending = pending
     return probe
+
+
+def test_queued_slot_open_is_not_resubmitted_on_every_repaint(monkeypatch) -> None:
+    # 11/17 10:46: each row repaint reran the allocation while the open action
+    # was still queued, logging ~170 "Skipped duplicate pending action" lines.
+    rows = [_live("hayabi_zr"), _live("neipuduck")]
+    _patch_windows(monkeypatch, set())
+    probe = _reopening_probe(rows, ("hayabi_zr", "neipuduck"))
+    probe.pending.add("hayabi_zr")
+
+    App.refresh_points_priority_allocation(probe, allow_open=True)
+
+    assert probe.submitted == ["neipuduck"]
 
 
 def test_browser_without_endpoint_restarts_every_slot_window(monkeypatch) -> None:

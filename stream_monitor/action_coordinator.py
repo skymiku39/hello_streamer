@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from stream_monitor.action_executor import ActionResult
@@ -80,13 +81,19 @@ class ActionCoordinator:
             if generation in self._cancelled_generations:
                 return False
             if plan.is_terminal and generation in self._terminal_generations:
+                # Another channel already claimed this generation's stop/exit.
+                # Still notify and open this one; only the lifecycle effect is
+                # dropped so the monitor is not stopped or exited twice (#66).
                 logger.info(
-                    "Skipped duplicate terminal action: generation=%s action=%s",
+                    "Dropped duplicate terminal effect; running the rest: "
+                    "generation=%s action=%s platform=%s channel=%s",
                     generation,
                     plan.key,
+                    info.platform,
+                    info.channel,
                 )
-                return False
-            if plan.is_terminal:
+                plan = replace(plan, after_open=LifecycleEffect.NONE)
+            elif plan.is_terminal:
                 self._terminal_generations.add(generation)
 
             pending_key = (generation, info.platform, info.channel, plan.key)
@@ -148,6 +155,13 @@ class ActionCoordinator:
         """Cancel queued/in-flight effects belonging to one monitor session."""
         with self._lock:
             self._cancelled_generations.add(generation)
+
+    def is_pending(
+        self, generation: int, platform: str, channel: str, key: str
+    ) -> bool:
+        """True while this exact action is queued or running."""
+        with self._lock:
+            return (generation, platform, channel, key) in self._pending_keys
 
     def has_active_work(self) -> bool:
         """True while any action worker or pending queue entry is still live."""

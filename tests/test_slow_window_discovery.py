@@ -184,3 +184,24 @@ def test_initial_cdp_retries_stay_bounded_and_cancellable_after_slow_start(monke
     assert client.connect.call_count == 8
     assert all(call.kwargs["timeout"] == assist.DEFAULT_CDP_ATTACH_TIMEOUT_S
                for call in client.connect.call_args_list)
+
+
+def test_close_during_window_setup_still_closes_the_window(slow_browser, monkeypatch):
+    # The close may land after the pre-check but before registration (window
+    # setup calls into Chrome and can block). The window must not be left open
+    # and untracked.
+    clock, registry, title, closed = slow_browser
+
+    def hide_then_close(api, hwnd):
+        bw.close_browser_window_for_url(URL, title_keywords=["karlylinnea"])
+
+    monkeypatch.setattr(notifier, "_hide_window_from_taskbar", hide_then_close)
+    monkeypatch.setattr(notifier, "_find_hwnds_by_title_keyword", Mock(return_value=set()))
+    bw._apply_new_browser_window_settings_async(
+        "Chrome_WidgetWin_1", {10},
+        {"user_data_dir": "owned-profile", "hide_from_taskbar": True},
+        apply_geometry=False, track_for_url=URL, track_keywords=("karlylinnea",),
+    )
+
+    assert closed == [20]
+    assert registry.snapshot(URL) == []

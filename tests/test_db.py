@@ -114,6 +114,22 @@ def test_cleanup_keeps_recent_records(tmp_path) -> None:
     db.close()
 
 
+def test_cleanup_keeps_listed_video_ids(tmp_path) -> None:
+    db = SeenVideoDB(tmp_path / "test.db")
+    db.mark_seen("live_vid", "youtube", "chan", "LIVE", "Live")
+    db.mark_seen("gone_vid", "youtube", "chan", "LIVE", "Gone")
+    db._conn.execute(
+        "UPDATE seen_videos SET first_seen = '2020-01-01T00:00:00+00:00'"
+    )
+    db._conn.commit()
+
+    removed = db.cleanup(days=30, keep_video_ids=["live_vid"])
+    assert removed == 1
+    assert db.is_seen("live_vid", "LIVE") is True
+    assert db.is_seen("gone_vid", "LIVE") is False
+    db.close()
+
+
 def test_concurrent_is_seen_and_mark_seen(tmp_path) -> None:
     """Parallel Monitor workers must not corrupt the shared SQLite connection."""
     db = SeenVideoDB(tmp_path / "test.db")
