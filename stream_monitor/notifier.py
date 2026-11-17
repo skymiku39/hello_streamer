@@ -1433,7 +1433,7 @@ def _resume_managed_window_assist(
             return
         if attach.ok and attach.port and attach.port > 0:
             _register_obs_managed_url(url)
-            start_page_assist(url, attach.port, current)
+            start_page_assist(url, attach.port, current.for_channel(url))
             logger.info("Resumed page assist for recovered managed window %s", url)
         else:
             publish_page_assist_status(url, attach.reason or "unavailable")

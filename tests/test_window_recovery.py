@@ -194,3 +194,44 @@ def test_resume_rechecks_window_after_cdp_discovery(monkeypatch, tmp_path):
         "per_channel_profile": False,
     }, None)
     assert calls == []
+
+
+def test_resumed_watch_only_window_does_not_claim_points(monkeypatch, tmp_path):
+    # The launch and retry paths pass for_channel(url); the recovery path did
+    # not, so a recovered watch-only window clicked chests and ran the
+    # 30-minute no-points refresh.
+    from stream_monitor import cdp_client, notifier
+    from stream_monitor import viewer_engagement_model as vem
+    from stream_monitor.viewer_engagement_model import ViewerEngagementSettings
+
+    engagement = ViewerEngagementSettings(
+        enabled=True,
+        page_assist_enabled=True,
+        keep_system_awake=False,
+        points_allocation_enabled=True,
+        points_priority_channels=["holder"],
+        claim_channel_points=True,
+        points_stall_refresh_enabled=True,
+    )
+    calls = []
+    monkeypatch.setattr(notifier, "_active_viewer_engagement", lambda: engagement)
+    monkeypatch.setattr(notifier, "active_page_assist_urls", lambda: set())
+    monkeypatch.setattr(notifier, "managed_window_is_open", lambda url: True)
+    monkeypatch.setattr(notifier, "_register_obs_managed_url", lambda url: None)
+    monkeypatch.setattr(cdp_client, "acquire_cdp_debugging_port", lambda profile: SimpleNamespace(
+        ok=True, port=43210,
+    ))
+    monkeypatch.setattr(notifier, "start_page_assist", lambda *args: calls.append(args))
+    monkeypatch.setattr(vem, "page_assist_runtime_allowed", lambda: True)
+    # Cold start: no allocation yet, so the static priority list decides and
+    # a non-listed channel is watch-only.
+    vem.set_active_points_channels(None)
+    notifier._resume_managed_window_assist("https://www.twitch.tv/other", {
+        "enabled": True, "app_mode": True, "user_data_dir": str(tmp_path),
+        "per_channel_profile": False,
+    }, None)
+
+    assert len(calls) == 1
+    settings = calls[0][2]
+    assert settings.claim_channel_points is False
+    assert settings.points_stall_refresh_enabled is False
