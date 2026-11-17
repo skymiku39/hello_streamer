@@ -59,7 +59,7 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 
 11/17 03:24 部署後：兩台 7 秒內 attach；觀察紀錄第一次寫入就把 56 MB 的舊檔輪替成 `.ndjson.1`（#44）。PR #39 部署後到 03:24 約 70 分鐘，log 沒有任何 `ytInitialData missing`（之前每小時 8–16 次），#28 待 24 小時後確認關閉。09:23 重啟時啟動補刷正常完成，沒有誤判下播；3 個復原視窗都在 8 秒內 attach。
 
-**待使用者確認**：部署版 `config.json` 的 `viewer_engagement.points_priority_channels` 在 11/16 17:48 還是 `["taiga_hikari", "kspksp"]`，11/17 02:13 的備份已是 `[]`（兩份備份之間只有這個欄位不同）。清單為空時點數位置分配整個停用，所以 11/17 08:33 起同時開著 3 個 Twitch 視窗。最後一次分配動作在 00:33，00:37 程式被以 WMI 方式重啟（父程序 WmiPrvSE，不是開機自啟）；log 沒有設定存檔紀錄，無法判斷是手動清空還是程式造成。未修改使用者的設定。
+部署版 `config.json` 的 `viewer_engagement.points_priority_channels` 在 11/16 晚間由使用者清空（11/17 確認），點數位置分配因此停用，開播頻道照一般開窗規則各開一個視窗（11/17 08:33 起同時 3 個）。這是預期行為，不是 bug。
 
 11/17 00:37 程式重啟過一次，exe 沒有更換，log 只有「前一個 session 沒有結束紀錄」，原因未查明（可能是使用者手動重啟，未確認）。
 
