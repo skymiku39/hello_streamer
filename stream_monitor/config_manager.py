@@ -761,6 +761,8 @@ def adopt_in_place(target: dict[str, Any], normalized: dict[str, Any]) -> None:
     save silently did nothing. Keep the config dict, the channel list and each
     matching channel dict, and copy the normalized values into them.
     """
+    if target is normalized:
+        return
     old_channels = target.get("channels")
     existing: dict[str, dict[str, Any]] = {}
     if isinstance(old_channels, list):
@@ -781,8 +783,10 @@ def adopt_in_place(target: dict[str, Any], normalized: dict[str, Any]) -> None:
         if kept is None:
             merged.append(item)
             continue
-        kept.clear()
-        kept.update(item)
+        if kept is not item:
+            values = dict(item)
+            kept.clear()
+            kept.update(values)
         merged.append(kept)
 
     for key in list(target):

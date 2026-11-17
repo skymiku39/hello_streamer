@@ -1347,3 +1347,15 @@ def test_adopt_in_place_applies_normalization_and_drops_invalid(tmp_path, monkey
     assert config["channels"] == [{"platform": "twitch", "name": "foo"}]
     assert config["channels"][0] is kept
     assert "stale" not in config
+
+
+def test_adopt_in_place_tolerates_shared_objects():
+    channel = {"platform": "twitch", "name": "foo"}
+    config = {"channels": [channel]}
+
+    config_manager.adopt_in_place(config, config)
+    shared = {"channels": [channel]}
+    config_manager.adopt_in_place(config, shared)
+
+    assert config["channels"] == [{"platform": "twitch", "name": "foo"}]
+    assert config["channels"][0] is channel
