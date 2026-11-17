@@ -32,8 +32,8 @@ DEFAULT_LANGUAGE = "zh_TW"
 # ---------------------------------------------------------------------------
 _ZH_TW: dict[str, str] = {
     "engagement.page_assist.claim_rejected": "Twitch 拒絕獎勵請求，已暫停自動領取：{url}。請先在瀏覽器確認登入與手動領取，再關閉並重新開啟自動領取；播放仍繼續。",
-    "engagement.priority.label": "優先維持連續觀看的頻道（最多 2 台）",
-    "engagement.priority.hint": "以逗號分隔優先頻道（最多 2 台）；留空維持原本共用帳號模式。登入播放最多 2 台：先保留名單內直播，空位再按主頻道清單由上到下補位，直到該場直播結束。未分配頻道不會以訪客模式開啟。Twitch 是否認列點數或連續觀看仍由平台決定。",
+    "engagement.priority.label": "優先頻道（選填，最多 2 個）",
+    "engagement.priority.hint": "以逗號分隔優先頻道（最多 2 台），排在主頻道清單之前；留空時照頻道清單順序。開啟「點數優先」後，登入播放最多同時「點數優先」所示台數：未輪過的直播優先，空位按排序補上。未分配頻道不會以訪客模式開啟。Twitch 是否認列點數或連續觀看仍由平台決定。",
     "engagement.priority.invalid": "請填入最多 2 個有效 Twitch 頻道，並選擇已啟用的專用 Chrome／Edge 帳號。",
 
     "engagement.toggle.separate_windows": "直播視窗使用分開座標",
@@ -330,6 +330,7 @@ _ZH_TW: dict[str, str] = {
     "engagement.page_assist.player_2000_unverified": "播放器 #2000 尚未確認恢復：{url}。目前未操作；請確認播放狀態、重載按鈕及網路，詳情見 log。",
     "engagement.page_assist.player_2000_exhausted": "播放器 #2000 已達 3 次重試上限：{url}。請手動重載播放器，並檢查網路、VPN／代理或擴充套件；詳情見 log。",
     "engagement.toggle.page_assist": "啟用頁內輔助（CDP）",
+    "engagement.toggle.points_allocation": "點數優先（最多同時 {count} 台）",
     "engagement.toggle.page_assist.hint": "需自訂 Chromium、專用 Profile、受管獨立視窗（獨立新視窗或獨占視窗）。啟動時開 remote debugging；關閉瀏覽器後會自動停止。",
     "engagement.toggle.accept_gate": "自動點掉內容分級／確認開始觀看",
     "engagement.toggle.accept_gate.hint": "偵測到內容警告或開始觀看按鈕時自動點擊，讓播放器真正開始播。",
@@ -413,8 +414,8 @@ _ZH_TW: dict[str, str] = {
 
 _ZH_CN: dict[str, str] = {
     "engagement.page_assist.claim_rejected": "Twitch 拒绝奖励请求，已暂停自动领取：{url}。请先在浏览器确认登录和手动领取，再关闭并重新开启自动领取；播放仍继续。",
-    "engagement.priority.label": "优先维持连续观看的频道（最多 2 台）",
-    "engagement.priority.hint": "用逗号分隔优先频道（最多 2 个）；留空保持原有共用账号模式。登录播放最多 2 个：先保留名单内直播，空位再按主频道列表从上到下补位，直到该场直播结束。未分配频道不会以访客模式打开。Twitch 是否计入积分或连续观看仍由平台决定。",
+    "engagement.priority.label": "优先频道（选填，最多 2 个）",
+    "engagement.priority.hint": "用逗号分隔优先频道（最多 2 个），排在主频道列表之前；留空时按频道列表顺序。开启“积分优先”后，登录播放最多同时为“积分优先”所示数量：未轮过的直播优先，空位按排序补上。未分配频道不会以访客模式打开。Twitch 是否计入积分或连续观看仍由平台决定。",
     "engagement.priority.invalid": "请填写最多 2 个有效 Twitch 频道，并启用专用 Chrome／Edge 账号。",
 
     "engagement.toggle.separate_windows": "直播窗口使用分开坐标",
@@ -710,6 +711,7 @@ _ZH_CN: dict[str, str] = {
     "engagement.page_assist.player_2000_unverified": "播放器 #2000 尚未确认恢复：{url}。目前未操作；请确认播放状态、重载按钮及网络，详情见 log。",
     "engagement.page_assist.player_2000_exhausted": "播放器 #2000 已达 3 次重试上限：{url}。请手动重载播放器，并检查网络、VPN／代理或扩展程序；详情见 log。",
     "engagement.toggle.page_assist": "启用页内辅助（CDP）",
+    "engagement.toggle.points_allocation": "积分优先（最多同时 {count} 个）",
     "engagement.toggle.page_assist.hint": "需自定义 Chromium、专用 Profile、受管独立窗口（独立新窗口或独占窗口）。启动时开启 remote debugging；关闭浏览器后会自动停止。",
     "engagement.toggle.accept_gate": "自动点掉内容分级／确认开始观看",
     "engagement.toggle.accept_gate.hint": "检测到内容警告或开始观看按钮时自动点击，让播放器真正开始播。",
@@ -794,7 +796,7 @@ _ZH_CN: dict[str, str] = {
 _EN: dict[str, str] = {
     "engagement.page_assist.claim_rejected": "Twitch rejected a reward request; automatic claims are paused for {url}. Check sign-in and manual claiming in the browser, then switch automatic claims off and on. Playback continues.",
     "engagement.priority.label": "Priority channels for watch streaks (up to 2)",
-    "engagement.priority.hint": "Comma-separated priority channels (up to 2); leave blank for the original shared-account mode. Use at most two signed-in streams: keep live listed channels first, then fill free slots from the main list top to bottom until each broadcast ends. Unassigned channels are not opened as guests. Twitch controls whether points or streaks are credited.",
+    "engagement.priority.hint": "Comma-separated priority channels (up to 2), ranked ahead of the main list; leave blank to follow the channel list order. With Points priority on, signed-in playback is limited to the count shown on that switch: channels that have not had their turn come first, free slots follow the ranking. Unassigned channels are not opened as guests. Twitch controls whether points or streaks are credited.",
     "engagement.priority.invalid": "Enter up to 2 valid Twitch channels and enable a dedicated Chrome/Edge profile.",
 
     "engagement.toggle.separate_windows": "Use separate stream window positions",
@@ -1080,6 +1082,7 @@ _EN: dict[str, str] = {
     "engagement.page_assist.player_2000_unverified": "Player #2000 recovery is unverified: {url}. No action now; check playback, the reload button and network. See the log.",
     "engagement.page_assist.player_2000_exhausted": "Player #2000 reached the 3-attempt limit: {url}. Reload the player manually; check your network, VPN/proxy or extensions. See the log.",
     "engagement.toggle.page_assist": "Enable in-page assist (CDP)",
+    "engagement.toggle.points_allocation": "Points priority (up to {count} at once)",
     "engagement.toggle.page_assist.hint": "Requires custom Chromium, a dedicated profile, and a managed standalone window (separate window or solo player). Opens remote debugging on launch and stops when the window closes.",
     "engagement.toggle.accept_gate": "Auto-accept content classification / Start Watching",
     "engagement.toggle.accept_gate.hint": "Clicks the content-warning or Start Watching button so the player actually starts.",
@@ -1161,7 +1164,7 @@ _EN: dict[str, str] = {
 _JA: dict[str, str] = {
     "engagement.page_assist.claim_rejected": "Twitch が報酬リクエストを拒否したため、{url} の自動受取を一時停止しました。ブラウザーでログインと手動受取を確認し、自動受取をオフ／オンにしてください。再生は続行します。",
     "engagement.priority.label": "連続視聴優先チャンネル（最大2つ）",
-    "engagement.priority.hint": "優先チャンネルをカンマ区切りで入力（最大2つ）。空欄なら従来の共有アカウントモードです。ログイン再生は最大2つ。配信中の登録チャンネルを優先し、空き枠はメインリストの上から順に各配信終了まで再生します。未割当チャンネルはゲストで自動起動しません。ポイントや連続視聴の認定はTwitch側の判断です。",
+    "engagement.priority.hint": "優先チャンネルをカンマ区切りで入力（最大2つ）。メインリストより先に並びます。空欄ならチャンネルリストの順です。「ポイント優先」がオンのとき、ログイン再生はそのスイッチに示した数まで。まだ順番が来ていない配信を優先し、空き枠は順位で埋めます。未割当チャンネルはゲストで自動起動しません。ポイントや連続視聴の認定はTwitch側の判断です。",
     "engagement.priority.invalid": "有効なTwitchチャンネルを最大2つ指定し、専用Chrome/Edgeプロファイルを有効にしてください。",
 
     "engagement.toggle.separate_windows": "配信ウィンドウの位置を分ける",
@@ -1447,6 +1450,7 @@ _JA: dict[str, str] = {
     "engagement.page_assist.player_2000_unverified": "プレイヤー #2000 の復旧未確認：{url}。現在は操作せず、再生状態、再読み込みボタン、ネットワークを確認してください。詳細はログを参照。",
     "engagement.page_assist.player_2000_exhausted": "プレイヤー #2000 は再試行の上限3回に達しました：{url}。手動でプレイヤーを再読み込みし、ネットワーク、VPN／プロキシ、拡張機能を確認してください。詳細はログを参照。",
     "engagement.toggle.page_assist": "ページ内アシストを有効化（CDP）",
+    "engagement.toggle.points_allocation": "ポイント優先（同時に最大{count}つ）",
     "engagement.toggle.page_assist.hint": "カスタム Chromium・専用プロファイル・管理対象の独立ウィンドウが必要です。起動時に remote debugging を開き、ウィンドウ終了で停止します。",
     "engagement.toggle.accept_gate": "コンテンツ分類／視聴開始の確認を自動クリック",
     "engagement.toggle.accept_gate.hint": "内容警告や Start Watching ボタンを検出し自動クリックして再生を開始します。",
@@ -1528,7 +1532,7 @@ _JA: dict[str, str] = {
 _KO: dict[str, str] = {
     "engagement.page_assist.claim_rejected": "Twitch가 보상 요청을 거부하여 {url}의 자동 수령을 일시 중지했습니다. 브라우저에서 로그인과 수동 수령을 확인한 다음 자동 수령을 껐다 켜세요. 재생은 계속됩니다.",
     "engagement.priority.label": "연속 시청 우선 채널 (최대 2개)",
-    "engagement.priority.hint": "우선 채널을 쉼표로 구분해 입력하세요(최대 2개). 비우면 기존 공유 계정 모드입니다. 로그인 재생은 최대 2개이며, 방송 중인 등록 채널을 우선 유지하고 빈 자리는 기본 채널 목록 위에서부터 각 방송이 끝날 때까지 채웁니다. 미할당 채널은 게스트로 자동 실행하지 않습니다. 포인트나 연속 시청 인정은 Twitch가 결정합니다.",
+    "engagement.priority.hint": "우선 채널을 쉼표로 구분해 입력하세요(최대 2개). 기본 채널 목록보다 앞에 정렬되며, 비우면 채널 목록 순서를 따릅니다. '포인트 우선'을 켜면 로그인 재생은 그 스위치에 표시된 수까지이며, 아직 차례가 오지 않은 방송을 우선하고 빈 자리는 순위대로 채웁니다. 미할당 채널은 게스트로 자동 실행하지 않습니다. 포인트나 연속 시청 인정은 Twitch가 결정합니다.",
     "engagement.priority.invalid": "유효한 Twitch 채널을 최대 2개 입력하고 전용 Chrome/Edge 프로필을 활성화하세요.",
 
     "engagement.toggle.separate_windows": "방송 창을 서로 다른 위치에 배치",
@@ -1814,6 +1818,7 @@ _KO: dict[str, str] = {
     "engagement.page_assist.player_2000_unverified": "플레이어 #2000 복구 미확인: {url}. 현재 조작하지 않습니다. 재생 상태, 새로고침 버튼과 네트워크를 확인하세요. 자세한 내용은 로그를 참조하세요.",
     "engagement.page_assist.player_2000_exhausted": "플레이어 #2000 재시도 3회 한도 도달: {url}. 플레이어를 수동으로 새로고침하고 네트워크, VPN/프록시 또는 확장 프로그램을 확인하세요. 자세한 내용은 로그를 참조하세요.",
     "engagement.toggle.page_assist": "페이지 내 보조 사용 (CDP)",
+    "engagement.toggle.points_allocation": "포인트 우선 (최대 {count}개 동시)",
     "engagement.toggle.page_assist.hint": "사용자 지정 Chromium, 전용 프로필, 관리되는 독립 창이 필요합니다. 실행 시 remote debugging을 열고 창이 닫히면 중지합니다.",
     "engagement.toggle.accept_gate": "콘텐츠 등급/시청 시작 확인 자동 클릭",
     "engagement.toggle.accept_gate.hint": "콘텐츠 경고 또는 Start Watching 버튼을 감지해 자동 클릭하여 재생을 시작합니다.",

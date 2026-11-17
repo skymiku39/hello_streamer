@@ -583,3 +583,57 @@ def test_engagement_i18n_matches_twitch_viewer_count_faq() -> None:
     assert _OFFICIAL_VIEWER_COUNT_URL in readme
     for fragment in _FORBIDDEN_COPY_FRAGMENTS:
         assert fragment not in readme, fragment
+
+
+# ---------------------------------------------------------------------------
+# Points allocation switch (#91)
+# ---------------------------------------------------------------------------
+def test_points_allocation_defaults_off_and_migrates_from_list() -> None:
+    assert ViewerEngagementSettings().points_allocation_enabled is False
+    legacy = ViewerEngagementSettings.from_dict(
+        {"enabled": True, "points_priority_channels": ["kspksp"]}
+    )
+    assert legacy.points_allocation_enabled is True
+    assert legacy.points_allocation_active is True
+    empty = ViewerEngagementSettings.from_dict({"enabled": True, "points_priority_channels": []})
+    assert empty.points_allocation_enabled is False
+    explicit = ViewerEngagementSettings.from_dict(
+        {"enabled": False, "points_priority_channels": [], "points_allocation_enabled": True}
+    )
+    assert explicit.points_allocation_enabled is True
+    assert explicit.points_allocation_active is False
+
+
+def test_points_role_follows_allocation_switch() -> None:
+    from stream_monitor.viewer_engagement_model import set_active_points_channels
+
+    url_a, url_b = "https://www.twitch.tv/a_one", "https://www.twitch.tv/b_two"
+    on = ViewerEngagementSettings.from_dict(
+        {"enabled": True, "points_allocation_enabled": True}
+    )
+    off = ViewerEngagementSettings.from_dict(
+        {"enabled": True, "points_priority_channels": ["a_one"],
+         "points_allocation_enabled": False}
+    )
+    try:
+        set_active_points_channels(None)
+        assert on.points_role(url_a) == "shared"  # empty list, no allocation yet
+        set_active_points_channels(("a_one",))
+        assert on.points_role(url_a) == "priority"
+        assert on.points_role(url_b) == "watch_only"
+        assert off.points_role(url_a) == "shared"
+    finally:
+        set_active_points_channels(None)
+
+
+def test_config_normalizes_points_allocation_switch() -> None:
+    normalize = config_manager._normalize_viewer_engagement
+    assert normalize({})["points_allocation_enabled"] is False
+    assert normalize(None)["points_allocation_enabled"] is False
+    assert normalize({"points_priority_channels": ["kspksp"]})["points_allocation_enabled"] is True
+    assert normalize({"points_priority_channels": [], "points_allocation_enabled": True})[
+        "points_allocation_enabled"
+    ] is True
+    assert normalize({"points_priority_channels": ["kspksp"], "points_allocation_enabled": False})[
+        "points_allocation_enabled"
+    ] is False

@@ -1300,3 +1300,16 @@ def test_missing_file_sets_no_flag_and_save_makes_no_backup(
     config_manager.save(cfg)
     assert path.exists()
     assert not list(tmp_path.glob("config.json.unreadable-*"))
+
+
+def test_save_writes_migrated_points_allocation_switch(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "config.json"
+    _use_config_path(monkeypatch, path)
+
+    returned = config_manager.save(
+        {"viewer_engagement": {"enabled": True, "points_priority_channels": ["kspksp"]}}
+    )
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert returned["viewer_engagement"]["points_allocation_enabled"] is True
+    assert on_disk["viewer_engagement"]["points_allocation_enabled"] is True

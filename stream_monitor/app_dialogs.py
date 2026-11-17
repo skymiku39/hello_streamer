@@ -1512,6 +1512,22 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             justify="left",
         )
         self._engagement_tips.pack(padx=12, pady=(4, 12), anchor="w")
+        self._points_slot_count = ViewerEngagementSettings.from_dict(
+            ve_settings
+        ).points_slot_count
+        self.points_allocation_var = ctk.BooleanVar(
+            value=ViewerEngagementSettings.from_dict(
+                ve_settings
+            ).points_allocation_enabled
+        )
+        self._points_allocation_switch = ctk.CTkSwitch(
+            engagement_card,
+            text=tr("engagement.toggle.points_allocation", count=self._points_slot_count),
+            variable=self.points_allocation_var,
+            font=_font(12),
+        )
+        self._points_allocation_switch.pack(padx=12, pady=(6, 2), anchor="w")
+        self._engagement_sub_switches.append(self._points_allocation_switch)
         self._points_priority_label = ctk.CTkLabel(
             engagement_card, text=tr("engagement.priority.label"),
             font=_font(12, "bold"), anchor="w",
@@ -1820,6 +1836,9 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             switch.configure(text=tr(label_key))
             hint.configure(text=tr(hint_key))
         self._engagement_tips.configure(text=tr("engagement.tips"))
+        self._points_allocation_switch.configure(
+            text=tr("engagement.toggle.points_allocation", count=self._points_slot_count)
+        )
         self._points_priority_label.configure(text=tr("engagement.priority.label"))
         self._points_priority_hint.configure(text=tr("engagement.priority.hint"))
         self._sync_engagement_enabled_state()
@@ -2206,6 +2225,7 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             data["page_assist_enabled"] = bool(self.page_assist_enabled_var.get())
         for key, _label, _hint in _PAGE_ASSIST_FEATURE_TOGGLES:
             data[key] = self._page_assist_feature_vars[key].get()
+        data["points_allocation_enabled"] = bool(self.points_allocation_var.get())
         data["points_priority_channels"] = self._points_priority_entry.get().strip()
         return data
 
@@ -2425,7 +2445,10 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
         except ValueError:
             self._set_message("engagement.priority.invalid", color="#ef5350")
             return
-        if self.per_channel_profile_var.get() and not (engagement["enabled"] and priorities):
+        allocation_active = ViewerEngagementSettings.from_dict(
+            {**engagement, "points_priority_channels": priorities}
+        ).points_allocation_active
+        if self.per_channel_profile_var.get() and not allocation_active:
             self._set_message(
                 "browser.msg.signin_per_channel",
                 color="#ffb74d",
@@ -2446,12 +2469,18 @@ class BrowserSettingsDialog(ctk.CTkToplevel):
             engagement["points_priority_channels"] = normalize_points_priorities(
                 engagement["points_priority_channels"]
             )
-            if engagement["enabled"] and engagement["points_priority_channels"]:
+            ve = ViewerEngagementSettings.from_dict(engagement)
+            if ve.points_allocation_active:
+                from dataclasses import replace
+
                 from stream_monitor.twitch_watch_policy import route_browser
 
-                route_browser("https://www.twitch.tv/" + engagement["points_priority_channels"][0],
+                # Validate the signed-in profile even when the priority list
+                # is empty (allocation then follows the main channel list).
+                probe = (ve.points_priority_channels or ["points_probe"])[0]
+                route_browser("https://www.twitch.tv/" + probe,
                               bsm.BrowserSettings.from_dict(data),
-                              ViewerEngagementSettings.from_dict(engagement))
+                              replace(ve, points_priority_channels=[probe]))
         except ValueError:
             self._set_message("engagement.priority.invalid", color="#ef5350")
             return

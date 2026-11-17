@@ -2362,3 +2362,30 @@ def test_points_stall_refresh_setting_is_opt_in_and_persisted():
         assert dialog._collect_viewer_engagement()["points_stall_refresh_enabled"] is True
     finally:
         dialog.destroy()
+
+
+@pytest.mark.parametrize(
+    ("incoming", "expected"),
+    [({"enabled": True, "points_priority_channels": ["kspksp"]}, True),
+     ({"enabled": True, "points_priority_channels": []}, False),
+     ({"enabled": True, "points_allocation_enabled": True, "points_slot_count": 3}, True)],
+)
+def test_dialog_collects_points_allocation_switch(incoming, expected) -> None:
+    from stream_monitor import i18n
+    from stream_monitor.app_dialogs import BrowserSettingsDialog
+
+    dialog = BrowserSettingsDialog(_module_ctk_root(), {"enabled": True}, incoming)
+    try:
+        assert dialog._collect_viewer_engagement()["points_allocation_enabled"] is expected
+        slots = incoming.get("points_slot_count", 2)
+        assert dialog._points_allocation_switch.cget("text") == i18n.tr(
+            "engagement.toggle.points_allocation", count=slots
+        )
+        assert str(slots) in dialog._points_allocation_switch.cget("text")
+        dialog.engagement_enabled_var.set(False)
+        dialog._sync_engagement_enabled_state()
+        assert dialog._points_allocation_switch.cget("state") == "disabled"
+        dialog.points_allocation_var.set(not expected)
+        assert dialog._collect_viewer_engagement()["points_allocation_enabled"] is (not expected)
+    finally:
+        dialog.destroy()
