@@ -77,6 +77,29 @@ def test_save_config_keeps_app_alive_on_oserror(monkeypatch) -> None:
     App._save_config(probe)  # type: ignore[arg-type]
 
 
+def test_save_config_keeps_the_channel_dicts_rows_hold(monkeypatch, tmp_path) -> None:
+    # Rows mutate their own channel dict on pause/rename; after a save those
+    # dicts must still be the ones in the config, or the edit never lands.
+    monkeypatch.setattr(
+        app_module.config_manager, "_config_path", lambda: tmp_path / "config.json"
+    )
+    row_channel = {"platform": "twitch", "name": "foo"}
+    config = {"channels": [row_channel]}
+    probe = SimpleNamespace(
+        config=config,
+        _cancel_scheduled_config_save=lambda: None,
+        geometry=lambda: "800x600",
+    )
+
+    App._save_config(probe)  # type: ignore[arg-type]
+    row_channel["enabled"] = False
+    App._save_config(probe)  # type: ignore[arg-type]
+
+    assert probe.config is config
+    assert probe.config["channels"][0] is row_channel
+    assert app_module.config_manager.load()["channels"][0]["enabled"] is False
+
+
 def test_reset_persist_config_still_propagates_oserror(monkeypatch) -> None:
     """Durable reset path must not swallow save failures (unlike _save_config)."""
 
