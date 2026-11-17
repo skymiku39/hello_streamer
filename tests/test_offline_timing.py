@@ -77,3 +77,30 @@ def test_offline_vod_should_not_refresh_when_archive_unchanged() -> None:
         title="Same",
     )
     assert _offline_vod_should_refresh(prev, vod) is False
+
+
+def test_channel_had_live_session_iterates_under_session_lock(tmp_path) -> None:
+    """Regression: live maps are mutated under the lock by tier-2 workers, so
+    iterating them must happen while the lock is held (or on a snapshot)."""
+    from stream_monitor.db import SeenVideoDB
+    from stream_monitor.monitor import Monitor
+
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "chan"}],
+        db=SeenVideoDB(tmp_path / "test.db"),
+    )
+    held_during_iter: list[bool] = []
+
+    class SpyDict(dict):
+        def __iter__(self):
+            held_during_iter.append(monitor._lock.locked())
+            return super().__iter__()
+
+    monitor._live_payload = SpyDict({"youtube:other|vid1": object()})
+    monitor._live_started_at = SpyDict({"youtube:chan|vid2": "2026-01-01T00:00:00Z"})
+
+    assert monitor._channel_had_live_session("youtube:chan") is True
+    assert monitor._channel_had_live_session("youtube:none") is False
+    assert held_during_iter and all(held_during_iter)
+    # Non-reentrant lock must be released afterwards.
+    assert not monitor._lock.locked()
