@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from stream_monitor import default_browser_profile_dir, i18n
-from stream_monitor.util import channel_key
 from stream_monitor.action_plan import (
     ACTION_KEYS,
     LifecycleEffect,
@@ -25,6 +24,7 @@ from stream_monitor.browser_settings_model import (
 )
 from stream_monitor.channel_policy import CHANNEL_MODES, normalize_channel_mode
 from stream_monitor.portable_storage import portable_paths
+from stream_monitor.util import channel_key
 
 logger = logging.getLogger(__name__)
 
