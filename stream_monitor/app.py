@@ -2050,15 +2050,40 @@ class App(ctk.CTk):
                 self.config.get("browser_settings") or {}
             )
             if browser_settings.close_on_stop:
-                try:
-                    closed = self._platform.window.close_all()
-                    if closed:
-                        logger.info(
-                            "close_on_stop: WM_CLOSEd %d tracked window(s)",
-                            closed,
-                        )
-                except Exception:
-                    logger.exception("close_on_stop sweep failed")
+                self._close_all_on_stop(self._controller.generation)
+
+    _CLOSE_ON_STOP_RECHECKS = 10
+    _CLOSE_ON_STOP_RECHECK_MS = 500
+
+    def _close_all_on_stop(self, generation: int, rechecks: int | None = None) -> None:
+        """Close every tracked window, again after in-flight opens finish.
+
+        An open already past the cancellation check (resolving the CDP port,
+        spawning Chrome) registers its window only after this first sweep, so
+        it survived Stop and re-enabled keep-awake. Sweep again while action
+        workers are still running, unless monitoring was started again.
+        """
+        if rechecks is None:
+            rechecks = self._CLOSE_ON_STOP_RECHECKS
+        elif (
+            self._controller.generation != generation
+            or self._controller.mode != "idle"
+        ):
+            return
+        try:
+            closed = self._platform.window.close_all()
+            if closed:
+                logger.info(
+                    "close_on_stop: WM_CLOSEd %d tracked window(s)",
+                    closed,
+                )
+        except Exception:
+            logger.exception("close_on_stop sweep failed")
+        if rechecks > 0 and self._action_coordinator.has_active_work():
+            self.after(
+                self._CLOSE_ON_STOP_RECHECK_MS,
+                lambda: self._close_all_on_stop(generation, rechecks - 1),
+            )
 
     def _apply_monitor_mode_buttons(self) -> None:
         states = compact_control_button_states(
