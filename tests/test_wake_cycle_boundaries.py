@@ -496,3 +496,29 @@ def test_startup_refresh_does_not_double_strike_youtube_offline(
     with monitor._lock:
         assert monitor._last_status[entry.key].status is not True
     db.close()
+
+
+def test_wake_youtube_offline_to_live_dispatches_live_edge(monkeypatch, tmp_path) -> None:
+    # The tier-1 preview wrote LIVE into last_status before the wake check
+    # read it, so an offline->live change looked "already live" and its
+    # went_live was dropped while the video was still marked seen.
+    fetcher = _FeedYtFetcher([_yt_live_item("vidX")])
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    event_bus = MonitorEventBus()
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "yt"}],
+        db=db,
+        event_bus=event_bus,
+    )
+    entry = ChannelEntry(platform="youtube", name="yt")
+    with monitor._lock:
+        monitor._last_status[entry.key] = ChannelStatus(
+            status=False, url="https://www.youtube.com/@yt"
+        )
+
+    monitor._run_wake_verification([entry], time.monotonic())
+
+    went_live = [e for e in event_bus.drain() if isinstance(e, ChannelWentLive)]
+    assert len(went_live) == 1
+    db.close()
