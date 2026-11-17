@@ -1517,7 +1517,7 @@ def test_close_browser_window_for_url_uses_tracked_hwnds(monkeypatch) -> None:
     monkeypatch.setattr(
         notifier,
         "_find_hwnds_by_title_keyword",
-        lambda kws: {999},  # should NOT be used when tracking hits
+        lambda kws, **_kw: {999},  # should NOT be used when tracking hits
     )
 
     notifier._register_tracked_hwnd("https://stream", 11)
@@ -1545,7 +1545,7 @@ def test_close_browser_window_for_url_falls_back_to_title_keyword(monkeypatch) -
     monkeypatch.setattr(
         notifier,
         "_find_hwnds_by_title_keyword",
-        lambda kws: {777} if "Kaicenat" in kws else set(),
+        lambda kws, **_kw: {777} if "Kaicenat" in kws else set(),
     )
 
     result = notifier.close_browser_window_for_url(
@@ -1560,7 +1560,7 @@ def test_close_browser_window_for_url_returns_zero_when_no_match(monkeypatch) ->
     _reset_tracked_hwnds()
     monkeypatch.setattr(notifier, "_is_windows", lambda: True)
     monkeypatch.setattr(notifier, "_post_close_window", lambda hwnd: False)
-    monkeypatch.setattr(notifier, "_find_hwnds_by_title_keyword", lambda kws: set())
+    monkeypatch.setattr(notifier, "_find_hwnds_by_title_keyword", lambda kws, **_kw: set())
 
     assert (
         notifier.close_browser_window_for_url(
@@ -1587,6 +1587,55 @@ def test_find_hwnds_by_title_keyword_case_insensitive_substring(monkeypatch) -> 
     )
     matches = notifier._find_hwnds_by_title_keyword(["KaIcEnAt"])
     assert matches == {1, 3}
+
+
+def test_title_fallback_for_a_site_url_skips_other_programs(monkeypatch) -> None:
+    # A channel name alone also matches chat apps and editors; a Twitch tab
+    # title always carries "Twitch".
+    titles = [
+        (1, "kaicenat - Twitch - Google Chrome"),
+        (2, "kaicenat fans - Discord"),
+        (3, "kaicenat.py - Visual Studio Code"),
+    ]
+    monkeypatch.setattr(notifier, "_enum_visible_hwnds_with_title", lambda: titles)
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    closed: list[int] = []
+    monkeypatch.setattr(
+        notifier, "_post_close_window", lambda hwnd: closed.append(hwnd) or True
+    )
+
+    count = notifier.close_browser_window_for_url(
+        "https://www.twitch.tv/kaicenat", title_keywords=["kaicenat"]
+    )
+
+    assert count == 1
+    assert closed == [1]
+    assert notifier._find_hwnds_by_title_keyword(["kaicenat"]) == {1, 2, 3}
+
+
+def test_user_opened_window_blocks_the_title_fallback(monkeypatch, tmp_path) -> None:
+    # manage=False windows are never auto-closed; a later close for the same
+    # URL must not reach them through the title search either.
+    _stub_browser_resolution(monkeypatch, "chrome")
+    monkeypatch.setattr(notifier, "_is_windows", lambda: True)
+    monkeypatch.setattr(notifier.subprocess, "Popen", lambda *_a, **_k: object())
+    monkeypatch.setattr(notifier, "_enum_browser_hwnds", lambda _c: set())
+    monkeypatch.setattr(
+        notifier, "_apply_new_browser_window_settings_async", lambda *a, **k: None
+    )
+    url = "https://www.twitch.tv/hello"
+    assert notifier.open_url(url, _managed_open_settings(tmp_path), manage=False)
+
+    searched: list[Any] = []
+    monkeypatch.setattr(
+        notifier,
+        "_find_hwnds_by_title_keyword",
+        lambda kws, **_kw: searched.append(kws) or {5},
+    )
+    monkeypatch.setattr(notifier, "_post_close_window", lambda _hwnd: True)
+
+    assert notifier.close_browser_window_for_url(url, title_keywords=["hello"]) == 0
+    assert searched == []
 
 
 def test_find_hwnds_by_title_keyword_empty_keyword_list_returns_empty(
@@ -2336,7 +2385,7 @@ def test_open_with_browser_settings_geometry_only_without_isolation(
         monkeypatch.setattr(
             notifier,
             "_find_hwnds_by_title_keyword",
-            lambda keywords: title_lookup_calls.append(keywords) or {999},
+            lambda keywords, **_kw: title_lookup_calls.append(keywords) or {999},
         )
         close_calls: list[int] = []
         monkeypatch.setattr(
@@ -2476,7 +2525,7 @@ def test_open_with_browser_settings_blocks_title_fallback_without_isolation_for_
         monkeypatch.setattr(
             notifier,
             "_find_hwnds_by_title_keyword",
-            lambda keywords: title_lookup_calls.append(keywords) or {999},
+            lambda keywords, **_kw: title_lookup_calls.append(keywords) or {999},
         )
         monkeypatch.setattr(notifier, "_post_close_window", lambda _hwnd: True)
 

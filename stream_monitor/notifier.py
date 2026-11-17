@@ -849,10 +849,6 @@ def _apply_viewer_engagement_to_launch(
     effective_settings["bring_to_front"] = bool(engagement.bring_to_front)
     effective_settings["separate_windows"] = bool(manage and engagement.separate_windows)
     effective_settings["always_on_top"] = bool(manage and engagement.always_on_top)
-    if engagement.bring_to_front and engagement.foreground_hold_seconds > 0:
-        effective_settings["foreground_hold_seconds"] = (
-            engagement.foreground_hold_seconds
-        )
     if engagement.whitelist_performance and effective_user_data_dir:
         try:
             merge_tab_discarding_exceptions(effective_user_data_dir)
@@ -1187,7 +1183,10 @@ def _open_with_browser_settings(
             }
             track_url = ""
             track_keywords = ()
-            if wants_close_or_hide_mgmt and manage:
+            # A window the user opened (manage=False) is never ours to
+            # close; without the block a later close for this URL fell back
+            # to closing every window whose title has the channel name.
+            if wants_close_or_hide_mgmt or not manage:
                 _block_title_fallback_for_url(url)
         _apply_new_browser_window_settings_async(
             class_name,
@@ -1196,9 +1195,6 @@ def _open_with_browser_settings(
             apply_geometry=apply_geometry,
             track_for_url=track_url,
             track_keywords=track_keywords,
-            foreground_hold_seconds=int(
-                worker_settings.get("foreground_hold_seconds", 0)
-            ),
         )
     elif _is_windows() and not isolation_available:
         _block_title_fallback_for_url(url)
@@ -1433,7 +1429,7 @@ def _resume_managed_window_assist(
             return
         if attach.ok and attach.port and attach.port > 0:
             _register_obs_managed_url(url)
-            start_page_assist(url, attach.port, current)
+            start_page_assist(url, attach.port, current.for_channel(url))
             logger.info("Resumed page assist for recovered managed window %s", url)
         else:
             publish_page_assist_status(url, attach.reason or "unavailable")

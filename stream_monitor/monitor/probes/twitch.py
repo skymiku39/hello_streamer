@@ -8,6 +8,7 @@ from typing import Callable
 from stream_monitor.fetcher.base import StreamInfo
 from stream_monitor.monitor import deps as _monitor_deps
 from stream_monitor.monitor.probes.facade import ProbeFacade
+from stream_monitor.monitor.probes.suppressed_log import suppressed_log_level
 from stream_monitor.monitor.types import (
     ChannelEntry,
     ChannelStatus,
@@ -140,7 +141,8 @@ class TwitchPlatformProbe:
             info.stream_status = "live"
             return [(entry, info)]
         if info.is_live and prev_status is True:
-            logger.info(
+            logger.log(
+                suppressed_log_level(entry.key, info.started_at),
                 "Twitch %s: went_live_suppressed (already marked live)",
                 entry.key,
             )

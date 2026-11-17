@@ -99,10 +99,6 @@ class ViewerEngagementSettings:
     # Bring the freshly-opened Twitch window to the foreground so the Page
     # Visibility API reports "visible" during player initialisation.
     bring_to_front: bool = True
-    # How many seconds to keep reasserting foreground after the browser window
-    # is first detected. This is a playback-initialization preference, not
-    # a requirement for Twitch viewer counting.
-    foreground_hold_seconds: int = 15
 
     # --- Optional CDP page assist ---
     page_assist_enabled: bool = False

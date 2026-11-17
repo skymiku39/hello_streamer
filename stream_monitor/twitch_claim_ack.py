@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import threading
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
+
+logger = logging.getLogger(__name__)
+
+MAX_RESPONSE_READ_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,9 @@ class ClaimAcknowledgements:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pending: dict[str, bool] = {}
+        # Read attempts per completed request; a busy page can time out
+        # getResponseBody once, and dropping the ID lost a confirmed claim.
+        self._read_failures: dict[str, int] = {}
 
     def begin(self, client: Any) -> None:
         self.reset()
@@ -63,6 +71,7 @@ class ClaimAcknowledgements:
     def reset(self) -> None:
         with self._lock:
             self._pending.clear()
+            self._read_failures.clear()
 
     def observe(self, method: str, params: dict[str, Any]) -> bool:
         """Called on the CDP reader thread. Never issue a synchronous CDP call."""
@@ -100,6 +109,20 @@ class ClaimAcknowledgements:
                 self._pending.pop(request_id, None)
         return False
 
+    def _requeue_after_failure(self, request_id: str, exc: Exception) -> None:
+        with self._lock:
+            failures = self._read_failures.get(request_id, 0) + 1
+            if failures < MAX_RESPONSE_READ_ATTEMPTS:
+                self._read_failures[request_id] = failures
+                self._pending[request_id] = True
+                return
+            self._read_failures.pop(request_id, None)
+        logger.warning(
+            "Twitch claim response unreadable after %d attempts: %s",
+            MAX_RESPONSE_READ_ATTEMPTS,
+            exc,
+        )
+
     def poll(self, client: Any) -> ClaimResult | None:
         with self._lock:
             ready = [key for key, done in self._pending.items() if done]
@@ -115,8 +138,13 @@ class ClaimAcknowledgements:
                 if not isinstance(raw, str) or len(raw) > 65536:
                     continue
                 result = parse_claim_response(json.loads(raw))
-            except (OSError, RuntimeError, TimeoutError, ValueError):
+            except (OSError, RuntimeError, TimeoutError) as exc:
+                self._requeue_after_failure(request_id, exc)
                 continue
+            except ValueError:
+                continue
+            with self._lock:
+                self._read_failures.pop(request_id, None)
             # Native Twitch may retry after a rejection. Read every completed
             # response before returning: an early return used to discard all
             # subsequent IDs, including a successful native retry.
