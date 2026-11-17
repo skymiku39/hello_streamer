@@ -63,6 +63,11 @@ class YouTubePlatformProbe:
         snap.youtube_items = items
         with session.lock:
             session.probe_snapshots[entry.key] = snap
+            # Read before the preview: it may already write LIVE into
+            # last_status, which made a wake round treat an offline->live
+            # change as "already live" and drop its went_live.
+            prior = session.last_status.get(entry.key)
+            prior_status = prior.status if isinstance(prior, ChannelStatus) else prior
         # An empty feed needs the fallback probe before it can prove OFFLINE.
         if items:
             facade.publish_preview(entry, from_probe=True)
@@ -191,10 +196,7 @@ class YouTubePlatformProbe:
             info = _video_item_to_stream_info(item, entry.name)
             new_events.append((entry, info))
 
-        with session.lock:
-            prev = session.last_status.get(entry.key)
-            prev_status = prev.status if isinstance(prev, ChannelStatus) else prev
-        suppress_for_wake = facade.wake_verify_mode and prev_status is True
+        suppress_for_wake = facade.wake_verify_mode and prior_status is True
         if suppress_for_wake and cached_live_ids:
             # Wake drops these events; only the cached stream may be marked
             # seen.  A different LIVE video started during sleep must stay
