@@ -425,7 +425,17 @@ class Monitor(
                 return
         self._last_maintenance_wall = wall_now
         try:
-            removed = self._db.cleanup(days=_DB_CLEANUP_DAYS)
+            # Streams still live (e.g. 24/7 channels older than the cutoff)
+            # must stay "seen" or they would be re-announced as new.
+            with self._lock:
+                live_ids = [
+                    info.video_id
+                    for info in self._live_payload.values()
+                    if info.video_id
+                ]
+            removed = self._db.cleanup(
+                days=_DB_CLEANUP_DAYS, keep_video_ids=live_ids
+            )
             if removed:
                 logger.info("Maintenance: removed %d stale seen_videos rows", removed)
         except Exception:
