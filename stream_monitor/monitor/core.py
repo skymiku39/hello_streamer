@@ -100,6 +100,9 @@ class Monitor(
         self._wake_verify_active = False
         self._wake_deferred_keys: set[str] = set()
         self._startup_refresh_pending = False
+        # True while the startup refresh re-probes inside the opening cycle;
+        # its offline readings hold without adding a strike (#56).
+        self._startup_refresh_active = False
         self._force_offline_vod_refresh = False
         self._last_maintenance_wall: float = 0.0
 

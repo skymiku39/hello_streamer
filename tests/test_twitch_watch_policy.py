@@ -20,6 +20,7 @@ def settings():
         enabled=True, page_assist_enabled=True, claim_channel_points=True,
         points_stall_refresh_enabled=True,
         points_priority_channels=["taiga_hikari", "kspksp"],
+        points_allocation_enabled=True,
     )
 
 

@@ -233,6 +233,9 @@ class StartupRefreshMixin:
             len(enabled_entries),
         )
         self._force_offline_vod_refresh = True
+        # Same cycle as the opening tier-1 read: a second offline reading here
+        # is not a second consecutive poll, so it must not add a strike (#56).
+        self._startup_refresh_active = True
         refresh_started = time.monotonic()
         went_live_count = 0
         try:
@@ -260,6 +263,7 @@ class StartupRefreshMixin:
             went_live_count = sum(results)
         finally:
             self._force_offline_vod_refresh = False
+            self._startup_refresh_active = False
         extra = time.monotonic() - refresh_started
         logger.info(
             "Startup refresh complete: channels=%d went_live=%d extra=%.2fs total=%.2fs",

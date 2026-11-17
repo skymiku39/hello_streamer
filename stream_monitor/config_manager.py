@@ -110,6 +110,7 @@ DEFAULT_VIEWER_ENGAGEMENT: dict[str, Any] = {
     "theater_delay_seconds": 8,
     "points_stall_refresh_enabled": False,
     "points_priority_channels": [],
+    "points_allocation_enabled": False,
     "points_slot_count": 2,
     "auto_refresh": False,
     "refresh_minutes_min": 45,
@@ -439,6 +440,11 @@ def _normalize_viewer_engagement(value: Any) -> dict[str, Any]:
                 )
             else:
                 normalized[key] = _coerce_bool(value[key], normalized[key])
+    if not isinstance(value, dict) or "points_allocation_enabled" not in value:
+        # Older configs enabled the allocation by listing priorities (#91).
+        normalized["points_allocation_enabled"] = bool(
+            normalized["points_priority_channels"]
+        )
     normalized["points_slot_count"] = min(4, normalized["points_slot_count"])
     # Keep fuzzy ranges ordered so callers can sample without clamping again.
     if normalized["claim_delay_seconds_max"] < normalized["claim_delay_seconds_min"]:

@@ -1781,7 +1781,7 @@ class App(ctk.CTk):
         trigger_settings = TriggerSettings.from_mapping(
             self.config.get("trigger_settings")
         )
-        if not settings.enabled or not priorities:
+        if not settings.points_allocation_active:
             set_active_points_channels(None)
             self._active_points_priority_channels = None
             self._points_main_profile_channels.clear()
@@ -1853,7 +1853,9 @@ class App(ctk.CTk):
             # Unknown/transient channel states must not promote a lower-ranked
             # channel. On cold start, static priorities suppress Guest fallback
             # until a complete poll establishes the live set.
-            if self._active_points_priority_channels is None:
+            # With an empty priority list there is nothing static to
+            # suppress with: stay unallocated (shared) until a complete poll.
+            if self._active_points_priority_channels is None and priorities:
                 selected = tuple(priorities)
                 set_active_points_channels(selected)
                 self._active_points_priority_channels = selected

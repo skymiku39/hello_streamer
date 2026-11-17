@@ -343,6 +343,19 @@ class YouTubePlatformProbe:
                     entry.key,
                     len(stale_candidates),
                 )
+            elif facade.startup_refresh_active and stale_candidates:
+                # Startup refresh is still the opening cycle: hold missing
+                # rows without adding a strike so two reads seconds apart
+                # cannot close a window (#56).
+                for stale_key in stale_candidates:
+                    active_live_ids.add(stale_key.rsplit("|", 1)[-1])
+                    has_strike_pending = True
+                logger.info(
+                    "YouTube %s: startup refresh holding %d missing live "
+                    "payload(s) (not counted)",
+                    entry.key,
+                    len(stale_candidates),
+                )
             else:
                 for stale_key in stale_candidates:
                     strikes = session.offline_strikes.get(stale_key, 0) + 1

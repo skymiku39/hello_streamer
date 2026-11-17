@@ -382,3 +382,117 @@ def test_wake_same_youtube_live_stays_suppressed_and_marked_seen(
     assert db.is_seen("vidA", "LIVE")
     assert _normal_poll(monitor, entry) == []
     db.close()
+
+
+class _OfflineTwitchFetcher:
+    """Twitch fetcher whose API reports the channel as offline."""
+
+    platform = "twitch"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_stream_info(self, channel_name: str) -> StreamInfo:
+        self.calls += 1
+        return StreamInfo(
+            channel=channel_name,
+            platform="twitch",
+            is_live=False,
+            url=f"https://www.twitch.tv/{channel_name}",
+        )
+
+    def get_latest_finished_vod(self, channel_name: str, *, items=None):
+        return None
+
+
+def _offline_events(event_bus):
+    return [e for e in event_bus.drain() if isinstance(e, ChannelWentOffline)]
+
+
+def test_startup_refresh_does_not_double_strike_twitch_offline(
+    monkeypatch, tmp_path
+) -> None:
+    """#56: the opening cycle's startup refresh must not reach strike 2 alone."""
+    fetcher = _OfflineTwitchFetcher()
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    event_bus = MonitorEventBus()
+    entry = ChannelEntry(platform="twitch", name="hello")
+    monitor = Monitor(
+        channels=[{"platform": "twitch", "name": "hello", "enabled": True}],
+        db=db,
+        event_bus=event_bus,
+        initial_statuses={
+            entry.key: ChannelStatus(
+                status=True, url="https://www.twitch.tv/hello", title="Live"
+            )
+        },
+    )
+    monkeypatch.setattr(monitor, "_run_maintenance", lambda: None)
+    assert monitor._startup_refresh_pending is True
+
+    monitor._execute_poll_cycle(time.monotonic())
+
+    # Startup refresh really re-probed within this cycle.
+    assert monitor._startup_refresh_pending is False
+    assert fetcher.calls >= 3
+    assert _offline_events(event_bus) == []
+    with monitor._lock:
+        cs = monitor._last_status[entry.key]
+        assert cs.status is True
+        assert monitor._offline_strikes.get(_live_cache_key(entry.key)) == 1
+
+    # The next normal poll is the second consecutive round: commit offline.
+    monitor._execute_poll_cycle(time.monotonic())
+
+    assert len(_offline_events(event_bus)) == 1
+    with monitor._lock:
+        assert monitor._last_status[entry.key].status is False
+    db.close()
+
+
+def test_startup_refresh_does_not_double_strike_youtube_offline(
+    monkeypatch, tmp_path
+) -> None:
+    """#56: a seeded YouTube live row missing from the feed needs two cycles."""
+    fetcher = _FeedYtFetcher(
+        [
+            VideoItem(
+                video_id="vod1",
+                title="Archive",
+                style="DEFAULT",
+                url="https://www.youtube.com/watch?v=vod1",
+            )
+        ]
+    )
+    monkeypatch.setattr(monitor_deps, "get_fetcher", lambda _p: fetcher)
+    db = SeenVideoDB(tmp_path / "test.db")
+    event_bus = MonitorEventBus()
+    entry = ChannelEntry(platform="youtube", name="yt")
+    monitor = Monitor(
+        channels=[{"platform": "youtube", "name": "yt", "enabled": True}],
+        db=db,
+        event_bus=event_bus,
+        initial_statuses={
+            entry.key: ChannelStatus(
+                status=True,
+                url="https://www.youtube.com/watch?v=vidA",
+                title="Stream vidA",
+            )
+        },
+    )
+    monkeypatch.setattr(monitor, "_run_maintenance", lambda: None)
+
+    monitor._execute_poll_cycle(time.monotonic())
+
+    assert monitor._startup_refresh_pending is False
+    assert _offline_events(event_bus) == []
+    with monitor._lock:
+        assert monitor._last_status[entry.key].status is True
+
+    monitor._execute_poll_cycle(time.monotonic())
+
+    assert len(_offline_events(event_bus)) == 1
+    with monitor._lock:
+        assert monitor._last_status[entry.key].status is not True
+    db.close()

@@ -122,6 +122,9 @@ class ViewerEngagementSettings:
     # limit. Empty preserves shared-account multiview. Managed playback outside
     # the active allocation is skipped instead of opening a Guest window.
     points_priority_channels: list[str] = field(default_factory=list)
+    # Independent switch for the points slot allocation (#91). The priority
+    # list only orders channels; empty means main channel list order.
+    points_allocation_enabled: bool = False
     # Signed-in playback slots filled by the points allocator. Two is the
     # verified-safe default; up to MAX_POINTS_SLOTS for experiments.
     points_slot_count: int = DEFAULT_POINTS_SLOTS
@@ -141,23 +144,36 @@ class ViewerEngagementSettings:
             )
         except ValueError:
             kwargs["points_priority_channels"] = []
+        if "points_allocation_enabled" not in raw:
+            # Older configs enabled the allocation by listing priorities.
+            kwargs["points_allocation_enabled"] = bool(kwargs["points_priority_channels"])
+        else:
+            kwargs["points_allocation_enabled"] = bool(raw["points_allocation_enabled"])
         kwargs["points_slot_count"] = clamp_points_slot_count(
             raw.get("points_slot_count", DEFAULT_POINTS_SLOTS)
         )
         return cls(**kwargs)
 
+    @property
+    def points_allocation_active(self) -> bool:
+        return bool(self.enabled and self.points_allocation_enabled)
+
     def points_role(self, url: str) -> str:
         parsed = urlsplit(url)
-        if (not self.enabled or not self.points_priority_channels
+        if (not self.points_allocation_active
                 or parsed.hostname not in {"twitch.tv", "www.twitch.tv"}):
             return "shared"
         name = parsed.path.strip("/").split("/")[0].lower()
         with _ACTIVE_POINTS_CHANNELS_LOCK:
-            priorities = (
-                self.points_priority_channels
-                if _ACTIVE_POINTS_CHANNELS is None
-                else _ACTIVE_POINTS_CHANNELS
-            )
+            active = _ACTIVE_POINTS_CHANNELS
+        if active is None:
+            if not self.points_priority_channels:
+                # No list and no allocation yet (cold start): stay shared
+                # until the allocator has a complete poll to choose from.
+                return "shared"
+            priorities = self.points_priority_channels
+        else:
+            priorities = active
         return "priority" if name in priorities else "watch_only"
 
     def for_channel(self, url: str) -> ViewerEngagementSettings:
