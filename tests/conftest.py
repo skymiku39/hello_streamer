@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import platform
+
 import pytest
 
 from stream_monitor import db
+
+# On Windows the first platform.system() call may run ``ver`` in a subprocess.
+# Tests that replace subprocess.Popen with a stub would then fail only when run
+# alone, before anything else filled the cache; fill it up front.
+platform.uname()
 
 
 @pytest.fixture(autouse=True)
