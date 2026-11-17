@@ -61,8 +61,11 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 | 11/17 03:24 | 11/17 稽核後修正的 19 個 issue（#44–#67，PR #68–#85） | `e41ce08` | `..._20261117_pre-v1.3.3-fixes`（含 config.json） |
 | 11/17 09:23 | #56 啟動補刷不算第二次離線確認（PR #88） | `7fac212` | `..._20261117_pre-startup-refresh`（含 config.json） |
 | 11/17 10:46 | #91 點數位置上限的獨立開關（PR #92），部署版開啟 | `95ca461` | `..._20261117_pre-points-switch`（含 config.json） |
+| 11/17 14:42 | 11/17 第二輪稽核：PR #93–#112（#49、#58、#66 與 16 個修正） | `54eda65` | `..._20261117_pre-audit-fixes`（含 config.json） |
 
-目前部署內容等同 `main` 的 `95ca461`（v1.3.2 + 之後所有修正，版本號仍是 1.3.2）：exe 與 `dist` 雜湊一致。v1.3.2 已於 11/16 發行（tag 在 `771ab8e`）；v1.3.3 尚未發行。
+目前部署內容等同 `main` 的 `54eda65`（v1.3.2 + 之後所有修正，版本號仍是 1.3.2）：exe 與 `_internal` 共 1060 個檔案與 `dist` 雜湊一致；`_internal\VCRUNTIME140_1.dll` 是舊版殘留（`VCRUNTIME140.dll` 被鎖住導致舊 `_internal` 沒刪乾淨），新版不使用。
+
+11/17 14:42 部署後：hayabi_zr、jipandan 兩台 attach，另外 2 個復原視窗依上限關閉；一次 `profile_nondebug` 在 4 秒內自行恢復。前 2 分鐘 `Skipped duplicate pending action` 0 行（之前每次重啟約 170 行，PR #96），`went_live_suppressed` 每台只記 1 行（PR #97）。v1.3.2 已於 11/16 發行（tag 在 `771ab8e`）；v1.3.3 尚未發行。
 
 11/17 03:24 部署後：兩台 7 秒內 attach；觀察紀錄第一次寫入就把 56 MB 的舊檔輪替成 `.ndjson.1`（#44）。PR #39 部署後到 03:24 約 70 分鐘，log 沒有任何 `ytInitialData missing`（之前每小時 8–16 次），#28 待 24 小時後確認關閉。09:23 重啟時啟動補刷正常完成，沒有誤判下播；3 個復原視窗都在 8 秒內 attach。
 
