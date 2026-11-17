@@ -2190,11 +2190,15 @@ def test_twitch_went_live_suppressed_emits_log(
     monitor = Monitor(channels=[{"platform": "twitch", "name": "hello"}], db=db)
     entry = ChannelEntry(platform="twitch", name="hello")
 
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.DEBUG)
     _check_and_commit(monitor, entry)
     _check_and_commit(monitor, entry)
 
-    assert any("went_live_suppressed" in r.message for r in caplog.records)
+    suppressed = [r for r in caplog.records if "went_live_suppressed" in r.message]
+    assert suppressed
+    # Logged every poll while live (a third of the deployed log on 11/17), so
+    # it must stay out of the INFO log.
+    assert all(r.levelno == logging.DEBUG for r in suppressed)
     db.close()
 
 

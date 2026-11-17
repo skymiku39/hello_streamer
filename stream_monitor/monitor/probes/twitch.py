@@ -140,7 +140,7 @@ class TwitchPlatformProbe:
             info.stream_status = "live"
             return [(entry, info)]
         if info.is_live and prev_status is True:
-            logger.info(
+            logger.debug(
                 "Twitch %s: went_live_suppressed (already marked live)",
                 entry.key,
             )
