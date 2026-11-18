@@ -91,6 +91,8 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 - 2026-11-09「寶箱出現卻沒領」：截圖是 `asbs5263`，寶箱只存在 14:26:46–14:27:11，14:27:11 即伺服器確認領取，無漏領（輪詢 10–20 秒 + 隨機延遲 2–5 秒）。已補領取 log（`claimable bonus detected` / `claim button clicked`）。
 - 2026-11-11 ramengyozaset 晚上其實沒開播；當晚中斷的是黛儚_卡索與漣韵。
 - 2026-11-14 檢查：52 次領取全部伺服器確認，無 IntegrityCheck；「輪過後依排序還位」已實際觀察到。
+- 2026-11-17 runrunluna 斷連續觀看（VOD 2930986222，08:34–09:38）：程式全程開窗、page assist 正常，但整場 0 點數、0 寶箱，09:05 的 30 分鐘無點數 F5 也沒用；同時段 neipuduck、sumitaninasi 各 17 次點數上升。原因：優先清單在 11/16 晚間被清空，舊版以「清單非空」當分配開關，分配整個停用（08:00–10:46 沒有任何分配動作，7 次開窗全是 `open_keep`），同時開 3 台而第 3 台不被認列。不是負載問題。同期 hayabi_zr 10:18–10:46 也是 0 點數（部署後才拿到位置）。#91 部署（10:46）後 11 個開播頻道都有點數與寶箱。
+  - 補救：Twitch 首頁「保住您的連續紀錄」會帶到漏掉那場的 VOD，11/18 01:15 在使用者的 Chrome 播放約 6 分鐘（VOD 第 407 秒）後提示消失、重新載入也沒再出現；連續天數未直接確認。Twitch 沒寫需要看多久，6 分鐘只是這次的觀察。
 
 ## 注意事項
 - 已知平台限制：`artifacts/functional-fixes-20261106/final-claim-test-summary.json` 記錄 `claim_platform_block: IntegrityCheckFailed`。
