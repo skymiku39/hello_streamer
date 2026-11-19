@@ -15,7 +15,7 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 - 測試只收 `tests/`（pyproject 的 testpaths）：release／artifacts 內可能有舊版套件副本。
 - 登入觀看位置維持 2 個（`viewer_engagement.points_slot_count`，預設 2，限 1–4，無 UI）：2026-11-14 實測 3 個位置時第 3 台 30 分鐘 0 點，此帳號 Twitch 只認列同時 2 台，多開還會觸發停滯重啟打斷正常的兩台。不做 UI（#30 關閉）：只有 2 有效，加 UI 等於提供無效選項。
 - 2026-11-16 改用 GitHub issues 管理待辦（使用者同意）：PROGRESS.md 的待辦清單混雜過時內容、編號混亂。
-- 2026-11-17 GitHub Actions 額度用完：之後的 PR 改在本機驗證（`ruff`、`compileall`、完整測試跑 Python 3.14 與 3.11），Linux 無法驗證，PR 留言註明。本機預設是 3.14、CI 是 3.11，新測試要用 3.11 再跑一次（11/17 已遇到兩次只在 3.11 失敗）。 11/18 起 Actions 已恢復（CI 與 PR 檢查都正常跑完）。
+- 2026-11-17 GitHub Actions 額度用完：之後的 PR 改在本機驗證（`ruff`、`compileall`、完整測試跑 Python 3.14 與 3.11），Linux 無法驗證，PR 留言註明。本機預設是 3.14、CI 是 3.11，新測試要用 3.11 再跑一次（11/17 已遇到兩次只在 3.11 失敗）。 11/18 起 Actions 已恢復（CI 與 PR 檢查都正常跑完）。11/19 發現 CI 與 Build and Release 兩個 workflow 被手動停用（推 tag 不會觸發建置），經使用者同意重新啟用，以 workflow_dispatch 補跑 v1.3.3 發行。
 - 2026-11-17 待決 issue 的決定（使用者同意 Claude 的建議）：
   - #62 有頻道狀態不明時整個分配暫停：維持保守設計。23 小時的 log 沒有任何一次 Twitch 查詢不可用；改成排除該頻道，可能讓排序較低者佔位。真的遇到再處理。
   - #66 同一輪多台開播：後面的頻道照常通知與開窗，只拿掉停止／結束效果。原因：原本連通知都略過，與 README 不符，漏通知比多開窗糟。
@@ -65,7 +65,7 @@ Hello Streamer（套件名 `stream_monitor`）：桌面實況監控工具（Cust
 
 目前部署內容等同 `main` 的 `54eda65`（v1.3.2 + 之後所有修正，版本號仍是 1.3.2）：exe 與 `_internal` 共 1060 個檔案與 `dist` 雜湊一致；`_internal\VCRUNTIME140_1.dll` 是舊版殘留（`VCRUNTIME140.dll` 被鎖住導致舊 `_internal` 沒刪乾淨），新版不使用。
 
-11/17 14:42 部署後：hayabi_zr、jipandan 兩台 attach，另外 2 個復原視窗依上限關閉；一次 `profile_nondebug` 在 4 秒內自行恢復。前 2 分鐘 `Skipped duplicate pending action` 0 行（之前每次重啟約 170 行，PR #96），`went_live_suppressed` 每台只記 1 行（PR #97）。v1.3.2 已於 11/16 發行（tag 在 `771ab8e`）；v1.3.3 於 11/19 合併 PR #87 後打 tag（`c32e14a`）。
+11/17 14:42 部署後：hayabi_zr、jipandan 兩台 attach，另外 2 個復原視窗依上限關閉；一次 `profile_nondebug` 在 4 秒內自行恢復。前 2 分鐘 `Skipped duplicate pending action` 0 行（之前每次重啟約 170 行，PR #96），`went_live_suppressed` 每台只記 1 行（PR #97）。v1.3.2 已於 11/16 發行（tag 在 `771ab8e`）；v1.3.3 於 11/19 合併 PR #87 後打 tag（`c32e14a`）並發行（Windows、Linux x64、Linux arm64 三個建置檔）。
 
 11/17 03:24 部署後：兩台 7 秒內 attach；觀察紀錄第一次寫入就把 56 MB 的舊檔輪替成 `.ndjson.1`（#44）。PR #39 部署後到 03:24 約 70 分鐘，log 沒有任何 `ytInitialData missing`（之前每小時 8–16 次），#28 待 24 小時後確認關閉（11/19 確認：11/17 22:22 到 11/19 10:50 的 log 出現 0 次，已關閉）。09:23 重啟時啟動補刷正常完成，沒有誤判下播；3 個復原視窗都在 8 秒內 attach。
 
